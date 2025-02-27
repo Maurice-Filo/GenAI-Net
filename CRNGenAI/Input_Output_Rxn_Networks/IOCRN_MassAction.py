@@ -37,26 +37,58 @@ class IOCRN_MassAction:
     
     def rate_function(self, time, concentrations, inputs):
         return np.matmul(self.stoichiometry_matrix, self.propensity_function(concentrations, inputs))
-    
+
     def transient_response(self, inputs, initial_condition, time_horizon, return_states=False):
         outputs = []
+
+        def stop_if_unstable(t, y):
+            """Event function to stop integration if solution becomes unstable."""
+            threshold = 10000  # Adjust as needed
+            return threshold - np.max(y)
+        
+        stop_if_unstable.terminal = True  # Stop integration if triggered
+        stop_if_unstable.direction = -1   # Trigger when exceeding threshold
+
         for input in inputs:
-            # solution = odeint(lambda concentrations, time: self.rate_function(time, concentrations, input), initial_condition, time_horizon)
-            # rewrite with solve_ivp
             solution = solve_ivp(
-                lambda t, y: self.rate_function(t, y, input),  # Function to integrate
+                lambda t, y: self.rate_function(t, y, input),  # ODE function
                 (time_horizon[0], time_horizon[-1]),  # Time span
-                initial_condition,  # Initial condition
-                t_eval=time_horizon,  # Specific time points where solution is computed
-                method="LSODA",  # Use LSODA to match odeint behavior
+                initial_condition,  # Initial conditions
+                t_eval=time_horizon,  # Output time points
+                method="LSODA",  # Use LSODA for adaptive stepping
+                events=stop_if_unstable  # Add event to stop on instability
             ).y.T
-
-
             output = solution[:, self.output_species - 1]
+            if output.shape[0] < time_horizon.shape[0]:
+                output = np.pad(output, ((0, time_horizon.shape[0] - output.shape[0]), (0,0)), mode='edge')
             outputs.append(output)  
+
         if return_states:
             return outputs, solution
         return outputs
+
+
+
+    
+    # def transient_response(self, inputs, initial_condition, time_horizon, return_states=False):
+    #     outputs = []
+    #     for input in inputs:
+    #         # solution = odeint(lambda concentrations, time: self.rate_function(time, concentrations, input), initial_condition, time_horizon)
+    #         # rewrite with solve_ivp
+    #         solution = solve_ivp(
+    #             lambda t, y: self.rate_function(t, y, input),  # Function to integrate
+    #             (time_horizon[0], time_horizon[-1]),  # Time span
+    #             initial_condition,  # Initial condition
+    #             t_eval=time_horizon,  # Specific time points where solution is computed
+    #             method="LSODA",  # Use LSODA to match odeint behavior
+    #         ).y.T
+
+
+    #         output = solution[:, self.output_species - 1]
+    #         outputs.append(output)  
+    #     if return_states:
+    #         return outputs, solution
+    #     return outputs
 
     def dose_response(self, inputs, initial_guess, plot_flag = False, axis=None):
         outputs = []
