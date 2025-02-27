@@ -43,6 +43,18 @@ def map_indices_to_reactions(indices, num_samples, num_species, num_reactions, n
          # Use advanced indexing to set the values
         sample_idx = np.arange(num_samples).reshape(-1, 1).repeat(num_reactions, axis=1)
 
+        # move to CPU
+        mask_inputs = mask_inputs.cpu()
+        mask_reactants1 = mask_reactants1.cpu()
+        mask_reactants2 = mask_reactants2.cpu()
+        mask_products1 = mask_products1.cpu()
+        mask_products2 = mask_products2.cpu()
+        index_reactants1 = index_reactants1.cpu()
+        index_reactants2 = index_reactants2.cpu()
+        index_products1 = index_products1.cpu()
+        index_products2 = index_products2.cpu()
+        index_inputs = index_inputs.cpu()
+
         stoichiometry_reactants1[sample_idx, index_reactants1, np.arange(num_reactions)] = mask_reactants1.long()
         stoichiometry_reactants2[sample_idx, index_reactants2, np.arange(num_reactions)] = mask_reactants2.long()
         stoichiometry_reactants = stoichiometry_reactants1 + stoichiometry_reactants2

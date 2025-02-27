@@ -4,6 +4,7 @@ from scipy.optimize import fsolve
 from scipy.integrate import odeint
 import matplotlib.pyplot as plt
 import copy
+from scipy.integrate import solve_ivp
 
 class IOCRN_MassAction:
     def __init__(self, stoichiometry_reactants, stoichiometry_products, parameters, input_influence_matrix, output_species):
@@ -40,7 +41,17 @@ class IOCRN_MassAction:
     def transient_response(self, inputs, initial_condition, time_horizon, return_states=False):
         outputs = []
         for input in inputs:
-            solution = odeint(lambda concentrations, time: self.rate_function(time, concentrations, input), initial_condition, time_horizon)
+            # solution = odeint(lambda concentrations, time: self.rate_function(time, concentrations, input), initial_condition, time_horizon)
+            # rewrite with solve_ivp
+            solution = solve_ivp(
+                lambda t, y: self.rate_function(t, y, input),  # Function to integrate
+                (time_horizon[0], time_horizon[-1]),  # Time span
+                initial_condition,  # Initial condition
+                t_eval=time_horizon,  # Specific time points where solution is computed
+                method="LSODA",  # Use LSODA to match odeint behavior
+            ).y.T
+
+
             output = solution[:, self.output_species - 1]
             outputs.append(output)  
         if return_states:

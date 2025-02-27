@@ -36,4 +36,5 @@ class ParameterSequenceGenerator(torch.nn.Module):
 def map_index_to_parameter(indices, parameter_grid):
     # indices is a 2D integer tensor with shape (num_samples, parameter_size)
     # parameter_grid is a 2D array with shape (parameter_size, grid_size)
+    indices = indices.cpu()
     return parameter_grid[np.arange(parameter_grid.shape[0]).reshape(-1, 1), indices.detach().T.numpy()]
