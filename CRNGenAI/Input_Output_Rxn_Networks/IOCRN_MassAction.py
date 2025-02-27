@@ -3,6 +3,7 @@ import sympy as sp
 from scipy.optimize import fsolve
 from scipy.integrate import odeint
 import matplotlib.pyplot as plt
+import copy
 
 class IOCRN_MassAction:
     def __init__(self, stoichiometry_reactants, stoichiometry_products, parameters, input_influence_matrix, output_species):
@@ -16,6 +17,9 @@ class IOCRN_MassAction:
         self.parameters = parameters
         self.input_influence_matrix = input_influence_matrix
         self.output_species = output_species
+
+    def clone(self):
+        return copy.deepcopy(self)
 
     def propensity_function(self, concentrations, inputs):
         return self.parameters * np.prod(np.power(concentrations, self.stoichiometry_reactants.T), axis=1) * np.prod(np.power(inputs, self.input_influence_matrix.T), axis=1)
@@ -33,12 +37,14 @@ class IOCRN_MassAction:
     def rate_function(self, time, concentrations, inputs):
         return np.matmul(self.stoichiometry_matrix, self.propensity_function(concentrations, inputs))
     
-    def transient_response(self, inputs, initial_condition, time_horizon):
+    def transient_response(self, inputs, initial_condition, time_horizon, return_states=False):
         outputs = []
         for input in inputs:
             solution = odeint(lambda concentrations, time: self.rate_function(time, concentrations, input), initial_condition, time_horizon)
             output = solution[:, self.output_species - 1]
             outputs.append(output)  
+        if return_states:
+            return outputs, solution
         return outputs
 
     def dose_response(self, inputs, initial_guess, plot_flag = False, axis=None):
