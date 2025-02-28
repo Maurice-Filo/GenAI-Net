@@ -60,7 +60,7 @@ class IOCRN_MassAction:
             ).y.T
             output = solution[:, self.output_species - 1]
             if output.shape[0] < time_horizon.shape[0]:
-                output = np.pad(output, ((0, time_horizon.shape[0] - output.shape[0]), (0,0)), mode='edge')
+                output = np.pad(output, ((0, time_horizon.shape[0] - output.shape[0]), (0,0)), mode='constant', constant_values=1000.0)
             outputs.append(output)  
 
         if return_states:
