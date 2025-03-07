@@ -1,9 +1,11 @@
 CRNGenAI/Testing/SavedModels
+CRNGenAI/Testing/*.pt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
 
 # C extensions
 *.so
