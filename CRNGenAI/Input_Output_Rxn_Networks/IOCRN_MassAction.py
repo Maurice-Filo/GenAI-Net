@@ -55,8 +55,8 @@ class IOCRN_MassAction:
 
     def add_reaction(self, reaction):
         # reaction is a dictionary with keys 'reactants index', 'products index', 'input influence index', 'rate constant'
-        reactant1_index, reactant2_index = self.map_index_to_species(reaction['reactants index'].cpu().numpy())
-        product1_index, product2_index = self.map_index_to_species(reaction['products index'].cpu().numpy())
+        reactant1_index, reactant2_index = self.map_index_to_species(reaction['reactants index'])
+        product1_index, product2_index = self.map_index_to_species(reaction['products index'])
         self.stoichiometry_reactants = np.pad(self.stoichiometry_reactants, ((0, 0), (0, 1)), mode='constant')
         self.stoichiometry_products = np.pad(self.stoichiometry_products, ((0, 0), (0, 1)), mode='constant')
         self.input_influence_matrix = np.pad(self.input_influence_matrix, ((0, 0), (0, 1)), mode='constant')

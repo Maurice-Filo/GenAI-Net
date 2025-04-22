@@ -45,10 +45,9 @@ class CRNCompletor(CRNGenerator):
                 action_set.append(parameter[j, i])
             for j in range(self.num_reactions):
                 action_set.append({ 
-                    'reactants index': indices_structure[i, 0, j],
-                    'products index': indices_structure[i, 1, j],
-                    'input influence index': indices_structure[i, 2, j],
+                    'reactants index': indices_structure[i, 0, j].cpu().numpy(),
+                    'products index': indices_structure[i, 1, j].cpu().numpy(),
+                    'input influence index': indices_structure[i, 2, j].cpu().numpy(),
                     'rate constant': parameter[j, i]})
             batched_action_set.append(action_set)
         return batched_action_set, total_logP, total_entropy
-           
