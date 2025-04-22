@@ -7,7 +7,9 @@ import copy
 from scipy.integrate import solve_ivp
 
 class IOCRN_MassAction:
-    def __init__(self, stoichiometry_reactants, stoichiometry_products, parameters, input_influence_matrix, output_species):
+    def __init__(self, stoichiometry_reactants, stoichiometry_products, parameters, input_influence_matrix, output_species, species_labels, inputs_labels):
+        self.species_labels = species_labels
+        self.inputs_labels = inputs_labels
         self.num_species = stoichiometry_reactants.shape[0]
         self.num_reactions = stoichiometry_reactants.shape[1]
         self.num_inputs = input_influence_matrix.shape[0]
@@ -18,9 +20,61 @@ class IOCRN_MassAction:
         self.parameters = parameters
         self.input_influence_matrix = input_influence_matrix
         self.output_species = output_species
+        self.num_unknown_parameters = np.isnan(parameters).sum()
+        self.nan_indices = np.where(np.isnan(parameters))[0]
 
     def clone(self):
         return copy.deepcopy(self)
+    
+    def get_complexes_range(self):
+        return self.num_species * (self.num_species + 3) // 2 + 1
+    
+    def map_index_to_species(self, index):
+        species1_index = np.floor((2*self.num_species + 3 - np.sqrt((2*self.num_species + 3)**2 - 8 * index)) / 2).astype(np.uint64)
+        species2_index = (index - (species1_index * (2*self.num_species + 1 - species1_index)) / 2).astype(np.uint64)
+        return species1_index, species2_index
+
+    def set_next_unknown_parameter(self, value):
+        if self.num_unknown_parameters == 0:
+            raise ValueError("All parameters are set.")
+        if isinstance(value, dict):
+            raise Exception(str(self.nan_indices)+str(type(value))+str(self.num_unknown_parameters))
+        self.set_parameters(self.nan_indices[0], value)
+
+    def tune_reaction(self, reaction_index, value):
+        if reaction_index < 0 or reaction_index >= self.num_reactions:
+            raise ValueError("Reaction index out of bounds.")
+        if value <= 0:
+            raise ValueError("Rate constant must be positive.")
+        self.parameters[reaction_index] = value
+
+    def set_parameters(self, index, value):
+        self.parameters[index] = value
+        self.num_unknown_parameters = np.isnan(self.parameters).sum()
+        self.nan_indices = np.where(np.isnan(self.parameters))[0]
+
+    def add_reaction(self, reaction):
+        # reaction is a dictionary with keys 'reactants index', 'products index', 'input influence index', 'rate constant'
+        reactant1_index, reactant2_index = self.map_index_to_species(reaction['reactants index'].cpu().numpy())
+        product1_index, product2_index = self.map_index_to_species(reaction['products index'].cpu().numpy())
+        self.stoichiometry_reactants = np.pad(self.stoichiometry_reactants, ((0, 0), (0, 1)), mode='constant')
+        self.stoichiometry_products = np.pad(self.stoichiometry_products, ((0, 0), (0, 1)), mode='constant')
+        self.input_influence_matrix = np.pad(self.input_influence_matrix, ((0, 0), (0, 1)), mode='constant')
+        if reactant1_index > 0:     # reactant1_index is 0 if it is the empty set
+            self.stoichiometry_reactants[np.uint64(reactant1_index-1), -1] += 1
+        if reactant2_index > 0:     # reactant2_index is 0 if it is the empty set
+            self.stoichiometry_reactants[np.uint64(reactant2_index-1), -1] += 1
+        if product1_index > 0:      # product1_index is 0 if it is the empty set
+            self.stoichiometry_products[np.uint64(product1_index-1), -1] += 1
+        if product2_index > 0:      # product2_index is 0 if it is the empty set
+            self.stoichiometry_products[np.uint64(product2_index-1), -1] += 1
+        if reaction['input influence index'] > 0:   # input influence index is 0 if no input influences the reaction
+            self.input_influence_matrix[np.uint64(reaction['input influence index']-1), -1] = 1
+        self.stoichiometry_matrix = self.stoichiometry_products - self.stoichiometry_reactants
+        self.num_unknown_parameters = np.isnan(self.parameters).sum()
+        self.nan_indices = np.where(np.isnan(self.parameters))[0]
+        self.num_reactions += 1
+        self.parameters = np.append(self.parameters, reaction['rate constant'])
 
     def propensity_function(self, concentrations, inputs):
         return self.parameters * np.prod(np.power(concentrations, self.stoichiometry_reactants.T), axis=1) * np.prod(np.power(inputs, self.input_influence_matrix.T), axis=1)
@@ -66,10 +120,7 @@ class IOCRN_MassAction:
         if return_states:
             return outputs, solution
         return outputs
-
-
-
-    
+  
     # def transient_response(self, inputs, initial_condition, time_horizon, return_states=False):
     #     outputs = []
     #     for input in inputs:
@@ -107,22 +158,22 @@ class IOCRN_MassAction:
             axis.plot(inputs, outputs, label=label)
         return outputs
     
-    def print_reactions(self, species, inputs):
-        print(f'Inputs: {inputs}')
-        print(f'Species: {species}')
-        print(f'Output Species: {[species[i-1] for i in self.output_species]}')
+    def print_reactions(self):
+        print(f'Inputs: {self.inputs_labels}')
+        print(f'Species: {self.species_labels}')
+        print(f'Output Species: {[self.species_labels[i-1] for i in self.output_species]}')
         for j in range(self.num_reactions):
             reactants = []
             products = []
             influencing_inputs = []
             for i in range(self.num_species):
                 if self.stoichiometry_reactants[i, j] > 0:
-                    reactants.append((species[i], self.stoichiometry_reactants[i, j]))
+                    reactants.append((self.species_labels[i], self.stoichiometry_reactants[i, j]))
                 if self.stoichiometry_products[i, j] > 0:
-                    products.append((species[i], self.stoichiometry_products[i, j]))
+                    products.append((self.species_labels[i], self.stoichiometry_products[i, j]))
             for k in range(self.num_inputs):
                 if self.input_influence_matrix[k, j] > 0:
-                    influencing_inputs.append(inputs[k])
+                    influencing_inputs.append(self.inputs_labels[k])
             reactant_str = ' + '.join(f'{coeff} {sp}' if coeff > 1 else sp for sp, coeff in reactants)
             product_str = ' + '.join(f'{coeff} {sp}' if coeff > 1 else sp for sp, coeff in products)
             influencing_inputs_str = ' '.join(f'{inp}' for inp in influencing_inputs)
@@ -130,7 +181,7 @@ class IOCRN_MassAction:
                 reactant_str = '0'
             if not product_str:
                 product_str = '0'
-            print(f'Reaction {j + 1}: {reactant_str} -> {product_str} ; Rate Constant: {self.parameters[j]}{influencing_inputs_str}')
+            print(f'Reaction {j}: {reactant_str} -> {product_str} ; Rate Constant: {self.parameters[j]}{influencing_inputs_str}')
 
     def print_ODEs(self, species, parameters, inputs):
         S = sp.Matrix(self.stoichiometry_matrix)
