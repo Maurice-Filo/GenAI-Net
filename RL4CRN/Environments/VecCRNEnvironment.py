@@ -1,7 +1,7 @@
 from pathos.multiprocessing import ProcessingPool as Pool
 import os
 import time
-from RL4CRN.Abstract.AbstractVecCRNEnvironment import AbstractVecCRNEnvironment
+from RL4CRN.Environments.AbstractVecCRNEnvironment import AbstractVecCRNEnvironment
 
 class VecCRNEnvironment(AbstractVecCRNEnvironment):
     def __init__(self, envs, N_CPUs=os.cpu_count(), logger=None):
@@ -13,8 +13,11 @@ class VecCRNEnvironment(AbstractVecCRNEnvironment):
         tic_reward = time.time()
         outputs = self.pool.map(routine, [e.state for e in self.envs])
         for i, env in enumerate(self.envs):
-            env.state.last_trajectories = outputs[i][1]
-            env.state.last_time_horizon = outputs[i][2]
+            env.state.last_task_info = outputs[i][1]
+            # for attr, value in outputs[i][1].items():
+            #     setattr(env.state, attr, value)
+            # env.state.last_trajectories = outputs[i][1]
+            # env.state.last_time_horizon = outputs[i][2]
         rewards = [output[0] for output in outputs]
         toc_reward = time.time()
         if self.logger is not None:

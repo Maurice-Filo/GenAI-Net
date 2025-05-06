@@ -1,5 +1,5 @@
 import numpy as np
-from RL4CRN.Abstract.AbstractAgent import AbstractAgent
+from RL4CRN.Agents.AbstractAgent import AbstractAgent
 
 class RandomAgent(AbstractAgent):
     """Random agent for CRN environments.

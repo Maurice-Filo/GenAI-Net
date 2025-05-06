@@ -10,8 +10,9 @@ def performance_metric(r, y):
 
     # reshape weight to match the shape of y
     weight = np.repeat(weight, y.shape[1]*y.shape[2]).reshape(y.shape[0], y.shape[1], y.shape[2])
-
-    return (weight*np.abs(r - y)).mean()
+    r_reshaped = r.reshape(1, r.shape[0], 1)
+    r_tiled = np.tile(r_reshaped, (y.shape[0], 1, 1))
+    return (weight*np.abs(r_tiled - y)).mean()
 
 def ss_metric(r, y_ss):
     return np.abs(r - y_ss)
@@ -22,4 +23,5 @@ def dynamic_tracking_error(crn, inputs, initial_condition, time_horizon, r, thre
     y = np.maximum(y,0)
     y[np.isnan(y)] = threshold
     y[np.isinf(y)] = threshold
-    return performance_metric(r, y), y, time_horizon
+    perf = performance_metric(r, y)
+    return perf, {'task': 'transients', 'reward': perf, 'trajectories': y, 'time_horizon': time_horizon, 'setpoint': r}

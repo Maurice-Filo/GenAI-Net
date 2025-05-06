@@ -1,6 +1,7 @@
 import torch
 import time
-from RL4CRN.Abstract.AbstractAgent import AbstractAgent
+import numpy as np
+from RL4CRN.Agents.AbstractAgent import AbstractAgent
 
 class RecurrentAgent(AbstractAgent):
     def __init__(self, env, completor, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_weight=0.01, entropy_update_coefficient=0.9, entropy_schedule=20, minimum_entropy_weight=1, risk=0.8, risk_update=0.00, max_risk=1.00, risk_schedule=20):
@@ -70,7 +71,6 @@ class RecurrentAgent(AbstractAgent):
         entropy_mean = torch.mean(self.last_entropy)
         n_samples = self.last_logP.shape[0]
         # Compute the loss that is used to compute the gradient
-        # loss_for_gradient =  (loss_for_each_sample.detach() * self.last_logP) - self.entropy_weight * entropy_mean - (self.entropy_weight * entropy_mean.detach() * self.last_logP)
         loss_for_gradient =  (loss_for_each_sample * self.last_logP) - self.entropy_weight * entropy_mean - (self.entropy_weight * entropy_mean.detach() * self.last_logP)
         # Risky policy gradient
         top_k = torch.topk(loss_for_each_sample, int(n_samples * (1.-self.risk)), largest=False).indices
@@ -97,7 +97,7 @@ class RecurrentAgent(AbstractAgent):
             self.logger.log_metric('backward_time', toc_backward - tic_backward)
             best = loss_for_each_sample[top_k[0]]
             worst = loss_for_each_sample[top_k[-1]]
-            avg = loss_for_each_sample[top_k].mean()
+            avg = loss_for_each_sample[top_k].float().mean()
             self.logger.log_metric('best_loss', best.item())
             self.logger.log_metric('worst_loss', worst.item())
             self.logger.log_metric('avg_loss', avg.item())
