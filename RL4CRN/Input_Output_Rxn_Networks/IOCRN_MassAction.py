@@ -23,6 +23,7 @@ class IOCRN_MassAction:
         self.num_unknown_parameters = np.isnan(parameters).sum()
         self.nan_indices = np.where(np.isnan(parameters))[0]
         self.last_trajectories = None
+        self.last_time_horizon = None
 
     def clone(self):
         return copy.deepcopy(self)
@@ -45,6 +46,7 @@ class IOCRN_MassAction:
     def tune_reaction(self, reaction_index, value):
         # Flush the trajectory memory
         self.last_trajectories = None
+        self.last_time_horizon = None
 
         if reaction_index < 0 or reaction_index >= self.num_reactions:
             raise ValueError("Reaction index out of bounds.")
@@ -55,6 +57,7 @@ class IOCRN_MassAction:
     def set_parameters(self, index, value):
         # Flush the trajectory memory
         self.last_trajectories = None
+        self.last_time_horizon = None
         
         self.parameters[index] = value
         self.num_unknown_parameters = np.isnan(self.parameters).sum()
@@ -63,6 +66,7 @@ class IOCRN_MassAction:
     def add_reaction(self, reaction):
         # Flush the trajectory memory
         self.last_trajectories = None
+        self.last_time_horizon = None
         # reaction is a dictionary with keys 'reactants index', 'products index', 'input influence index', 'rate constant'
         reactant1_index, reactant2_index = self.map_index_to_species(reaction['reactants index'])
         product1_index, product2_index = self.map_index_to_species(reaction['products index'])
@@ -109,7 +113,10 @@ class IOCRN_MassAction:
         def stop_if_unstable(t, y):
             """Event function to stop integration if solution becomes unstable."""
             threshold = 10000  # Adjust as needed
-            return threshold - np.max(y)
+            outputs = threshold - np.max(y)
+            self.last_trajectories = outputs
+            self.last_time_horizon = time_horizon
+            return outputs
         
         stop_if_unstable.terminal = True  # Stop integration if triggered
         stop_if_unstable.direction = -1   # Trigger when exceeding threshold
@@ -128,10 +135,11 @@ class IOCRN_MassAction:
                 output = np.pad(output, ((0, time_horizon.shape[0] - output.shape[0]), (0,0)), mode='constant', constant_values=1000.0)
             outputs.append(output)  
 
+        self.last_trajectories = outputs
+        self.last_time_horizon = time_horizon
         if return_states:
             return outputs, solution
         
-        self.last_trajectories = outputs
         return outputs
     
     def plot_transient_response(self, fig=None, axes=None):
@@ -139,11 +147,14 @@ class IOCRN_MassAction:
             raise ValueError("No transient response data available. Run transient_response() first.")
         if fig is None and axes is None:
             fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
+            if not isinstance(axes, (list, np.ndarray)):
+                axes = [axes]
         for i in range(self.num_outputs):
-            axes[i].plot(self.last_trajectories[i])
-            axes[i].set_title(f"Transient Response of Output Species {self.output_species[i]}")
-            axes[i].set_xlabel("Time")
-            axes[i].set_ylabel("Concentration")
+            for j in range(len(self.last_trajectories)):
+                axes[i].plot(self.last_time_horizon, self.last_trajectories[j], alpha=0.1)
+                axes[i].set_title(f"Transient Response of Output Species {self.output_species[i]}")
+                axes[i].set_xlabel("Time")
+                axes[i].set_ylabel("Concentration")
         plt.tight_layout()
         return fig, axes
 

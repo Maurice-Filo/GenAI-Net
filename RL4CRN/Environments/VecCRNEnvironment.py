@@ -1,9 +1,9 @@
 from pathos.multiprocessing import ProcessingPool as Pool
 import os
 import time
-from RL4CRN.Abstract.AbstractVecCRNEnvironment import AbstractCRNEnvironment
+from RL4CRN.Abstract.AbstractVecCRNEnvironment import AbstractVecCRNEnvironment
 
-class VecEnv():
+class VecCRNEnvironment(AbstractVecCRNEnvironment):
     def __init__(self, envs, N_CPUs=os.cpu_count(), logger=None):
         super().__init__(envs, logger=logger)
         self.N_CPUs = N_CPUs
@@ -11,7 +11,11 @@ class VecEnv():
     
     def get_reward(self, routine):
         tic_reward = time.time()
-        rewards = self.pool.map(routine, [e.state for e in self.envs])
+        outputs = self.pool.map(routine, [e.state for e in self.envs])
+        for i, env in enumerate(self.envs):
+            env.state.last_trajectories = outputs[i][1]
+            env.state.last_time_horizon = outputs[i][2]
+        rewards = [output[0] for output in outputs]
         toc_reward = time.time()
         if self.logger is not None:
             self.logger.log_metric('Reward Time', toc_reward - tic_reward)
@@ -21,10 +25,10 @@ class VecEnv():
         self.pool.close()
         self.pool.join()
 
-class SerialVecEnv(AbstractCRNEnvironment):
+class SerialVecCRNEnvironment(AbstractVecCRNEnvironment):
     def get_reward(self, routine):
         tic_reward = time.time()
-        rewards = [routine(env.state) for env in self.envs]
+        rewards = [routine(env.state)[0] for env in self.envs]
         toc_reward = time.time()
         if self.logger is not None:
             self.logger.log_metric('Reward Time', toc_reward - tic_reward)

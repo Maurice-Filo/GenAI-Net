@@ -3,11 +3,12 @@ import time
 from RL4CRN.Abstract.AbstractAgent import AbstractAgent
 
 class RecurrentAgent(AbstractAgent):
-    def __init__(self, env, completor, logger=None, learning_rate=1e-3, entropy_weight=0.01, entropy_update_coefficient=0.9, entropy_schedule=20, minimum_entropy_weight=1, risk=0.8, risk_update=0.00, max_risk=1.00, risk_schedule=20):
+    def __init__(self, env, completor, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_weight=0.01, entropy_update_coefficient=0.9, entropy_schedule=20, minimum_entropy_weight=1, risk=0.8, risk_update=0.00, max_risk=1.00, risk_schedule=20):
         """
         Initialize the RecurrentAgent with the environment and the completor model.
         :param env: The environment to interact with.
         :param completor: The model used to generate reactions. The completor must be an instance of the CRNCompletor class.
+        :param allow_input_influence: Whether to allow input influence on the generated reaction.
         :param logger: The logger to log the training process. This is a comet.ml logger
         :param learning_rate: The learning rate for the optimizer.
         :param entropy_weight: The initial weight for the entropy term in the loss function.
@@ -22,6 +23,7 @@ class RecurrentAgent(AbstractAgent):
         super(RecurrentAgent, self).__init__()
         self.env = env
         self.completor = completor
+        self.allow_input_influence = allow_input_influence
         self.queue = []
         self.last_logP = None
         self.last_entropy = None
@@ -68,10 +70,11 @@ class RecurrentAgent(AbstractAgent):
         entropy_mean = torch.mean(self.last_entropy)
         n_samples = self.last_logP.shape[0]
         # Compute the loss that is used to compute the gradient
-        loss_for_gradient =  (loss_for_each_sample.detach() * self.last_logP) - self.entropy_weight * entropy_mean - (self.entropy_weight * entropy_mean.detach() * self.last_logP)
+        # loss_for_gradient =  (loss_for_each_sample.detach() * self.last_logP) - self.entropy_weight * entropy_mean - (self.entropy_weight * entropy_mean.detach() * self.last_logP)
+        loss_for_gradient =  (loss_for_each_sample * self.last_logP) - self.entropy_weight * entropy_mean - (self.entropy_weight * entropy_mean.detach() * self.last_logP)
         # Risky policy gradient
         top_k = torch.topk(loss_for_each_sample, int(n_samples * (1.-self.risk)), largest=False).indices
-        loss_for_gradient = torch.mean(loss_for_gradient[top_k]).backward()
+        torch.mean(loss_for_gradient[top_k]).backward()
         # Clip gradients
         # torch.nn.utils.clip_grad_norm_(MyCRN_Generator.parameters(), 0.01)
         self.optimizer.step()
