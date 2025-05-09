@@ -25,7 +25,7 @@ def map_indices_to_reactions(indices, num_samples, num_species, num_reactions, n
         stoichiometry_products1 = np.zeros((num_samples, num_species, num_reactions), dtype=np.int16)
         stoichiometry_products2 = np.zeros((num_samples, num_species, num_reactions), dtype=np.int16)
         input_influence_matrix = np.zeros((num_samples, num_inputs, num_reactions), dtype=np.int16)
-         # Extract species indices
+        # Extract species indices
         species1_indices = torch.floor((2*num_species + 3 - torch.sqrt((2*num_species + 3)**2 - 8 * indices[:, :2, :])) / 2).long()
         species2_indices = (indices[:, :2, :] - (species1_indices * (2*num_species + 1 - species1_indices)) / 2).long()
         # Create masks for reactants, products, and inputs where indices > 0

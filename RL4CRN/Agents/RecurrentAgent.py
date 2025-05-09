@@ -70,8 +70,10 @@ class RecurrentAgent(AbstractAgent):
         loss_for_each_sample = torch.tensor(rewards, requires_grad=False).to(self.completor.device)
         entropy_mean = torch.mean(self.last_entropy)
         n_samples = self.last_logP.shape[0]
+        # Compute the baseline for the loss
+        b = loss_for_each_sample.float().mean().detach()
         # Compute the loss that is used to compute the gradient
-        loss_for_gradient =  (loss_for_each_sample * self.last_logP) - self.entropy_weight * entropy_mean - (self.entropy_weight * entropy_mean.detach() * self.last_logP)
+        loss_for_gradient =  ((loss_for_each_sample - b) * self.last_logP) - self.entropy_weight * entropy_mean - (self.entropy_weight * entropy_mean.detach() * self.last_logP)
         # Risky policy gradient
         top_k = torch.topk(loss_for_each_sample, int(n_samples * (1.-self.risk)), largest=False).indices
         torch.mean(loss_for_gradient[top_k]).backward()

@@ -14,10 +14,6 @@ class VecCRNEnvironment(AbstractVecCRNEnvironment):
         outputs = self.pool.map(routine, [e.state for e in self.envs])
         for i, env in enumerate(self.envs):
             env.state.last_task_info = outputs[i][1]
-            # for attr, value in outputs[i][1].items():
-            #     setattr(env.state, attr, value)
-            # env.state.last_trajectories = outputs[i][1]
-            # env.state.last_time_horizon = outputs[i][2]
         rewards = [output[0] for output in outputs]
         toc_reward = time.time()
         if self.logger is not None:
