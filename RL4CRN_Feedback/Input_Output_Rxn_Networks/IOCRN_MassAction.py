@@ -23,8 +23,8 @@ class IOCRN_MassAction:
         self.num_unknown_parameters = np.isnan(parameters).sum()
         self.nan_indices = np.where(np.isnan(parameters))[0]
         self.last_task_info = {}
-        # Construct the reactions indices
-
+        self.reactions_indices = self.map_stoichiometry_to_reactions(stoichiometry_reactants, stoichiometry_products)
+        self.list_influenced_reactions = self.map_input_influence_matrix_to_reactions(self.reactions_indices, input_influence_matrix)
 
     def clone(self):
         return copy.deepcopy(self)
@@ -49,72 +49,67 @@ class IOCRN_MassAction:
     def set_parameters(self, index, value):
         # Flush the trajectory memory
         self.last_task_info = {}
-        
         self.parameters[index] = value
         self.num_unknown_parameters = np.isnan(self.parameters).sum()
         self.nan_indices = np.where(np.isnan(self.parameters))[0]
+
+    def map_input_influence_matrix_to_reactions(self, reactions_indices, input_influence_matrix):
+        num_inputs = input_influence_matrix.shape[0]
+        u_idx, r_idx = np.nonzero(input_influence_matrix)
+        categories_idx = reactions_indices[r_idx]
+        if u_idx.size == 0:
+            return [np.array([], dtype=np.uint64) for _ in range(num_inputs)]
+        sort_order = np.argsort(u_idx)
+        u_sorted = u_idx[sort_order]
+        cats_sorted = categories_idx[sort_order]
+        counts = np.bincount(u_sorted, minlength=num_inputs)
+        split_arrays = np.split(cats_sorted, np.cumsum(counts[:-1]))
+        return split_arrays
 
     def get_complexes_range(self):
         return self.num_species * (self.num_species + 3) // 2 + 1
     
     def get_reactions_range(self):
         N = self.get_complexes_range() - 1
-        return (N+1)*N -2 + 1
+        return (N+1)*N + 1
     
-    def map_complex_to_species(self, index):
-        """Maps a complex index to the corresponding species indices.
-        Args:
-            index (int): The complex index.
-        Returns:
-            tuple: A tuple containing the indices of the two species involved in the complex.
-        """
-        species1_index = np.floor((2*self.num_species + 3 - np.sqrt((2*self.num_species + 3)**2 - 8 * index)) / 2).astype(np.uint64)
-        species2_index = (index - (species1_index * (2*self.num_species + 1 - species1_index)) / 2).astype(np.uint64)
-        return species1_index, species2_index
+    def map_complex_to_species(self, idx):
+        species1_idx = np.floor((2*self.num_species + 3 - np.sqrt((2*self.num_species + 3)**2 - 8 * idx)) / 2).astype(np.uint64)
+        species2_idx = (idx - (species1_idx * (2*self.num_species + 1 - species1_idx)) / 2).astype(np.uint64)
+        return species1_idx, species2_idx
     
-    def map_species_to_complex(self, species_indices):
-        """Maps a pair of species indices to the corresponding complex index.
-        Args:
-            species_indices (tuple): A tuple containing the indices of the two species.
-        Returns:
-            int: The complex index.
-        """
-        return ((species_indices[0] * (2*self.num_species + 1 - species_indices[0])) / 2 + species_indices[1]).astype(np.uint64)
+    def map_species_to_complex(self, species1_idx, species2_idx):
+        return ((species1_idx * (2*self.num_species + 1 - species1_idx)) / 2 + species2_idx).astype(np.uint64)
     
-    def map_reaction_to_complexes(self, index):
-        """Maps a reaction index to the corresponding reactants and products complexes indices.
-        Args:
-            index (int): The reaction index.
-        Returns:
-            tuple: A tuple containing the indices of the reactants and products complexes.
-        """
+    def map_reaction_to_complexes(self, idx):
         N = self.get_complexes_range() - 1
-        reactants_index = np.floor(index/N).astype(np.uint64)
-        remainder = index % N
-        products_index = remainder if remainder < reactants_index else remainder + 1
-        return reactants_index, products_index
+        if idx <= N:
+            reactants_idx = 0
+            products_idx = idx
+        else: 
+            reactants_idx = np.uint64(np.floor((idx - N - 1)/N) + 1)
+            remainder = np.uint64((idx - N - 1) % N)
+            products_idx = remainder + (remainder >= reactants_idx).astype(np.uint64)
+        return reactants_idx, products_idx
     
-    def map_complexes_to_reaction(self, complexes_indices):
-        """Maps a pair of complexes indices to the corresponding reaction index.
-        Args:
-            complexes_indices (tuple): A tuple containing the indices of the reactants and products complexes.
-        Returns:
-            int: The reaction index.
-        """
+    def map_complexes_to_reaction(self, reactants_idx, products_idx):
         N = self.get_complexes_range() - 1
-        return complexes_indices[0] * N + complexes_indices[1] if complexes_indices[0] > complexes_indices[1] else complexes_indices[0] * N + complexes_indices[1] - 1
+        if reactants_idx == 0:
+            reaction_idx = products_idx
+        else:
+            reaction_idx = np.uint64(reactants_idx * N + products_idx + 1 - (products_idx > reactants_idx))
+        return reaction_idx
     
-    def map_reaction_to_species(self, index):
-        """Maps a reaction index to the corresponding reactants and products species indices.
-        Args:
-            index (int): The reaction index.
-        Returns:
-            tuple: A tuple containing the indices of the reactants and products species.
-        """
-        reactants_index, products_index = self.map_reaction_to_complexes(index)
-        reactant1_index, reactant2_index = self.map_complex_to_species(reactants_index)
-        product1_index, product2_index = self.map_complex_to_species(products_index)
-        return reactant1_index, reactant2_index, product1_index, product2_index
+    def map_reaction_to_species(self, idx):
+        reactants_idx, products_idx = self.map_reaction_to_complexes(idx)
+        reactant1_idx, reactant2_idx = self.map_complex_to_species(reactants_idx)
+        product1_idx, product2_idx = self.map_complex_to_species(products_idx)
+        return reactant1_idx, reactant2_idx, product1_idx, product2_idx
+    
+    def map_species_to_reaction(self, reactant1_idx, reactant2_idx, product1_idx, product2_idx):
+        reactants_idx = self.map_species_to_complex(reactant1_idx, reactant2_idx)
+        products_idx = self.map_species_to_complex(product1_idx, product2_idx)
+        return self.map_complexes_to_reaction(reactants_idx, products_idx)
 
     def add_reaction(self, reaction, mode='complex index'):
         # Flush the trajectory memory
@@ -124,17 +119,19 @@ class IOCRN_MassAction:
         match mode:
             case 'complex index':
                 # reaction is a dictionary with keys 'reactants index', 'products index', 'input influence index', 'rate constant'
-                reactant1_index, reactant2_index = self.map_complex_to_species(reaction['reactants index'])
-                product1_index, product2_index = self.map_complex_to_species(reaction['products index'])
+                reactant1_idx, reactant2_idx = self.map_complex_to_species(reaction['reactants index'])
+                product1_idx, product2_idx = self.map_complex_to_species(reaction['products index'])
             case 'reaction index':
                 # reaction is a dictionary with keys 'reaction index', 'input influence index', 'rate constant'
-                reactant1_index, reactant2_index, product1_index, product2_index = self.map_reaction_to_species(reaction['reaction index'])
+                reactant1_idx, reactant2_idx, product1_idx, product2_idx = self.map_reaction_to_species(reaction['reaction index'])
             case 'species index':
                 # reaction is a dictionary with keys 'reactant1_index', 'reactant2_index', 'product1_index', 'product2_index', 'input influence index', 'rate constant'
-                reactant1_index = reaction['reactant1 index']
-                reactant2_index = reaction['reactant2 index']
-                product1_index = reaction['product1 index']
-                product2_index = reaction['product2 index']
+                reactant1_idx = np.uint64(reaction['reactant1 index'])
+                reactant2_idx = np.uint64(reaction['reactant2 index'])
+                product1_idx = np.uint64(reaction['product1 index'])
+                product2_idx = np.uint64(reaction['product2 index'])
+                if reactant1_idx > reactant2_idx or product1_idx > product2_idx:
+                    raise ValueError("Species indices must be in ascending order.")
             case _:
                 raise ValueError("Invalid mode for adding reactions. Use 'species index', 'complex index', or 'reaction index'.")
         
@@ -142,15 +139,9 @@ class IOCRN_MassAction:
         self.stoichiometry_reactants = np.pad(self.stoichiometry_reactants, ((0, 0), (0, 1)), mode='constant')
         self.stoichiometry_products = np.pad(self.stoichiometry_products, ((0, 0), (0, 1)), mode='constant')
         self.input_influence_matrix = np.pad(self.input_influence_matrix, ((0, 0), (0, 1)), mode='constant')
-        if reactant1_index > 0:     # reactant1_index is 0 if it is the empty set
-            self.stoichiometry_reactants[np.uint64(reactant1_index-1), -1] += 1
-        if reactant2_index > 0:     # reactant2_index is 0 if it is the empty set
-            self.stoichiometry_reactants[np.uint64(reactant2_index-1), -1] += 1
-        if product1_index > 0:      # product1_index is 0 if it is the empty set
-            self.stoichiometry_products[np.uint64(product1_index-1), -1] += 1
-        if product2_index > 0:      # product2_index is 0 if it is the empty set
-            self.stoichiometry_products[np.uint64(product2_index-1), -1] += 1
-        if reaction['input influence index'] > 0:   # input influence index is 0 if no input influences the reaction
+        self.stoichiometry_reactants[:, -1] = self.map_species_to_stoichiometry_vector(reactant1_idx, reactant2_idx)
+        self.stoichiometry_products[:, -1] = self.map_species_to_stoichiometry_vector(product1_idx, product2_idx)
+        if reaction['input influence index'] > 0: 
             self.input_influence_matrix[np.uint64(reaction['input influence index']-1), -1] = 1 
 
         # Update the IOCRN   
@@ -159,16 +150,44 @@ class IOCRN_MassAction:
         self.nan_indices = np.where(np.isnan(self.parameters))[0]
         self.num_reactions += 1
         self.parameters = np.append(self.parameters, reaction['rate constant'])
+        reaction_idx = self.map_species_to_reaction(reactant1_idx, reactant2_idx, product1_idx, product2_idx)
+        self.reactions_indices = np.append(self.reactions_indices, reaction_idx)
+        if reaction['input influence index'] > 0:
+            self.add_input_influence(reaction['input influence index'], reaction_idx)
 
-    def map_stoichiometry_to_species(self, stoichiometry):
-        """Maps the stoichiometry coefficient matrix to species indices.
-        Args:
-            stoichiometry (np.ndarray): The stoichiometry matrix.
-        Returns:
-            np.ndarray: A 2D array with the species indices for each reaction. Dimensions: (2, num_reactions).
-        """
+    def add_input_influence(self, input_influence_idx, reaction_idx):
+        idx = input_influence_idx - 1
+        row = self.list_influenced_reactions[idx]
+        if reaction_idx in row:
+            return 
+        self.list_influenced_reactions[idx] = np.append(row, reaction_idx)
+
+    # def add_input_influence(self, input_influence_idx, reaction_idx, pad_val=-1):
+    #     row = self.reactions_indices_influenced_by_inputs[input_influence_idx-1]
+    #     if reaction_idx in row:
+    #         return
+    #     empty_idx = np.where(row == pad_val)[0]
+    #     if empty_idx.size > 0:
+    #         row[empty_idx[0]] = reaction_idx
+    #     else:
+    #         num_inputs, old_len = self.reactions_indices_influenced_by_inputs.shape
+    #         new_len = old_len + 1
+    #         new = np.full((num_inputs, new_len), pad_val, dtype=self.reactions_indices_influenced_by_inputs.dtype)
+    #         new[:, :old_len] = self.reactions_indices_influenced_by_inputs
+    #         new[input_influence_idx-1, old_len] = reaction_idx
+    #         self.reactions_indices_influenced_by_inputs = new
+
+    def map_species_to_stoichiometry_vector(self, species1_idx, species2_idx):
+        stoichiometry_vector = np.zeros(self.num_species, dtype=np.uint64)
+        if species1_idx > 0:
+            stoichiometry_vector[np.uint64(species1_idx - 1)] += 1
+        if species2_idx > 0:
+            stoichiometry_vector[np.uint64(species2_idx - 1)] += 1
+        return stoichiometry_vector
+
+    def map_stoichiometry_matrix_to_species(self, stoichiometry):
         n_species, n_reactions = stoichiometry.shape
-        species_indices = np.zeros((2, n_reactions), dtype=int)
+        species_indices = np.zeros((2, n_reactions), dtype=np.uint64)
         colsum = stoichiometry.sum(axis=0)
         is_1 = stoichiometry == 1
         is_2 = stoichiometry == 2
@@ -194,6 +213,21 @@ class IOCRN_MassAction:
             species_indices[1, idx_single_one] = species
 
         return species_indices
+    
+    def map_stoichiometry_to_complexes(self, stoichiometry):
+        species_indices = self.map_stoichiometry_matrix_to_species(stoichiometry)
+        complexes_indices = np.zeros(self.num_reactions, dtype=np.uint64)
+        for i in range(self.num_reactions):
+            complexes_indices[i] = self.map_species_to_complex(species_indices[0, i], species_indices[1, i])
+        return complexes_indices
+    
+    def map_stoichiometry_to_reactions(self, stoichiometry_reactants, stoichiometry_products):
+        reactants_indices = self.map_stoichiometry_to_complexes(stoichiometry_reactants)
+        products_indices = self.map_stoichiometry_to_complexes(stoichiometry_products)
+        reactions_indices = np.zeros(self.num_reactions, dtype=np.uint64)
+        for i in range(self.num_reactions):
+            reactions_indices[i] = self.map_complexes_to_reaction(reactants_indices[i], products_indices[i])
+        return reactions_indices
 
     def propensity_function(self, concentrations, inputs):
         return self.parameters * np.prod(np.power(concentrations, self.stoichiometry_reactants.T), axis=1) * np.prod(np.power(inputs, self.input_influence_matrix.T), axis=1)
