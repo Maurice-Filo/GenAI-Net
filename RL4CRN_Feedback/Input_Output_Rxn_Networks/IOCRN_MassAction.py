@@ -141,7 +141,7 @@ class IOCRN_MassAction:
         self.input_influence_matrix = np.pad(self.input_influence_matrix, ((0, 0), (0, 1)), mode='constant')
         self.stoichiometry_reactants[:, -1] = self.map_species_to_stoichiometry_vector(reactant1_idx, reactant2_idx)
         self.stoichiometry_products[:, -1] = self.map_species_to_stoichiometry_vector(product1_idx, product2_idx)
-        if reaction['input influence index'] > 0: 
+        if 'input influence index' in reaction.keys(): 
             self.input_influence_matrix[np.uint64(reaction['input influence index']-1), -1] = 1 
 
         # Update the IOCRN   
@@ -152,7 +152,7 @@ class IOCRN_MassAction:
         self.parameters = np.append(self.parameters, reaction['rate constant'])
         reaction_idx = self.map_species_to_reaction(reactant1_idx, reactant2_idx, product1_idx, product2_idx)
         self.reactions_indices = np.append(self.reactions_indices, reaction_idx)
-        if reaction['input influence index'] > 0:
+        if 'input influence index' in reaction.keys():
             self.add_input_influence(reaction['input influence index'], reaction_idx)
 
     def add_input_influence(self, input_influence_idx, reaction_idx):

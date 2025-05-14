@@ -2,10 +2,9 @@ import torch
 import time
 import numpy as np
 from RL4CRN_Feedback.Agents.AbstractAgent import AbstractAgent
-from RL4CRN_Feedback.Policies.BimolecularMassActionPolicy import BimolecularMassActionPolicy
 
 class BimolecularMassActionAgent(AbstractAgent):
-    def __init__(self, env, policy, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_weight=0.01, entropy_update_coefficient=0.9, entropy_schedule=20, minimum_entropy_weight=1, risk=0.8, risk_update=0.00, max_risk=1.00, risk_schedule=20):
+    def __init__(self, env, policy, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_weight=0.01, entropy_update_coefficient=0.9, entropy_schedule=20, minimum_entropy_weight=1, risk=0.8, risk_update=0.00, max_risk=1.00, risk_schedule=20, device=None):
         """
         :param env: The environment to interact with.
         :param policy: The policy model used to generate reactions.
@@ -25,6 +24,8 @@ class BimolecularMassActionAgent(AbstractAgent):
         self.env = env
         self.policy = policy
         self.allow_input_influence = allow_input_influence
+        self.logPs = []
+        self.entropies = []
         # Torch training
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
         self.logger = logger
@@ -45,38 +46,31 @@ class BimolecularMassActionAgent(AbstractAgent):
     def act(self, observation):
         super(BimolecularMassActionAgent, self).act()
         tic_forward = time.time()
-        # Next: Here we should hot-incode the observation appropriately and pass it to the policy
-
-
-
-
-
-
-            # batched_action_set, total_logP, total_entropy = self.completor()
-            # self.queue = batched_action_set
-            # self.last_logP = total_logP
-            # self.last_entropy = total_entropy
-            # toc_forward = time.time()
-            # if self.logger is not None:
-            #     self.logger.log_metric('forward_time', toc_forward - tic_forward)
-        # At each call of act, we return a batch of reactions, one for each environment.
-        action = [lst.pop(0) for lst in self.queue]            
-        return action
+        if self.env.state.num_unknown_parameters > 0:
+            raise NotImplementedError("The case of unknown parameters is not implemented yet.")
+        else:
+            actions, logP, entropy = self.policy(observation, mode='full')
+            self.logPs.append(logP)
+            self.entropies.append(entropy)
+        toc_forward = time.time()
+        if self.logger is not None:
+            self.logger.log_metric('forward_time', toc_forward - tic_forward)           
+        return actions
     
     def update(self, rewards):
-        super(RecurrentAgent, self).update(rewards)
+        super(BimolecularMassActionAgent, self).update(rewards)
         tic_backward = time.time()
         # Retrieve the information from the forward pass
         self.optimizer.zero_grad()
-        loss_for_each_sample = torch.tensor(rewards, requires_grad=False).to(self.completor.device)
-        entropy_mean = torch.mean(self.last_entropy)
-        n_samples = self.last_logP.shape[0]
-        # Compute the baseline for the loss
-        b = loss_for_each_sample.float().mean().detach()
+        final_loss_for_each_sample = torch.tensor(rewards, requires_grad=False).to(self.policy.device)
+        sum_logPs = torch.sum(torch.stack(self.logPs, dim=1), dim=1)
+        sum_entropies = torch.sum(torch.stack(self.entropies, dim=1), dim=1)
+        entropy_mean = torch.mean(sum_entropies)
+        n_samples = self.logPs[0].shape[0]
         # Compute the loss that is used to compute the gradient
-        loss_for_gradient =  ((loss_for_each_sample - b) * self.last_logP) - self.entropy_weight * entropy_mean - (self.entropy_weight * entropy_mean.detach() * self.last_logP)
+        loss_for_gradient =  (final_loss_for_each_sample * sum_logPs) - self.entropy_weight * entropy_mean - (self.entropy_weight * entropy_mean.detach() * sum_logPs)
         # Risky policy gradient
-        top_k = torch.topk(loss_for_each_sample, int(n_samples * (1.-self.risk)), largest=False).indices
+        top_k = torch.topk(final_loss_for_each_sample, int(n_samples * (1.-self.risk)), largest=False).indices
         torch.mean(loss_for_gradient[top_k]).backward()
         # Clip gradients
         # torch.nn.utils.clip_grad_norm_(MyCRN_Generator.parameters(), 0.01)
@@ -93,16 +87,17 @@ class BimolecularMassActionAgent(AbstractAgent):
                 self.risk += self.risk_update
         # Log the training process
         if self.logger is not None:
-            self.logger.log_metric('entropy', self.last_entropy.mean().item())
-            self.logger.log_metric('logP', self.last_logP.mean().item())
+            self.logger.log_metric('entropy', sum_entropies.mean().item())
+            self.logger.log_metric('logP', sum_logPs.mean().item())
             self.logger.log_metric('entropy_weight', self.entropy_weight)
             self.logger.log_metric('risk', self.risk)
             self.logger.log_metric('backward_time', toc_backward - tic_backward)
-            best = loss_for_each_sample[top_k[0]]
-            worst = loss_for_each_sample[top_k[-1]]
-            avg = loss_for_each_sample[top_k].float().mean()
+            best = final_loss_for_each_sample[top_k[0]]
+            worst = final_loss_for_each_sample[top_k[-1]]
+            avg = final_loss_for_each_sample[top_k].float().mean()
             self.logger.log_metric('best_loss', best.item())
             self.logger.log_metric('worst_loss', worst.item())
             self.logger.log_metric('avg_loss', avg.item())
-
-        
+        # Clear the lists of logPs and entropies
+        self.logPs.clear()
+        self.entropies.clear()
