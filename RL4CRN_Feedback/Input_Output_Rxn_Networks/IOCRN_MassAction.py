@@ -142,7 +142,8 @@ class IOCRN_MassAction:
         self.stoichiometry_reactants[:, -1] = self.map_species_to_stoichiometry_vector(reactant1_idx, reactant2_idx)
         self.stoichiometry_products[:, -1] = self.map_species_to_stoichiometry_vector(product1_idx, product2_idx)
         if 'input influence index' in reaction.keys(): 
-            self.input_influence_matrix[np.uint64(reaction['input influence index']-1), -1] = 1 
+            if reaction['input influence index'] > 0:
+                self.input_influence_matrix[np.uint64(reaction['input influence index']-1), -1] = 1 
 
         # Update the IOCRN   
         self.stoichiometry_matrix = self.stoichiometry_products - self.stoichiometry_reactants
@@ -153,7 +154,8 @@ class IOCRN_MassAction:
         reaction_idx = self.map_species_to_reaction(reactant1_idx, reactant2_idx, product1_idx, product2_idx)
         self.reactions_indices = np.append(self.reactions_indices, reaction_idx)
         if 'input influence index' in reaction.keys():
-            self.add_input_influence(reaction['input influence index'], reaction_idx)
+            if reaction['input influence index'] > 0:
+                self.add_input_influence(reaction['input influence index'], reaction_idx)
 
     def add_input_influence(self, input_influence_idx, reaction_idx):
         idx = input_influence_idx - 1
@@ -161,21 +163,6 @@ class IOCRN_MassAction:
         if reaction_idx in row:
             return 
         self.list_influenced_reactions[idx] = np.append(row, reaction_idx)
-
-    # def add_input_influence(self, input_influence_idx, reaction_idx, pad_val=-1):
-    #     row = self.reactions_indices_influenced_by_inputs[input_influence_idx-1]
-    #     if reaction_idx in row:
-    #         return
-    #     empty_idx = np.where(row == pad_val)[0]
-    #     if empty_idx.size > 0:
-    #         row[empty_idx[0]] = reaction_idx
-    #     else:
-    #         num_inputs, old_len = self.reactions_indices_influenced_by_inputs.shape
-    #         new_len = old_len + 1
-    #         new = np.full((num_inputs, new_len), pad_val, dtype=self.reactions_indices_influenced_by_inputs.dtype)
-    #         new[:, :old_len] = self.reactions_indices_influenced_by_inputs
-    #         new[input_influence_idx-1, old_len] = reaction_idx
-    #         self.reactions_indices_influenced_by_inputs = new
 
     def map_species_to_stoichiometry_vector(self, species1_idx, species2_idx):
         stoichiometry_vector = np.zeros(self.num_species, dtype=np.uint64)
@@ -248,40 +235,72 @@ class IOCRN_MassAction:
     def transient_response(self, inputs, initial_condition, time_horizon, return_states=False):
         if not return_states and self.last_task_info is not None:
             return self.last_task_info['trajectories']
-        
+
         outputs = []
+        solutions = []
+        LARGE_NUMBER = 1e4
+
         def stop_if_unstable(t, y):
-            """Event function to stop integration if solution becomes unstable."""
-            threshold = 10000  # Adjust as needed
-            outputs = threshold - np.max(y)
-            self.last_task_info['trajectories'] = outputs
-            self.last_task_info['time_horizon'] = time_horizon
-            return outputs
-        
-        stop_if_unstable.terminal = True  # Stop integration if triggered
-        stop_if_unstable.direction = -1   # Trigger when exceeding threshold
+            """Event function to stop if any state becomes unstable."""
+            max_val = np.max(np.abs(y))
+            if not np.isfinite(max_val):
+                return -1.0  # Force stop
+            return LARGE_NUMBER - max_val  # Triggers when max_val >= LARGE_NUMBER
+
+        stop_if_unstable.terminal = True
+        stop_if_unstable.direction = -1
 
         for input in inputs:
-            solution = solve_ivp(
-                lambda t, y: self.rate_function(t, y, input),  # ODE function
-                (time_horizon[0], time_horizon[-1]),  # Time span
-                initial_condition,  # Initial conditions
-                t_eval=time_horizon,  # Output time points
-                method="LSODA",  # Use LSODA for adaptive stepping
-                events=stop_if_unstable  # Add event to stop on instability
-            ).y.T
-            output = solution[:, self.output_species - 1]
-            if output.shape[0] < time_horizon.shape[0]:
-                output = np.pad(output, ((0, time_horizon.shape[0] - output.shape[0]), (0,0)), mode='constant', constant_values=1000.0)
-            outputs.append(output)  
+            try:
+                solution = solve_ivp(
+                    lambda t, y: self.rate_function(t, y, input),
+                    (time_horizon[0], time_horizon[-1]),
+                    initial_condition,
+                    t_eval=time_horizon,
+                    method="LSODA",
+                    events=stop_if_unstable
+                )
+            except Exception as e:
+                print(f"Solve_ivp failed with error: {e}")
+                solution = None
+
+            num_species = len(self.output_species)
+            output = np.full((len(time_horizon), num_species), LARGE_NUMBER)
+
+            if solution is not None and solution.status >= 0 and solution.t.size > 0:
+                y_full = solution.y.T  # Shape: (steps, all_species)
+                unstable = (
+                    np.any(np.abs(y_full) > LARGE_NUMBER) or
+                    np.any(~np.isfinite(y_full))
+                )
+
+                valid_steps = y_full[:, self.output_species - 1]
+
+                # If stable, fill all
+                if not unstable:
+                    output[:valid_steps.shape[0], :] = valid_steps
+                else:
+                    # Find last valid step
+                    for i in range(valid_steps.shape[0]):
+                        if (np.any(np.abs(y_full[i]) > LARGE_NUMBER) or
+                            np.any(~np.isfinite(y_full[i]))):
+                            output[:i, :] = valid_steps[:i]
+                            # Remaining rows remain LARGE_NUMBER (already filled)
+                            break
+                    else:
+                        output[:valid_steps.shape[0], :] = valid_steps  # fallback
+
+            outputs.append(output)
+            solutions.append(solution)
 
         self.last_task_info['trajectories'] = outputs
         self.last_task_info['time_horizon'] = time_horizon
+
         if return_states:
-            return outputs, solution
-        
+            return outputs, solutions
+
         return outputs
-    
+
     def plot_transient_response(self, fig=None, axes=None):
         if self.last_task_info is None:
             raise ValueError("No transient response data available. Run transient_response() first.")
