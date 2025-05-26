@@ -241,15 +241,6 @@ class IOCRN_MassAction:
         LARGE_NUMBER = 1e4
 
         def stop_if_unstable(t, y):
-            """Event function to stop integration if solution becomes unstable."""
-            threshold = 1000  # Adjust as needed
-            output = threshold - np.max(y)
-            self.last_task_info['trajectories'] = output
-            self.last_task_info['time_horizon'] = time_horizon
-            return output
-        
-        stop_if_unstable.terminal = True  # Stop integration if triggered
-        stop_if_unstable.direction = -1   # Trigger when exceeding threshold
             """Event function to stop if any state becomes unstable."""
             max_val = np.max(np.abs(y))
             if not np.isfinite(max_val):
