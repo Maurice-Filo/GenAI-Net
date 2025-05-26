@@ -1,5 +1,6 @@
 CRNGenAI/Testing/SavedModels
 CRNGenAI/Testing/*.pt
+Testing_Feedback/SavedModels/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
