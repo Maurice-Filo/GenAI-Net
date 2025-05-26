@@ -12,7 +12,7 @@ class FFNN(torch.nn.Module):
             torch.nn.ReLU(), 
             *[torch.nn.Sequential(
                 torch.nn.Linear(hidden_size, hidden_size),
-                torch.nn.Tanh()
+                torch.nn.Tanh() 
             ) for _ in range(num_layers)],
             torch.nn.Linear(hidden_size, output_size)
         )

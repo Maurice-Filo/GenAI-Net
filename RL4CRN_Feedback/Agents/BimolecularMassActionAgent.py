@@ -44,7 +44,7 @@ class BimolecularMassActionAgent(AbstractAgent):
         self.risk_counter = 0
 
     def act(self, observation):
-        super(BimolecularMassActionAgent, self).act()
+        # super(BimolecularMassActionAgent, self).act()
         tic_forward = time.time()
         if self.env.state.num_unknown_parameters > 0:
             raise NotImplementedError("The case of unknown parameters is not implemented yet.")
@@ -58,11 +58,11 @@ class BimolecularMassActionAgent(AbstractAgent):
         return actions
     
     def update(self, rewards):
-        super(BimolecularMassActionAgent, self).update(rewards)
+        # super(BimolecularMassActionAgent, self).update(rewards)
         tic_backward = time.time()
         # Retrieve the information from the forward pass
         self.optimizer.zero_grad()
-        final_loss_for_each_sample = torch.tensor(rewards, requires_grad=False).to(self.policy.device)
+        final_loss_for_each_sample = rewards # TODO check 
         sum_logPs = torch.sum(torch.stack(self.logPs, dim=1), dim=1)
         sum_entropies = torch.sum(torch.stack(self.entropies, dim=1), dim=1)
         entropy_mean = torch.mean(sum_entropies)

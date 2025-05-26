@@ -36,6 +36,108 @@ class BimolecularMassActionPolicy(torch.nn.Module):
         else:
             self.input_influence_head = None
 
+    def verify(self, observation_batch, action, mode='full'):
+        """
+        compute the probability of an action given a state
+        :param state: the state of the environment
+        :param action: the action to compute the probability for
+        :return: the probability of the action given the state
+        """
+        # TODO implement this function
+        # print(self.net(state).shape)
+        # print(action.shape)
+        # print(self.net(state)[action].shape)
+        # o = self.net(state)
+        # return o.gather(2, action.unsqueeze(2)).squeeze(2)
+
+        # simulate a forward pass
+
+        reactions_indices_batch, parameters_batch, reactions_indices_influenced_by_inputs_batch = observation_batch
+        # Compute the multi-hot encoding of the observations
+        reactions_indices_batch_hot, rates_batch_hot = batch_multi_hot(reactions_indices_batch, self.num_possible_reactions, parameters_batch, device=self.device)
+        reactions_indices_influenced_by_inputs_batch_hot = [batch_multi_hot(reactions_indices_influenced_by_inputs_batch[i], self.num_possible_reactions, device=self.device) for i in range(self.num_inputs)]
+        # Construct the input of the neural network
+        x_structure = reactions_indices_batch_hot.to(dtype=torch.float32)
+        x_rate = rates_batch_hot.to(dtype=torch.float32)
+        x_input_influence = torch.cat(reactions_indices_influenced_by_inputs_batch_hot, dim=1).to(dtype=torch.float32)
+        # Encode the input of the neural network
+        x = torch.cat([x_structure, x_rate, x_input_influence], dim=1)
+        encoded = self.encoder(x)
+
+
+        entropy = 0
+        log_probability = 0
+        if mode == 'full':
+
+            ### REACTION STRUCTURE ###
+
+            reaction_structure_logits = self.reaction_structure_head(encoded)
+            masked_reaction_structure_logits = reaction_structure_logits.masked_fill(x_structure.bool(), float('-inf'))
+            reaction_structure_distribution = Categorical(logits=masked_reaction_structure_logits)
+            
+            # get the reaction index from the action
+            if self.allow_input_influence is True:
+                if mode == 'full': # structure and rates
+                    
+                    reaction_index = torch.tensor([a['reaction index'] for a in action], requires_grad=False).to(self.device)
+                elif mode == 'partial': #rates
+                    reaction_index = None
+                else:
+                    raise ValueError(f"Unknown mode: {mode}. Supported modes are: 'full', 'partial'.")
+            else:
+                if mode == 'full': # structure and rates
+                    
+                    reaction_index = torch.tensor([a['reaction index'] for a in action], requires_grad=False).to(self.device)
+                elif mode == 'partial': # rates
+                    reaction_index = None
+                else:
+                    raise ValueError(f"Unknown mode: {mode}. Supported modes are: 'full', 'partial'.")
+            
+            # get the probability of the action
+            log_probability_of_reaction = reaction_structure_distribution.log_prob(reaction_index)
+            reaction_index_hot = batch_multi_hot(reaction_index.unsqueeze(-1).cpu().numpy(), self.num_possible_reactions, intensities=None, device=self.device)
+
+            ## REACTION RATE ##
+        
+            x1 = torch.cat([encoded, reaction_index_hot], dim=-1)
+            continuous_distribution_parameters = self.reaction_rate_head(x1)
+            match self.continuous_distribution:
+                case 'lognormal': # Parameters are mean and log(stddev)
+                    mu, log_sigma = continuous_distribution_parameters[:, 0], continuous_distribution_parameters[:, 1]
+                    sigma = torch.exp(log_sigma)
+                    reaction_rate_distribution = LogNormal(mu, sigma)
+                    # get the reaction rate from the action
+                    action_rate = torch.tensor([a['rate constant'] for a in action], requires_grad=False).to(self.device)
+                    # get the probability of the action
+                    log_probability_of_rate = reaction_rate_distribution.log_prob(action_rate)
+
+                case _:
+                    raise ValueError(f"Unknown continuous distribution: {self.continuous_distribution}. Supported distributions are: 'lognormal'.")
+
+
+            ### INPUT INFLUENCE ###
+
+            # Decode the input influence if applicable
+            if self.allow_input_influence is True:
+                x2 = torch.cat([x1, action_rate.unsqueeze(-1)], dim=-1)
+                input_influence_logits = self.input_influence_head(x2)
+                input_influence_distribution = Categorical(logits=input_influence_logits)
+                # get the input influence index from the action
+                if mode == 'full': # structure and rates
+                    input_influence_index = torch.tensor([a['input influence index'] for a in action], requires_grad=False).to(self.device)
+                else:
+                    raise ValueError(f"Unknown mode: {mode}. Supported modes are: 'full', and NOT 'partial'.")
+                # get the probability of the action
+                log_probability_of_input_influence = input_influence_distribution.log_prob(input_influence_index)
+                return log_probability_of_reaction + log_probability_of_rate + log_probability_of_input_influence
+            else:
+                return log_probability_of_reaction + log_probability_of_rate
+            
+        else:
+            raise ValueError(f"Unknown mode: {mode}. Supported modes are: 'full', and NOT 'partial'.")
+            
+
+        
     def forward(self, observation_batch, mode='full'):
         reactions_indices_batch, parameters_batch, reactions_indices_influenced_by_inputs_batch = observation_batch
         # Compute the multi-hot encoding of the observations
@@ -75,7 +177,7 @@ class BimolecularMassActionPolicy(torch.nn.Module):
             case _:
                 raise ValueError(f"Unknown continuous distribution: {self.continuous_distribution}. Supported distributions are: 'lognormal'.")
 
-        # Decode the input influence if applicable
+        # Decode the input influence if applicable 
         if self.allow_input_influence is True:
             x2 = torch.cat([x1, samples_reaction_rate.unsqueeze(-1)], dim=-1)
             input_influence_logits = self.input_influence_head(x2)

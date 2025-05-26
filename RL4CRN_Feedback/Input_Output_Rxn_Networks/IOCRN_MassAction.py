@@ -252,28 +252,35 @@ class IOCRN_MassAction:
         outputs = []
         def stop_if_unstable(t, y):
             """Event function to stop integration if solution becomes unstable."""
-            threshold = 10000  # Adjust as needed
-            outputs = threshold - np.max(y)
-            self.last_task_info['trajectories'] = outputs
+            threshold = 1000  # Adjust as needed
+            output = threshold - np.max(y)
+            self.last_task_info['trajectories'] = output
             self.last_task_info['time_horizon'] = time_horizon
-            return outputs
+            return output
         
         stop_if_unstable.terminal = True  # Stop integration if triggered
         stop_if_unstable.direction = -1   # Trigger when exceeding threshold
 
         for input in inputs:
-            solution = solve_ivp(
-                lambda t, y: self.rate_function(t, y, input),  # ODE function
-                (time_horizon[0], time_horizon[-1]),  # Time span
-                initial_condition,  # Initial conditions
-                t_eval=time_horizon,  # Output time points
-                method="LSODA",  # Use LSODA for adaptive stepping
-                events=stop_if_unstable  # Add event to stop on instability
-            ).y.T
-            output = solution[:, self.output_species - 1]
-            if output.shape[0] < time_horizon.shape[0]:
-                output = np.pad(output, ((0, time_horizon.shape[0] - output.shape[0]), (0,0)), mode='constant', constant_values=1000.0)
-            outputs.append(output)  
+            try: 
+                solution = solve_ivp(
+                    lambda t, y: self.rate_function(t, y, input),  # ODE function
+                    (time_horizon[0], time_horizon[-1]),  # Time span
+                    initial_condition,  # Initial conditions
+                    t_eval=time_horizon,  # Output time points
+                    method="LSODA",  # Use LSODA for adaptive stepping
+                    events=stop_if_unstable  # Add event to stop on instability
+                ).y.T
+                output = solution[:, self.output_species - 1]
+                if output.shape[0] < time_horizon.shape[0]:
+                    output = np.pad(output, ((0, time_horizon.shape[0] - output.shape[0]), (0,0)), mode='constant', constant_values=1000.0)
+                outputs.append(output)  
+            except Exception as e: # if Integration fails, return a constant value
+                print(f"Error during integration: {e}")
+                output = np.full((time_horizon.shape[0], self.num_outputs), 1000.0)
+                outputs.append(output)
+                solution = np.full((time_horizon.shape[0], self.num_species), 1000.0)
+                
 
         self.last_task_info['trajectories'] = outputs
         self.last_task_info['time_horizon'] = time_horizon
