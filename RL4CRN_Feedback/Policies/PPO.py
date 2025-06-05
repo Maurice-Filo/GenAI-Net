@@ -126,6 +126,10 @@ class PPO(torch.nn.Module):
             risk_ratio * advantage,
             torch.clip(risk_ratio, 1 - self.eps, 1 + self.eps) * advantage
         )
+
+        if self.logger is not None:
+            self.logger.log_metric('risk_ratio', risk_ratio.mean().item())
+
         return clip_cpi * mask
 
     def value_loss(self, states, discounted_rewards, mask):
@@ -217,13 +221,6 @@ class PPO(torch.nn.Module):
         """
         for param in net.parameters():
             param.requires_grad = True
-
-    # def sample_training(self, state):
-    #     probs = self.net(torch.tensor(state).to(self.device))
-    #     dist = torch.distributions.Categorical(probs)
-    #     action = dist.sample()
-    #     entropy = dist.entropy()
-    #     return action, dist.log_prob(action), entropy
     
     def sample(self, state):
         """
@@ -237,16 +234,6 @@ class PPO(torch.nn.Module):
         """
         samples, log_probability, entropy = self.net(state)
         return samples, log_probability, entropy
-            
-    # def sample_best(self, state):
-    #     state = torch.tensor(state).to(self.device)
-    #     with torch.no_grad():
-    #         try:
-    #             # print(self(state))
-    #             return torch.argmax(self(state))
-    #         except:
-    #             print(self(state))
-    #             raise Exception()
             
     def p(self, state, action):
         """

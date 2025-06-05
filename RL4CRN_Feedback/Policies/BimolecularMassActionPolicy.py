@@ -26,7 +26,7 @@ class BimolecularMassActionPolicy(torch.nn.Module):
         # Define the reaction rate head
         match continuous_distribution:
             case 'lognormal':
-                self.reaction_rate_head = FFNN(input_size=hidden_size + num_possible_reactions, output_size=2, hidden_size=rate_decoder_attributes["hidden_size"], num_layers=rate_decoder_attributes["num_layers"]).to(device=device)
+                self.reaction_rate_head = FFNN(input_size=hidden_size + num_possible_reactions, output_size=2, hidden_size=rate_decoder_attributes["hidden_size"], num_layers=rate_decoder_attributes["num_layers"]).to(device=device)         
             case _:
                 raise ValueError(f"Unknown continuous distribution: {continuous_distribution}. Supported distributions are: 'lognormal'.")
         
@@ -103,14 +103,19 @@ class BimolecularMassActionPolicy(torch.nn.Module):
             continuous_distribution_parameters = self.reaction_rate_head(x1)
             match self.continuous_distribution:
                 case 'lognormal': # Parameters are mean and log(stddev)
-                    mu, log_sigma = continuous_distribution_parameters[:, 0], continuous_distribution_parameters[:, 1]
-                    sigma = torch.exp(log_sigma)
-                    reaction_rate_distribution = LogNormal(mu, sigma)
+                    # log_mu, log_sigma = continuous_distribution_parameters[:, 0], continuous_distribution_parameters[:, 1]
+                    # mu = torch.exp(log_mu)
+                    # sigma = torch.exp(log_sigma)
+                    # reaction_rate_distribution = LogNormal(mu, sigma)
+                    continuous_distribution_parameters = torch.nn.functional.softplus(continuous_distribution_parameters)
+                    mu_log_normal, sigma_log_normal = continuous_distribution_parameters[:, 0], continuous_distribution_parameters[:, 1]
+                    mu_normal = torch.log(mu_log_normal**2 / torch.sqrt(mu_log_normal**2 + sigma_log_normal**2)) 
+                    sigma_normal = torch.log(1 + sigma_log_normal**2 / mu_log_normal**2)
+                    reaction_rate_distribution = LogNormal(mu_normal, sigma_normal)
                     # get the reaction rate from the action
                     action_rate = torch.tensor([a['rate constant'] for a in action], requires_grad=False).to(self.device)
                     # get the probability of the action
                     log_probability_of_rate = reaction_rate_distribution.log_prob(action_rate)
-
                 case _:
                     raise ValueError(f"Unknown continuous distribution: {self.continuous_distribution}. Supported distributions are: 'lognormal'.")
 
@@ -168,9 +173,15 @@ class BimolecularMassActionPolicy(torch.nn.Module):
         continuous_distribution_parameters = self.reaction_rate_head(x1)
         match self.continuous_distribution:
             case 'lognormal': # Parameters are mean and log(stddev)
-                mu, log_sigma = continuous_distribution_parameters[:, 0], continuous_distribution_parameters[:, 1]
-                sigma = torch.exp(log_sigma)
-                reaction_rate_distribution = LogNormal(mu, sigma)
+                # log_mu, log_sigma = continuous_distribution_parameters[:, 0], continuous_distribution_parameters[:, 1]
+                # mu = torch.exp(log_mu)
+                # sigma = torch.exp(log_sigma)
+                # reaction_rate_distribution = LogNormal(mu, sigma)
+                continuous_distribution_parameters = torch.nn.functional.softplus(continuous_distribution_parameters)
+                mu_log_normal, sigma_log_normal = continuous_distribution_parameters[:, 0], continuous_distribution_parameters[:, 1]
+                mu_normal = torch.log(mu_log_normal**2 / torch.sqrt(mu_log_normal**2 + sigma_log_normal**2)) 
+                sigma_normal = torch.log(1 + sigma_log_normal**2 / mu_log_normal**2)
+                reaction_rate_distribution = LogNormal(mu_normal, sigma_normal)
                 samples_reaction_rate = reaction_rate_distribution.sample()
                 entropy = entropy + reaction_rate_distribution.entropy()
                 log_probability = log_probability + reaction_rate_distribution.log_prob(samples_reaction_rate)

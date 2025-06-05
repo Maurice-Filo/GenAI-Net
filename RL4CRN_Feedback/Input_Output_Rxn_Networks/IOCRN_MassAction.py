@@ -244,11 +244,11 @@ class IOCRN_MassAction:
             """Event function to stop if any state becomes unstable."""
             max_val = np.max(np.abs(y))
             if not np.isfinite(max_val):
-                return -1.0  # Force stop
+                return 0  # Force stop
             return LARGE_NUMBER - max_val  # Triggers when max_val >= LARGE_NUMBER
 
         stop_if_unstable.terminal = True
-        stop_if_unstable.direction = -1
+        stop_if_unstable.direction = 0
 
         for input in inputs:
             try:
@@ -260,12 +260,26 @@ class IOCRN_MassAction:
                     method="LSODA",
                     events=stop_if_unstable
                 )
-            except Exception as e:
-                print(f"Solve_ivp failed with error: {e}")
+                # output = solution.y.T[:, self.output_species - 1]
+
+            except Exception as e: # if Integration fails, return a constant value
+                print(f"Error during integration: {e}")
+                output = np.full((time_horizon.shape[0], self.num_outputs), LARGE_NUMBER)
                 solution = None
+                # outputs.append(output)
+                # solution = np.full((time_horizon.shape[0], self.num_species), 1000.0)
 
             num_species = len(self.output_species)
             output = np.full((len(time_horizon), num_species), LARGE_NUMBER)
+
+            # if solution is not None and (solution.status !=0 or solution.t.size == 0):
+            #     solution = np.full((time_horizon.shape[0], self.num_species), LARGE_NUMBER)
+            #     output = np.full((time_horizon.shape[0], self.num_outputs), LARGE_NUMBER)
+            # elif solution is not None:
+            #     solution = solution.y.T
+            # elif solution is None:
+            #     solution = np.full((time_horizon.shape[0], self.num_species), LARGE_NUMBER)
+
 
             if solution is not None and solution.status >= 0 and solution.t.size > 0:
                 y_full = solution.y.T  # Shape: (steps, all_species)
