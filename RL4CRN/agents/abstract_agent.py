@@ -15,3 +15,10 @@ class AbstractAgent:
         NOTE: This function does not return anything. It is meant to update the agent's internal state.
         """
         pass
+
+    def translate_state(self, state):
+        """
+        Translate the environment state into a format suitable for the agent.
+        This function should be overridden by subclasses to implement specific translation logic.
+        """
+        pass

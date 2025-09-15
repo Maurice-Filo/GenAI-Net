@@ -63,6 +63,27 @@ def batch_multi_hot(indices, num_classes, intensities=None, device=None, pad_val
     else:
         return multi_hot
     
+def cartesian_prod(arrays, *, dtype=None):
+    """
+    arrays: list/tuple of 1D numpy arrays
+    returns: (prod(len(a) for a in arrays), len(arrays)) ndarray
+    """
+    arrays = [np.asarray(a).ravel() for a in arrays]
+    if not arrays:
+        raise ValueError("arrays must be a non-empty list of 1D arrays")
+
+    # If any input is empty, the product is empty with the right number of columns
+    if any(a.size == 0 for a in arrays):
+        n = len(arrays)
+        dt = dtype if dtype is not None else np.result_type(*arrays)
+        return np.empty((0, n), dtype=dt)
+
+    grids = np.meshgrid(*arrays, indexing='ij')
+    out = np.stack(grids, axis=-1).reshape(-1, len(arrays))
+    if dtype is not None:
+        out = out.astype(dtype, copy=False)
+    return out
+    
 def print_task_info(last_task_info, mode='sizes'):
     """
     Prints the information of the last task performed on the IOCRN.

@@ -50,31 +50,16 @@ class AbstractMultiEnvironments:
             list: A list of tuples containing the new state and done flag for each environment.
         """
         tic_step = time.time()
-        output = [env.step(action, mode) for env,action in zip(self.envs, actions)]
+        output = [env.step(action) for env,action in zip(self.envs, actions)]
         toc_step = time.time()
         if self.logger is not None:
             self.logger.log_metric('Step Time', toc_step - tic_step)
         return output
     
-    def observe(self):
-        """
-        Observe the current state of all environments.
-        Returns:
-            tuple: A tuple containing:
-                - reactions_indices_batch: A numpy array representing the reactions indices in the batch of IOCRNs. Shape: (N, m).
-                - rate_constants_batch: A numpy array representing the reaction rate constants in the batch of IOCRNs. Shape: (N, m).
-                - reactions_indices_influenced_by_inputs_batch: A list of p numpy arrays, each containing the influenced reactions for a specific input. 
-                Each numpy array is associated with a specific input and has shape (N, #), where # is the maximum number of reactions in any CRN in the batch influenced by this input.
-        """
-        reactions_indices_batch = np.array([env.state.reactions_indices for env in self.envs])
-        rate_constants_batch = np.array([env.state.c for env in self.envs])
-        reactions_indices_influenced_by_inputs_batch = []
-        for i in range(self.envs[0].state.p):
-            rows = [np.array(env.state.list_influenced_reactions[i]) for env in self.envs]
-            max_len = max((len(r) for r in rows), default=0)
-            padded = [np.pad(r, (0, max_len - len(r)), constant_values=0) for r in rows]
-            reactions_indices_influenced_by_inputs_batch.append(np.array(padded).astype(np.int64))
-        return reactions_indices_batch, rate_constants_batch, reactions_indices_influenced_by_inputs_batch
+    def observe(self, observer, tensorizer):
+        output = [observer.observe(env.state) for env in self.envs]
+        tensorized_output = torch.stack([tensorizer.tensorize(o) for o in output])
+        return tensorized_output.float()
     
     def render(self, rewards, n_best=1, disregarded_percentage=0.9, mode={'style': 'logger', 'task': 'transients', 'format': 'figure'}):
         """
@@ -105,7 +90,7 @@ class AbstractMultiEnvironments:
                 # Render the top_k environments based on the specified mode
                 match mode:
                     case {'style': 'logger', 'task': 'transients'}:
-                        fig, axes = plt.subplots(self.envs[0].state.q, 1, figsize=(10, 5 * self.envs[0].state.q))
+                        fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
                         if not isinstance(axes, (list, np.ndarray)):
                             axes = [axes]
                         for i in top_k:

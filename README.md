@@ -6,7 +6,6 @@ Notation:
 - T: Final number of reactions to be generated
 - p: Number of inputs to the IOCRN
 - q: Number of outputs of the IOCRN
-- o: Vector of indices taking values in {1, 2, ..., n} to represent the output species 
 - S_R: Stoichiometry coefficients matrix of the reactants, shape (n,m)
 - S_P: Stoichiometry coefficients matrix of the products, shape (n,m)
 - S: Stoichiometry matrix, shape (n,m)

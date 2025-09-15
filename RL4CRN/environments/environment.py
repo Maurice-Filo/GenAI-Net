@@ -1,8 +1,7 @@
-import gymnasium as gym
 from io import BytesIO
 from matplotlib import pyplot as plt
 
-class Environment(gym.Env):
+class Environment():
     """
     Custom Environment that follows gym interface
     This is the basic environment for CRNs.
@@ -44,10 +43,11 @@ class Environment(gym.Env):
         """
         # If the state (IOCRN) has unknown rate constants, the action is interpreted as a rate constant for the next unknown rate.
         # Otherwise the action is interpreted as a complete reaction.
-        if self.state.num_unknown_rates > 0:
-            self.state.set_next_unknown_rate(action)
+        if self.state.num_unknown_params > 0:
+            raise NotImplementedError("Setting rate constants directly is not implemented yet.")
         else:
-            self.state.add_reaction(action, mode)
+            self.state.add_reaction(action)
+            self.state.compile()
             self.num_added_reactions += 1  
 
         # Set a flag to indicate when the maximum number of reactions has been added        

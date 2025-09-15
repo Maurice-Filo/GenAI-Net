@@ -47,20 +47,13 @@ class REINFORCEAgent(AbstractAgent):
         self.risk_scheduler = risk_scheduler
         self.risk_counter = 0
         
-    def act(self, states):
-        """
-        Take an action based on the current observation using the policy network.
-        Args:
-            states (tuple): A tuple containing the current state of the environment
-        Returns:
-            actions (torch.Tensor): The actions to be taken by the agent.
-        """
+    def act(self, states, actuator, mode='full'):
         super(REINFORCEAgent, self).act()
         tic_forward = time.time()
 
         # Check if the observed IOCRN has unknown rate constants
-        if np.isnan(states[1][0,:]).any():
-            raise NotImplementedError("The case of unknown rate constants is not implemented yet.")
+        if mode == 'parameters' and self.allow_input_influence:
+            raise NotImplementedError("The cases of unknown rate constants and/or allow input influence are not implemented yet.")
         else:
             actions, logP, entropy = self.policy(states, mode='full')
             self.logPs_sequence.append(logP)
@@ -69,7 +62,9 @@ class REINFORCEAgent(AbstractAgent):
 
         # Log the forward pass time and return the actions
         if self.logger is not None:
-            self.logger.log_metric('forward_time', toc_forward - tic_forward, step=None)           
+            self.logger.log_metric('forward_time', toc_forward - tic_forward, step=None)    
+
+        actions = [actuator.actuate(a) for a in actions]
         return actions
     
     def update(self, rewards, step_iteration=None):
