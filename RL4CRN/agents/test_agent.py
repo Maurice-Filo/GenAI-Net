@@ -3,7 +3,7 @@ import time
 import numpy as np
 from RL4CRN.agents.abstract_agent import AbstractAgent
 
-class REINFORCEAgent(AbstractAgent):
+class TestAgent(AbstractAgent):
     def __init__(self, policy, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_scheduler = {}, risk_scheduler = {}, device=None):
         """
         Initialize the REINFORCE agent with a policy, learning rate, and optional entropy and risk schedulers.
@@ -24,7 +24,7 @@ class REINFORCEAgent(AbstractAgent):
                 - risk_schedule (int): Number of iterations after which to update the risk value.
             - device (torch.device): The device to run the agent on (CPU or GPU). If None, defaults to CPU.
         """
-        super(REINFORCEAgent, self).__init__()
+        super(TestAgent, self).__init__()
         self.device = device if device is not None else torch.device('cpu')
         self.policy = policy.to(self.device) 
         self.allow_input_influence = allow_input_influence
@@ -48,23 +48,27 @@ class REINFORCEAgent(AbstractAgent):
         self.risk_counter = 0
         
     def act(self, states, actuator, mode='full'):
-        super(REINFORCEAgent, self).act()
+        """
+        Take an action based on the current observation using the policy network.
+        Args:
+            states (tuple): A tuple containing the current state of the environment
+        Returns:
+            actions (torch.Tensor): The actions to be taken by the agent.
+        """
+        super(TestAgent, self).act()
         tic_forward = time.time()
 
-        # Check if the observed IOCRN has unknown rate constants
-        if mode == 'parameters' and self.allow_input_influence:
-            raise NotImplementedError("The cases of unknown rate constants and/or allow input influence are not implemented yet.")
-        else:
-            actions, logP, entropy = self.policy(states, mode=mode)
-            self.logPs_sequence.append(logP)
-            self.entropies_sequence.append(entropy)
+        actions, logP, entropy = self.policy(states, mode=mode)
+        self.logPs_sequence.append(logP)
+        self.entropies_sequence.append(entropy)
         toc_forward = time.time()
 
         # Log the forward pass time and return the actions
         if self.logger is not None:
-            self.logger.log_metric('forward_time', toc_forward - tic_forward, step=None)    
+            self.logger.log_metric('forward_time', toc_forward - tic_forward, step=None)  
 
         actions = [actuator.actuate(a) for a in actions]
+             
         return actions
     
     def update(self, rewards, step_iteration=None):
@@ -74,7 +78,7 @@ class REINFORCEAgent(AbstractAgent):
             rewards (list): A list of rewards, at the final step, received for each sample in the batch.
             step_iteration (int): The current iteration step for logging purposes.
         """
-        super(REINFORCEAgent, self).update(rewards)
+        super(TestAgent, self).update(rewards)
         tic_backward = time.time()
 
         # Retrieve the information from the forward pass

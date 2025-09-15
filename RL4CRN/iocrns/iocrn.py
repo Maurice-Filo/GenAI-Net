@@ -47,6 +47,11 @@ class IOCRN:
         Arguments:
         - reaction: A Reaction object to be added to the IOCRN. 
         """
+        # Flush the last task information
+        self.last_task_info = {}
+        self.last_task_info['type'] = None
+
+        # Add the reaction to the list of reactions
         self.reactions.append(reaction)
         self.compiled = False
 

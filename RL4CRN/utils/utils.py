@@ -14,7 +14,7 @@ def performance_metric(r_list, y_list, w, norm=1):
     """
     # Check if dimensions match
     if len(r_list) != len(y_list):
-        raise ValueError("Length of reference and output lists must match.")
+        raise ValueError(f"Length of reference and output lists must match. Got {len(r_list)} and {len(y_list)}.")
     if r_list[0].shape[0] != y_list[0].shape[0]:
         raise ValueError("Reference signal and output must have the same number of dimensions (q).")
     

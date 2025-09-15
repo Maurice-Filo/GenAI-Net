@@ -23,30 +23,18 @@ class SerialEnvironments(AbstractMultiEnvironments):
             last_task_info_list: A list of information about the last task performed in each environment.
         """
         tic_reward = time.time()
-        rewards_list, last_task_info_list = [routine(env.state) for env in self.envs]
+        rewards_list, last_task_info_list = zip(*[routine(env.state) for env in self.envs])
         toc_reward = time.time()
         if self.logger is not None:
             self.logger.log_metric('Reward Time', toc_reward - tic_reward)
 
         # Update the hall of fame
-        indices = top_k_smallest_indices_sorted(rewards_list, self.hall_of_fame_size)
-        if len(self.hall_of_fame) == 0:
-            self.hall_of_fame = [
-                {'environment': self.envs[i], 'reward': rewards_list[i]}
-                for i in indices
-            ]
+        if self.hall_of_fame_empty:
+            combined_environments = self.envs
+            self.hall_of_fame_empty = False
         else:
-            current_rewards = [entry['reward'] for entry in self.hall_of_fame]
-            for i in indices:
-                reward = rewards_list[i]
-                if reward >= current_rewards[-1]:
-                    break
-                else:
-                    env = self.envs[i]
-                    insert_index = bisect.bisect_left(current_rewards, reward)
-                    self.hall_of_fame.insert(insert_index, {'environment': env, 'reward': reward})
-                    current_rewards.insert(insert_index, reward)
-                    self.hall_of_fame.pop()
-                    current_rewards.pop()
-
+            combined_environments = self.hall_of_fame + self.envs
+        sorted_environments = sorted(combined_environments, key=lambda x: x.state.last_task_info['reward'])
+        for i in range(min(self.hall_of_fame_size, len(sorted_environments))):
+            self.hall_of_fame[i].state = sorted_environments[i].state.clone()
         return rewards_list
