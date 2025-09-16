@@ -17,7 +17,6 @@ class IOCRN:
         - outputs_labels: List of strings representing the labels of the outputs in the IOCRN. 
         Compile must be called after initialization to set up the internal representations of the IOCRN.
         """
-        self.compiled = False                   # flag indicating whether the IOCRN has been compiled
         
         # Record the reactions, output labels, and number of outputs
         self.reactions = reactions              # list of Reaction objects
@@ -48,12 +47,11 @@ class IOCRN:
         - reaction: A Reaction object to be added to the IOCRN. 
         """
         # Flush the last task information
-        self.last_task_info = {}
-        self.last_task_info['type'] = None
+        self.reset()
 
         # Add the reaction to the list of reactions
         self.reactions.append(reaction)
-        self.compiled = False
+        self.compile()
 
     def retrieve_species(self):
         """ Retrieve and store the labels of the species present in the IOCRN and their corresponding indices in the IOCRN. 
@@ -84,8 +82,6 @@ class IOCRN:
         if len(params) > 0:
             raise Exception(f"Error: {len(params)} parameters were not set - they are still unknown.")
         
-        self.compiled = False                
-
     def species_label_to_idx(self, labels):
         """ Map species labels to their corresponding indices.
         Arguments:
@@ -168,9 +164,6 @@ class IOCRN:
         # Set the context for each reaction by mapping reactant, product, and input labels to their indices in the context of the IOCRN
         for reaction in self.reactions:
             reaction.set_crn_context(self)
-
-        # Set the compiled flag to True
-        self.compiled = True
     
     # ------------------------ Printing Methods ------------------------
     def __str__(self):

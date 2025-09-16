@@ -180,16 +180,21 @@ class MassAction(Reaction):
         # Compute the propensity using mass action kinetics
         return self.rate_constant * np.prod(x) * u
     
-    def __str__(self):
+    def __str__(self): #TODO: remove indices from the string representation
         """ Returns a string representation of the reaction in the format:
         Reactants ----> Products;  [MAK(rate_constant, input)]
         If there are no reactants, it uses '∅' to denote the empty set. If there are no inputs, it omits the input part. 
         Returns:
         - reaction_str: string representing the reaction. 
         """
+        try:
+            species_str = f"{self.reactant_labels} : {self.reactant_idx}, {self.product_labels} : {self.product_idx}, {self.input_channels} : {self.input_idx}"
+        except:
+            species_str = "unset"
+            
         reactants_str = ' + '.join(self.reactant_labels) if self.reactant_labels else '∅'
         products_str = ' + '.join(self.product_labels) if self.product_labels else '∅'
         inputs_str = self.input_channels[0] if self.input_channels[0] is not None else ''
         if inputs_str == '':
-            return f"{reactants_str} ----> {products_str};  [MAK({self.rate_constant})]"
-        return f"{reactants_str} ----> {products_str};  [MAK({self.rate_constant}, {inputs_str})]"
+            return f"{reactants_str} ----> {products_str};  [MAK({self.rate_constant})]" #\n {species_str}"
+        return f"{reactants_str} ----> {products_str};  [MAK({self.rate_constant}, {inputs_str})]" # \n {species_str}"
