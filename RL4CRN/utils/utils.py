@@ -34,8 +34,7 @@ def performance_metric(r_list, y_list, w, norm=1):
             raise ValueError(f"Unsupported norm: {norm}")
 
 def batch_multi_hot(indices, num_classes, intensities=None, device=None, pad_val=0):
-    """
-    Converts (B, R) numpy arrays of indices and intensities into:
+    """ Converts (B, R) numpy arrays of indices and intensities into:
     - (B, num_classes) multi-hot tensor
     - (B, num_classes) intensity tensor if intensities are provided.
 
@@ -47,8 +46,7 @@ def batch_multi_hot(indices, num_classes, intensities=None, device=None, pad_val
         pad_val (int): Value used for padding in indices.
 
     Returns:
-        (multi_hot, intensity_tensor): both torch.FloatTensors of shape (B, num_classes)
-    """
+        (multi_hot, intensity_tensor): both torch.FloatTensors of shape (B, num_classes). """
     batch_size, num_reactions = indices.shape
     valid_mask = indices != pad_val
     row_indices = np.repeat(np.arange(batch_size), num_reactions)[valid_mask.ravel()]
@@ -64,10 +62,8 @@ def batch_multi_hot(indices, num_classes, intensities=None, device=None, pad_val
         return multi_hot
     
 def cartesian_prod(arrays, *, dtype=None):
-    """
-    arrays: list/tuple of 1D numpy arrays
-    returns: (prod(len(a) for a in arrays), len(arrays)) ndarray
-    """
+    """ arrays: list/tuple of 1D numpy arrays.
+    returns: (prod(len(a) for a in arrays), len(arrays)) ndarray. """
     arrays = [np.asarray(a).ravel() for a in arrays]
     if not arrays:
         raise ValueError("arrays must be a non-empty list of 1D arrays")

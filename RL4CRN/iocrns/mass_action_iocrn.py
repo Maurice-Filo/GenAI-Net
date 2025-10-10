@@ -46,7 +46,7 @@ class MassActionIOCRN:
         self.n = S_R.shape[0]
         self.m = S_R.shape[1]
         self.p = S_I.shape[0]
-        self.q = len(o)
+        self.num_outputs = len(o)
 
         # Compute the stoichiometry matrix S    
         self.S = S_P - S_R
@@ -310,7 +310,7 @@ class MassActionIOCRN:
         num_doses = u_dose.shape[0]
         for u_e in u_list:
             x = np.zeros((self.n, num_doses), dtype=np.float64) # numpy array of shape (n, num_doses)
-            y = np.zeros((self.q, num_doses), dtype=np.float64) # numpy array of shape (q, num_doses)
+            y = np.zeros((self.num_outputs, num_doses), dtype=np.float64) # numpy array of shape (q, num_doses)
             x_0 = initial_guess
             for i in range(num_doses):
                 u = np.concatenate(([u_dose[i]], u_e))
@@ -410,13 +410,13 @@ class MassActionIOCRN:
         
         # If no figure or axes are provided, create a new figure and axes
         if fig is None and axes is None:
-            fig, axes = plt.subplots(self.q, 1, figsize=(10, 5 * self.q))
+            fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
             if not isinstance(axes, (list, np.ndarray)):
                 axes = [axes]
         
         # Plot the dose responses for each output species and return the figure and axes
         u_dose = self.last_task_info['input doses']
-        for i in range(self.q):
+        for i in range(self.num_outputs):
             for j in range(len(self.last_task_info['input scenarios'])):
                 axes[i].plot(u_dose, self.last_task_info['outputs'][j][i,:], alpha=alpha)
                 axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.o[i]-1]}")
@@ -442,12 +442,12 @@ class MassActionIOCRN:
         
         # If no figure or axes are provided, create a new figure and axes
         if fig is None and axes is None:
-            fig, axes = plt.subplots(self.q, 1, figsize=(10, 5 * self.q))
+            fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
             if not isinstance(axes, (list, np.ndarray)):
                 axes = [axes]
         
         # Plot the transient response for each output species and return the figure and axes
-        for i in range(self.q):
+        for i in range(self.num_outputs):
             for j in range(len(self.last_task_info['outputs'])):
                 axes[i].plot(self.last_task_info['time_horizon'], self.last_task_info['outputs'][j][i,:], alpha=alpha)
                 axes[i].set_title(f"Transient Response of Output Species {self.species_labels[self.o[i]-1]}")

@@ -40,17 +40,17 @@ class AbstractMultiEnvironments:
         """
         return [env.state for env in self.envs]
     
-    def step(self, actions, mode='reaction index'):
+    def step(self, actions, stepper):
         """
         Step through all environments with the provided actions.
         Args:
             actions (list): A list of actions (reactions) to be taken in each environment.
-            mode (str): The mode of action interpretation, e.g., 'complex index', 'reaction index', or 'species index'.
+            stepper: 
         Returns:
             list: A list of tuples containing the new state and done flag for each environment.
         """
         tic_step = time.time()
-        output = [env.step(action) for env,action in zip(self.envs, actions)]
+        output = [env.step(action, stepper) for env,action in zip(self.envs, actions)]
         toc_step = time.time()
         if self.logger is not None:
             self.logger.log_metric('Step Time', toc_step - tic_step)

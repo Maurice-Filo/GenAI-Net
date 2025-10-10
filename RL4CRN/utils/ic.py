@@ -5,8 +5,7 @@ class IC():
         """ Initializes the initial conditions (IC) for species in a CRN.
         Arguments:
         - names: a list of species names.
-        - values: a list of initial conditionals corresponding to the species names.
-        """
+        - values: a list of initial conditionals corresponding to the species names. """
         self.names = names
         self.values = values
         self.name_to_index = {name: idx for idx, name in enumerate(names)}
@@ -17,8 +16,7 @@ class IC():
         Arguments:
         - crn: a CRN instance.
         Returns:
-        - A list of initial concentration values for the species in the CRN, in the order they appear in the CRN.
-        """
+        - A list of numpy arrays for the initial concentration values for the species in the CRN, in the order they appear in the CRN. """
         ic_list = []
         for ic in self.values:
             ic_values = []

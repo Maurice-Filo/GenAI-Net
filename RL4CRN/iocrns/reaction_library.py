@@ -2,12 +2,11 @@ from RL4CRN.iocrns.reactions import Reaction, MassAction
 from itertools import combinations_with_replacement, product, accumulate
 import numpy as np
 from RL4CRN.utils.utils import cartesian_prod
+import copy
 
 class ReactionLibrary:
-    """
-    A library to manage a list of reactions.
-    Each reaction is assigned a unique ID upon registration.
-    """
+    """ A library to manage a list of reactions.
+    Each reaction is assigned a unique ID upon registration. """
     def __init__(self, reactions=None):
         """ Initializes the reaction library.
         Arguments:
@@ -30,7 +29,7 @@ class ReactionLibrary:
         - The Reaction instance with the specified ID, or None if not found.
         """
         if ID < len(self.reactions):
-            return self.reactions[ID]
+            return copy.deepcopy(self.reactions[ID])
         return None
 
     def add_reactions(self, reactions): #TODO: Check if reactions are already in the library before adding them
@@ -98,16 +97,16 @@ class ReactionLibrary:
         print(out)
 
     def get_parameter_mask(self, mode='continuous', force=False): #TODO: Test this function
-        """
-        Creates a mask indicating the number of parameters (continuous or discrete) for each reaction.
+        """ Creates a mask indicating the number of parameters (continuous or discrete) for each reaction.
         Arguments:
         - mode: 'continuous' or 'discrete', indicating which type of parameters to consider
         - force: if True, forces recomputation of the mask even if it already exists.
         Returns:
-        - A 2D numpy array where each row corresponds to a reaction and each column corresponds
+        - mask: a 2D numpy array where each row corresponds to a reaction and each column corresponds
           to a parameter. The entries are 1 if the parameter exists for that reaction, and 0 otherwise.
-        If no reactions have parameters of the specified type, returns None.
-        """
+        If no reactions have parameters of the specified type, returns None. """
+
+        # Determine which attributes to use based on the mode
         match mode:
             case 'continuous':
                 mask_attr = "continuous_parameter_mask"
@@ -117,32 +116,61 @@ class ReactionLibrary:
                 reaction_attr = "num_discrete_parameters"
             case _:
                 raise ValueError(f"Unknown mode: {mode}. Supported modes are 'continuous' and 'discrete'.")
-
+            
+        # Return the existing mask if it exists and force is not set
         if getattr(self, mask_attr) is not None and not force:   
             return getattr(self, mask_attr)  
+        
+        # Compute the maximum number of parameters across all reactions, return None if zero
         max_num_params = max([getattr(reaction, reaction_attr) for reaction in self.reactions], default=0)
         if max_num_params == 0:
             return None
-        mask = np.zeros((len(self.reactions), max_num_params), dtype=float)
+        
+        # Create the mask
+        mask = np.zeros((len(self), max_num_params), dtype=np.float32) # shape (number of reactions in the library, maximum number of parameters across all reactions)
         for i, reaction in enumerate(self.reactions):
             mask[i, :getattr(reaction, reaction_attr)] = 1.
+
+        # Record and return the mask
         setattr(self, mask_attr, mask)
         return mask
     
     def get_logit_mask(self, force=False): #TODO: Test this function
-        dimensions = self.categories_per_discrete_parameter
-        discrete_parameter_mask = self.get_parameter_mask(mode='discrete')
+        """ Creates a mask for discrete parameters in logit space.
+        Each discrete parameter can take on a certain number of categories.
+        The logit mask indicates which combinations of discrete parameter categories are valid for each reaction.
+        Arguments:
+        - force: if True, forces recomputation of the logit mask even if it already exists.
+        Returns:
+        - logit_mask: a 2D numpy array where each row corresponds to a reaction and each column corresponds
+          to a combination of discrete parameter categories. The entries are True if the combination exists for that reaction, and False otherwise.
+        If no reactions have discrete parameters, returns None. """ 
+
+        # Determine the number of categories for each discrete parameter across all reactions
+        dimensions = self.categories_per_discrete_parameter # List of values representing the number of categories for each discrete parameter across all reactions
+
+        # Get the discrete parameter mask to identify which reactions have discrete parameters and how many
+        discrete_parameter_mask = self.get_parameter_mask(mode='discrete') # shape: (number of reactions in the library, maximum number of discrete parameters across all reactions)
+        
+        # Return the existing logit mask if it exists and force is not set
         if self.logit_mask is not None and not force:
             return self.logit_mask
 
+        # If there are no discrete parameters, return None
         if discrete_parameter_mask is None:
             return None
-        grid = cartesian_prod([np.arange(d) for d in dimensions]) 
-        logit_mask = np.ones((len(self.reactions), grid.shape[0]), dtype=bool)
-        for j in range(len(self.reactions)):
+        
+        # Construct a grid of all possible combinations of discrete parameter categories
+        grid = cartesian_prod([np.arange(d) for d in dimensions]) # shape: (total number of discrete parameter combinations across all reactions, total number of discrete parameters across all reactions)
+        
+        # Create the logit mask #TODO: Something seems wrong here
+        logit_mask = np.ones((len(self), grid.shape[0]), dtype=bool) # shape: (number of reactions in the library, total number of discrete parameter combinations across all reactions)
+        for j in range(len(self)):
             for i in range(len(discrete_parameter_mask[j])):
                 if discrete_parameter_mask[j,i] == 0:
                     logit_mask[j] = logit_mask[j] & (grid[:,i] == 0)
+
+        # Record and return the logit mask
         self.logit_mask = logit_mask
         return logit_mask
      
@@ -153,8 +181,8 @@ def construct_mass_action_library(species_labels, order=2):
     - species_labels: list of strings representing the species labels.
     - order: maximum order of the reactions.
     Returns:
-    - reaction_library: an instance of ReactionLibrary containing the generated reactions.
-    """
+    - reaction_library: an instance of ReactionLibrary containing the generated reactions. """
+
     # Generate all possible complexes up to the given order
     complex_list = []
     for i in range(order+1):
@@ -167,7 +195,7 @@ def construct_mass_action_library(species_labels, order=2):
             reaction_list.append((reactants, products))
 
     # Add the empty complex as a reactant or product
-    reaction_list.append(([], []))  # ∅ → ∅
+    reaction_list = [([], [])] + reaction_list  # ∅ → ∅
 
     # Create a reaction library
     reaction_library = ReactionLibrary()

@@ -6,6 +6,31 @@ from RL4CRN.agents.abstract_agent import AbstractAgent
 
 class PPOAgent(AbstractAgent):
     def __init__(self, policy, state_value_function, ppo_parameters={}, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_scheduler={}, risk_scheduler={}, device=None):
+        """ Initialize the PPO agent with a policy, state value function, learning rate, and optional entropy and risk schedulers.
+        Args:
+        - policy (torch.nn.Module): The policy network to be used by the agent.
+        - state_value_function (torch.nn.Module): The state value function network to be used by the agent.
+        - ppo_parameters (dict): A dictionary containing parameters for the PPO algorithm:
+            - eps (float): Clipping parameter for the PPO objective.
+            - value_loss_weight (float): Weight for the value loss in the total loss.
+            - gamma (float): Discount factor for future rewards.
+            - lam (float): GAE lambda parameter.
+            - update_policy_every (int): Number of iterations after which to update the old policy. Default is 5.
+        - allow_input_influence (bool): Whether to allow actions to include input influence. Default is False.
+        - logger (Logger): An optional logger for logging metrics.
+        - learning_rate (float): The learning rate for the optimizer.
+        - entropy_scheduler (dict): A dictionary containing parameters for the entropy scheduler:
+            - entropy_weight (float): Initial weight for entropy. It is modified during training.
+            - entropy_update_coefficient (float): Multiplicative coefficient to update the entropy weight.
+            - entropy_schedule (int): Number of iterations after which to update the entropy weight.
+            - minimum_entropy_weight (float): Minimum value for the entropy weight.
+        - risk_scheduler (dict): A dictionary containing parameters for the risky policy scheduler:
+            - risk (float): Initial risk value.
+            - risk_update (float): Amount to increase the risk value.
+            - max_risk (float): Maximum value for the risk.
+            - risk_schedule (int): Number of iterations after which to update the risk value.
+        - device (torch.device): The device to run the agent on (CPU or GPU). If None, defaults to CPU. """
+        
         super(PPOAgent, self).__init__()
         self.device = device if device is not None else torch.device('cpu')
         self.allow_input_influence = allow_input_influence
@@ -43,15 +68,23 @@ class PPOAgent(AbstractAgent):
         self.ppo_parameters = ppo_parameters
         self.swap_counter = 0
         
-    def act(self, states):
+    def act(self, states, actuator, mode='full'):
+        """ Select actions based on the current policy and the observed states.
+        Args:
+        - states (torch.Tensor): The observed states. Shape: (N, state_dim).
+        - actuator (AbstractActuator): The actuator to convert policy actions to environment actions.
+        - mode (str): The mode of the policy ('full', 'partial', or 'parameters'). Default is 'full'.
+        Returns:
+        - actions (list): A list of actions to be taken in the environment. """
+
         super(PPOAgent, self).act()
         tic_forward = time.time()
 
-        # Check if the observed IOCRN has unknown rate constants
-        if np.isnan(states[1][0,:]).any():
-            raise NotImplementedError("The case of unknown rate constants is not implemented yet.")
+        # Check if the observed IOCRN has unknown parameters
+        if mode == 'parameters' and self.allow_input_influence:
+            raise NotImplementedError("The cases of unknown parameters and/or allow input influence are not implemented yet.")
         else:
-            actions, logPs, entropies = self.policy(states, mode='full')
+            actions, logPs, entropies = self.policy(states, mode=mode)
             self.states_sequence.append(states)
             self.actions_sequence.append(actions)
             self.logPs_sequence.append(logPs)
@@ -60,16 +93,17 @@ class PPOAgent(AbstractAgent):
 
         # Log the forward pass time and return the actions
         if self.logger is not None:
-            self.logger.log_metric('forward_time', toc_forward - tic_forward, step=None)           
+            self.logger.log_metric('forward_time', toc_forward - tic_forward, step=None) 
+
+        actions = [actuator.actuate(a) for a in actions]           
         return actions
     
     def update(self, rewards, step_iteration=None):
-        """
-        Update the agent's policy based on the rewards received.
+        """ Update the agent's policy based on the rewards received.
         Args:
-            rewards (list): A list of rewards, at the final step, received for each sample in the batch.
-            step_iteration (int): The current iteration step for logging purposes.
-        """
+        - rewards (list): A list of rewards, at the final step, received for each sample in the batch.
+        - step_iteration (int): The current iteration step for logging purposes. """
+        
         super(PPOAgent, self).update(rewards)
         self.optimizer.zero_grad()
         tic_backward = time.time()
@@ -82,7 +116,7 @@ class PPOAgent(AbstractAgent):
         logPs_sequence_tensor = torch.stack(self.logPs_sequence, dim=0).to(self.device)  # Shape: (T, N)
         entropies_sequence_tensor = torch.stack(self.entropies_sequence, dim=0).to(self.device)  # Shape: (T, N)
         rewards_sequence_tensor = torch.zeros_like(logPs_sequence_tensor)
-        rewards_sequence_tensor[-1,:] = torch.tensor(rewards, device=self.device) 
+        rewards_sequence_tensor[-1,:] = torch.tensor(rewards, device=self.device) # Shape: (T, N)
 
         # Compute the PPO loss
         ppo_loss_for_each_sample = self.compute_PPO_loss(self.states_sequence, self.actions_sequence, rewards_sequence_tensor, entropies_sequence_tensor)
@@ -114,17 +148,17 @@ class PPOAgent(AbstractAgent):
 
         # Log the training process
         if self.logger is not None:
-            self.logger.log_metric('entropy', entropies_sequence_tensor.sum(dim=0).mean().item(), step=step_iteration)
-            self.logger.log_metric('logP', logPs_sequence_tensor.sum(dim=0).mean().item(), step=step_iteration)
-            self.logger.log_metric('entropy_weight', self.entropy_scheduler['entropy_weight'], step=step_iteration)
+            self.logger.log_metric('batch average of total sequence entropy', entropies_sequence_tensor.sum(dim=0).mean().item(), step=step_iteration)
+            self.logger.log_metric('batch average of total sequence logP', logPs_sequence_tensor.sum(dim=0).mean().item(), step=step_iteration)
+            self.logger.log_metric('entropy weight', self.entropy_scheduler['entropy_weight'], step=step_iteration)
             self.logger.log_metric('risk', self.risk_scheduler['risk'], step=step_iteration)
-            self.logger.log_metric('backward_time', toc_backward - tic_backward, step=step_iteration)
+            self.logger.log_metric('backward time', toc_backward - tic_backward, step=step_iteration)
             best = scores[top_k[0]]
             worst = scores[top_k[-1]]
             avg = scores[top_k].float().mean()
-            self.logger.log_metric('best_loss', best.item(), step=step_iteration)
-            self.logger.log_metric('worst_loss', worst.item(), step=step_iteration)
-            self.logger.log_metric('avg_loss', avg.item(), step=step_iteration)
+            self.logger.log_metric('best loss in the batch top k', best.item(), step=step_iteration)
+            self.logger.log_metric('worst loss in the batch top k', worst.item(), step=step_iteration)
+            self.logger.log_metric('average loss in the batch top k', avg.item(), step=step_iteration)
 
         # Clear the trjectories
         self.states_sequence.clear()
@@ -133,8 +167,7 @@ class PPOAgent(AbstractAgent):
         self.entropies_sequence.clear()
 
     def compute_PPO_loss(self, states_sequence, actions_sequence, rewards_sequence, entropies_sequence, masks=1., mode='full'):
-        """
-        Compute the PPO loss for the given states, actions, rewards, and entropies.
+        """ Compute the PPO loss for the given states, actions, rewards, and entropies.
         Args:
             states_sequence (list): A (T+1)-list of states.
             actions_sequence (list): A T-list of actions.
@@ -143,32 +176,31 @@ class PPOAgent(AbstractAgent):
             masks (torch.Tensor or None): A mask tensor indicating which states are valid. Shape: (T, N). If None, all states are considered valid.
             mode (str): The mode of the policy ('full' or 'partial'). Default is 'full'.
         Returns:
-            total_loss (torch.Tensor): The computed PPO loss.
-        """
+            total_loss (torch.Tensor): The computed PPO loss. """
         
         # Compute the GAE
         advantages_sequence, state_value_targets_sequence = self.compute_gae(states_sequence, rewards_sequence, masks)
-
+        
         # Compute the CPI
         cpi = self.clipCPI(states_sequence, actions_sequence, advantages_sequence, masks, mode).mean(dim=0) # shape: (N,)
-
+        
         # Compute the entropy bonus
         entropy_bonus = (entropies_sequence * masks).mean(dim=0) # shape: (N,)
-
+        
         # Compute the state value loss
         v_loss = self.state_value_loss(states_sequence, state_value_targets_sequence) # shape: (1,)
-
+        
         # Sum up the losses
         total_loss = -(cpi + self.entropy_scheduler['entropy_weight'] * entropy_bonus) + self.ppo_parameters['value_loss_weight'] * v_loss # shape: (N,)
-
+        
         # Log the calculated metrics
         if self.logger is not None:
-            self.logger.log_metric('average_advantage', advantages_sequence.mean().item())
-            self.logger.log_metric('average_state_value_targets', state_value_targets_sequence.mean().item())
+            self.logger.log_metric('average advantage', advantages_sequence.mean().item())
+            self.logger.log_metric('average state value targets', state_value_targets_sequence.mean().item())
             self.logger.log_metric('cpi', cpi.mean().item())
-            self.logger.log_metric('entropy_bonus', entropy_bonus.mean().item())
-            self.logger.log_metric('value_loss', v_loss.item())
-            self.logger.log_metric('total_loss', total_loss.mean().item())
+            self.logger.log_metric('entropy bonus', entropy_bonus.mean().item())
+            self.logger.log_metric('value loss', v_loss.item())
+            self.logger.log_metric('total loss', total_loss.mean().item())
 
         return total_loss
 
@@ -177,16 +209,15 @@ class PPOAgent(AbstractAgent):
     #--------------------------- Helper functions ---------------------------#
     @torch.no_grad()
     def compute_gae(self, states_sequence, rewards_sequence, masks):
-        """
-        Compute the Generalized Advantage Estimation (GAE) for the given states and rewards.
+        """ Compute the Generalized Advantage Estimation (GAE) for the given states and rewards.
         Args:
             - states_sequence: A (T+1)-list of states.
             - rewards (torch.Tensor): The rewards of the batch of states received at each time step. Shape: (T, N).
             - masks (torch.Tensor or None): A mask tensor indicating which states are valid. Shape: (T, N). If None, all states are considered valid.
         Returns:
             advantages_sequence (torch.Tensor): The computed advantages for each state. Shape: (T, N).
-            state_value_targets_sequence (torch.Tensor): The targets for the value loss. Shape: (T, N).
-        """
+            state_value_targets_sequence (torch.Tensor): The targets for the value loss. Shape: (T, N). """
+        
         # Extract PPO parameters relevant for GAE
         gamma = self.ppo_parameters['gamma']
         lam = self.ppo_parameters['lam']
@@ -214,8 +245,7 @@ class PPOAgent(AbstractAgent):
         return advantages_sequence, state_value_targets_sequence
     
     def clipCPI(self, states_sequence, actions_sequence, advantages_sequence, masks, mode='full'):
-        """
-        Compute the clipped policy improvement (CPI) for the given states, actions, and advantages.
+        """ Compute the clipped policy improvement (CPI) for the given states, actions, and advantages.
         Args:
             - states_sequence: A (T+1)-list of states.
             - actions_sequence: A T-list of actions.
@@ -223,8 +253,8 @@ class PPOAgent(AbstractAgent):
             - masks: A tensor of shape (T, N) indicating which states are valid. If None, all states are considered valid.
             - mode (str): The mode of the policy ('full' or 'partial'). Default is 'full'.
         Returns:
-            - clip_cpi_sequence * masks (torch.Tensor): The masked clipped policy improvement for the given states, actions, and advantages. Shape: (T, N).
-        """
+            - clip_cpi_sequence * masks (torch.Tensor): The masked clipped policy improvement for the given states, actions, and advantages. Shape: (T, N)."""
+        
         # Extract PPO parameters relevant for CPI
         eps = self.ppo_parameters['eps']
 
@@ -238,19 +268,17 @@ class PPOAgent(AbstractAgent):
 
         # Log the risk ratio if a logger is available
         if self.logger is not None:
-            self.logger.log_metric('risk_ratio', risk_ratio_sequence.mean().item())
+            self.logger.log_metric('risk ratio', risk_ratio_sequence.mean().item())
 
         return clip_cpi_sequence * masks
     
     def state_value_loss(self, states_sequence, state_value_targets_sequence):
-        """
-        Compute the state value loss for the given states and targets.
+        """ Compute the state value loss for the given states and targets.
         Args:
             states_sequence: A (T+1)-list of states.
             state_value_targets_sequence: A (T, N) tensor representing the targets for the value loss.
         Returns:
-            torch.Tensor: The computed state value loss.
-        """
+            torch.Tensor: The computed state value loss. """
         v_pred = self.v(states_sequence)[:-1]
         return torch.nn.functional.mse_loss(v_pred, state_value_targets_sequence)
 
@@ -258,12 +286,12 @@ class PPOAgent(AbstractAgent):
 
     #--------------------------- Functions for applying the policy and value networks across sequences ---------------------------#
     def p(self, states_sequence, actions_sequence, mode='full'):
-        logPs = [ self.policy.compute_action_probability(states, actions, mode) for states,actions in zip(states_sequence[:-1], actions_sequence) ] # A T-list of tensors, each of shape (N,)
+        logPs = [ self.policy(states, mode, actions) for states,actions in zip(states_sequence[:-1], actions_sequence) ] # A T-list of tensors, each of shape (N,)
         logPs = torch.stack(logPs) # Tensor of shape (T, N)
         return logPs
 
     def p_old(self, states_sequence, actions_sequence, mode='full'):
-        logPs = [ self.policy_old.compute_action_probability(states, actions, mode) for states,actions in zip(states_sequence[:-1], actions_sequence) ] # A T-list of tensors, each of shape (N,)
+        logPs = [ self.policy_old(states, mode, actions) for states,actions in zip(states_sequence[:-1], actions_sequence) ] # A T-list of tensors, each of shape (N,)
         logPs = torch.stack(logPs) # Tensor of shape (T, N)
         return logPs
     

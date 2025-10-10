@@ -31,24 +31,9 @@ class Environment():
         self.num_added_reactions = 0
         return self.state
 
-    def step(self, action, mode='reaction index'):
-        """
-        Step through the environment with the given action.
-        Args:
-            action (int or float): The action to be taken, interpreted as either a rate constant or a complete reaction.
-            mode (str): The mode of action interpretation, e.g., 'complex index', 'reaction index', or 'species index'.
-        Returns:
-            state (CRN object): The new state of the environment after taking the action.
-            done (bool): A flag indicating whether the maximum number of reactions has been added.
-        """
-        # If the state (IOCRN) has unknown rate constants, the action is interpreted as a rate constant for the next unknown rate.
-        # Otherwise the action is interpreted as a complete reaction.
-        if self.state.num_unknown_params > 0:
-            raise NotImplementedError("Setting rate constants directly is not implemented yet.")
-        else:
-            self.state.add_reaction(action)
-            self.state.compile()
-            self.num_added_reactions += 1  
+    def step(self, action, stepper):
+        stepper.step(self.state, action)
+        self.num_added_reactions += 1  
 
         # Set a flag to indicate when the maximum number of reactions has been added        
         if self.num_added_reactions < self.max_added_reactions:

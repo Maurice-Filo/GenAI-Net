@@ -5,29 +5,32 @@ from RL4CRN.agents.abstract_agent import AbstractAgent
 
 class REINFORCEAgent(AbstractAgent):
     def __init__(self, policy, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_scheduler = {}, risk_scheduler = {}, device=None):
-        """
-        Initialize the REINFORCE agent with a policy, learning rate, and optional entropy and risk schedulers.
+        """ Initialize the REINFORCE agent with a policy, learning rate, and optional entropy and risk schedulers.
         Args:
-            - policy (torch.nn.Module): The policy network to be used by the agent.
-            - allow_input_influence (bool): Whether to allow the input to influence the policy.
-            - logger (Logger): An optional logger for logging metrics.
-            - learning_rate (float): The learning rate for the optimizer.
-            - entropy_scheduler (dict): A dictionary containing parameters for the entropy scheduler:
-                - entropy_weight (float): Initial weight for entropy. It is modified during training.
-                - entropy_update_coefficient (float): Multiplicative coefficient to update the entropy weight.
-                - entropy_schedule (int): Number of iterations after which to update the entropy weight.
-                - minimum_entropy_weight (float): Minimum value for the entropy weight.
-            - risk_scheduler (dict): A dictionary containing parameters for the risky policy scheduler:
-                - risk (float): Initial risk value.
-                - risk_update (float): Amount to increase the risk value.
-                - max_risk (float): Maximum value for the risk.
-                - risk_schedule (int): Number of iterations after which to update the risk value.
-            - device (torch.device): The device to run the agent on (CPU or GPU). If None, defaults to CPU.
-        """
+        - policy (torch.nn.Module): The policy network to be used by the agent.
+        - allow_input_influence (bool): Whether to allow actions to include input influence. Default is False.
+        - logger (Logger): An optional logger for logging metrics.
+        - learning_rate (float): The learning rate for the optimizer.
+        - entropy_scheduler (dict): A dictionary containing parameters for the entropy scheduler:
+            - entropy_weight (float): Initial weight for entropy. It is modified during training.
+            - entropy_update_coefficient (float): Multiplicative coefficient to update the entropy weight.
+            - entropy_schedule (int): Number of iterations after which to update the entropy weight.
+            - minimum_entropy_weight (float): Minimum value for the entropy weight.
+        - risk_scheduler (dict): A dictionary containing parameters for the risky policy scheduler:
+            - risk (float): Initial risk value.
+            - risk_update (float): Amount to increase the risk value.
+            - max_risk (float): Maximum value for the risk.
+            - risk_schedule (int): Number of iterations after which to update the risk value.
+        - device (torch.device): The device to run the agent on (CPU or GPU). If None, defaults to CPU. """
+        
         super(REINFORCEAgent, self).__init__()
         self.device = device if device is not None else torch.device('cpu')
-        self.policy = policy.to(self.device) 
         self.allow_input_influence = allow_input_influence
+
+        # Neural Networks
+        self.policy = policy.to(self.device) 
+
+        # Trajectories
         self.logPs_sequence = []
         self.entropies_sequence = []
 
@@ -48,16 +51,24 @@ class REINFORCEAgent(AbstractAgent):
         self.risk_counter = 0
         
     def act(self, states, actuator, mode='full'):
+        """ Select actions based on the current policy and the observed states.
+        Args:
+        - states (torch.Tensor): The observed states. Shape: (N, state_dim).
+        - actuator (AbstractActuator): The actuator to convert policy actions to environment actions.
+        - mode (str): The mode of the policy ('full', 'partial', or 'parameters'). Default is 'full'.
+        Returns:
+        - actions (list): A list of actions to be taken in the environment. """
+
         super(REINFORCEAgent, self).act()
         tic_forward = time.time()
 
-        # Check if the observed IOCRN has unknown rate constants
+        # Check if the observed IOCRN has unknown parameters
         if mode == 'parameters' and self.allow_input_influence:
             raise NotImplementedError("The cases of unknown rate constants and/or allow input influence are not implemented yet.")
         else:
-            actions, logP, entropy = self.policy(states, mode=mode)
-            self.logPs_sequence.append(logP)
-            self.entropies_sequence.append(entropy)
+            actions, logPs, entropies = self.policy(states, mode=mode)
+            self.logPs_sequence.append(logPs)
+            self.entropies_sequence.append(entropies)
         toc_forward = time.time()
 
         # Log the forward pass time and return the actions
@@ -68,12 +79,11 @@ class REINFORCEAgent(AbstractAgent):
         return actions
     
     def update(self, rewards, step_iteration=None):
-        """
-        Update the agent's policy based on the rewards received.
+        """ Update the agent's policy based on the rewards received.
         Args:
-            rewards (list): A list of rewards, at the final step, received for each sample in the batch.
-            step_iteration (int): The current iteration step for logging purposes.
-        """
+        - rewards (list): A list of rewards, at the final step, received for each sample in the batch.
+        - step_iteration (int): The current iteration step for logging purposes. """
+        
         super(REINFORCEAgent, self).update(rewards)
         tic_backward = time.time()
 
@@ -81,7 +91,7 @@ class REINFORCEAgent(AbstractAgent):
         self.optimizer.zero_grad()
         final_loss_for_each_sample = rewards # list of size N
         sum_logPs = torch.sum(torch.stack(self.logPs_sequence, dim=1), dim=1) # shape (N,), self.logPs_sequence is a list (length=total number of actions) of tensors of shape (N,)
-        sum_entropies = torch.sum(torch.stack(self.entropies_sequence, dim=1), dim=1) # shape (N,), self.entropies is a list (length=total number of actions) of tensors of shape (N,)
+        sum_entropies = torch.sum(torch.stack(self.entropies_sequence, dim=1), dim=1) # shape (N,), self.entropies_sequence is a list (length=total number of actions) of tensors of shape (N,)
         N = self.logPs_sequence[0].shape[0]
 
         # Compute the loss that is used to compute the gradient
@@ -108,17 +118,17 @@ class REINFORCEAgent(AbstractAgent):
 
         # Log the training process
         if self.logger is not None:
-            self.logger.log_metric('entropy', sum_entropies.mean().item(), step=step_iteration)
-            self.logger.log_metric('logP', sum_logPs.mean().item(), step=step_iteration)
-            self.logger.log_metric('entropy_weight', self.entropy_scheduler['entropy_weight'], step=step_iteration)
+            self.logger.log_metric('batch average of total sequence entropy', sum_entropies.mean().item(), step=step_iteration)
+            self.logger.log_metric('batch average of total sequence logP', sum_logPs.mean().item(), step=step_iteration)
+            self.logger.log_metric('entropy weight', self.entropy_scheduler['entropy_weight'], step=step_iteration)
             self.logger.log_metric('risk', self.risk_scheduler['risk'], step=step_iteration)
-            self.logger.log_metric('backward_time', toc_backward - tic_backward, step=step_iteration)
+            self.logger.log_metric('backward time', toc_backward - tic_backward, step=step_iteration)
             best = final_loss_for_each_sample[top_k[0]]
             worst = final_loss_for_each_sample[top_k[-1]]
             avg = final_loss_for_each_sample[top_k].float().mean()
-            self.logger.log_metric('best_loss', best.item(), step=step_iteration)
-            self.logger.log_metric('worst_loss', worst.item(), step=step_iteration)
-            self.logger.log_metric('avg_loss', avg.item(), step=step_iteration)
+            self.logger.log_metric('best loss in the batch top k', best.item(), step=step_iteration)
+            self.logger.log_metric('worst loss in the batch top k', worst.item(), step=step_iteration)
+            self.logger.log_metric('average loss in the batch top k', avg.item(), step=step_iteration)
 
         # Clear the lists of logPs and entropies
         self.logPs_sequence.clear()

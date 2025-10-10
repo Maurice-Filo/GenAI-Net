@@ -5,40 +5,51 @@ from RL4CRN.utils.utils import batch_multi_hot
 from RL4CRN.policies.parameter_generator_from_distribution import ParameterGeneratorFromDistribution
 import numpy as np
 
-class AddReactionFromLibrary(torch.nn.Module):
-    def __init__(self, reaction_library, num_inputs, encoder_attributes, deep_layer_size, structure_head_attributes, parameter_head_attributes, input_influence_head_attributes, 
-                 continuous_distribution={"type": 'lognormal'}, discrete_distribution={"type": 'categorical', "categories": [torch.tensor([1, 2])]}, allow_input_influence=False, device=None):
-        """ A policy that generates a reaction from a reaction library to an IOCRN in batch mode.
-        The policy consists of a neural network with multiple heads that outputs the reaction structure, the reaction parameters (continuous and discrete, if applicable), and the input influence (if applicable). 
-        The reaction structure is represented as a categorical distribution over the reactions in the library, from which a reaction is sampled.
-        The reaction parameters are generated from specified distributions (e.g., log-normal for continuous parameters and categorical for discrete parameters) using separate heads.
-        The input influence is represented as a categorical distribution over the inputs and no input, from which an input influence is sampled.
+class AddReactionByIndex(torch.nn.Module):
+    """ A policy that generates a reaction by its index to an IOCRN in batch mode.
+        The policy consists of a neural network with multiple heads that outputs the reaction structure, 
+        the reaction parameters (continuous and discrete, if applicable), and the input influence (if 
+        applicable). The reaction structure is represented as a categorical distribution over the reactions 
+        in the indexed set, from which a reaction is sampled. The reaction parameters are generated from 
+        specified distributions (e.g., log-normal for continuous parameters and categorical for discrete 
+        parameters) using separate heads. #TODO The input influence generation is not implemented yet. """
+    def __init__(self, num_reactions, num_parameters, num_inputs, 
+                 encoder_attributes, deep_layer_size, structure_head_attributes, parameter_head_attributes, 
+                 input_influence_head_attributes, masks=None,
+                 continuous_distribution={"type": 'lognormal'}, 
+                 discrete_distribution={"type": 'categorical', "categories": [torch.tensor([1, 2])]}, 
+                 allow_input_influence=False, device=None):
+        """ Initializes the AddReactionByIndex policy.
         Arguments:
-        - reaction_library: an instance of ReactionLibrary containing the reactions to sample from.
+        - num_reactions: total number of reactions to select from (assumed to be the same for all IOCRNs in the batch).
+        - num_parameters: total number of parameters (continuous + discrete) across all possible reactions.
         - num_inputs: number of inputs in the IOCRN (assumed to be the same for all IOCRNs in the batch).
         - encoder_attributes: a dictionary containing the attributes of the encoder neural network (hidden_size, num_layers).
         - deep_layer_size: size of the deep layer representation of the IOCRN.
         - structure_head_attributes: a dictionary containing the attributes of the reaction structure head neural network (hidden_size, num_layers).
         - parameter_head_attributes: a dictionary containing the attributes of the reaction parameter head neural network (hidden_size, num_layers).
         - input_influence_head_attributes: a dictionary containing the attributes of the input influence head neural network (hidden_size, num_layers).
+        - masks: a dictionary containing the masks for the continuous parameters, discrete parameters, and logits (default is None, which means no masks are applied). The keys are:
+            - 'continuous': a binary numpy array of shape (num_reactions, max_num_continuous_parameters) indicating the presence of continuous parameters for each reaction.
+            - 'discrete': a binary numpy array of shape (num_reactions, max_num_discrete_parameters) indicating the presence of discrete parameters for each reaction.
+            - 'logit': a binary numpy array of shape (num_reactions, total_num_categories_for_all_discrete_parameters) indicating the valid logits for the discrete parameters for each reaction.   
         - continuous_distribution: a dictionary specifying the type of the continuous parameter distribution (default is log-normal).
         - discrete_distribution: a dictionary specifying the type and categories of the discrete parameter distribution (default is categorical).
         - allow_input_influence: if True, the policy will include an input influence head (default is False).
-        - device: device to run the policy on (default is None, which uses CPU).
-        """
+        - device: device to run the policy on (default is None, which uses CPU). """
+
         super().__init__()
 
-        # Record the IOCRN and ReactionLibrary attributes
-        self.reaction_library = reaction_library                        # An instance of ReactionLibrary containing the reactions to sample from    
-        self.K = reaction_library.get_num_parameters()                  # Total number of parameters (continuous + discrete) across all reactions in the library
-        self.M = len(reaction_library)                                  # Total number of reactions in the library
-        self.p = num_inputs                                             # Number of inputs in the IOCRN
+        # Record the IOCRN attributes
+        self.M = num_reactions                                              # Total number of reactions
+        self.K = num_parameters                                             # Total number of parameters (continuous + discrete) across all reactions
+        self.p = num_inputs                                                 # Number of inputs in the IOCRN
 
         # Record the neural network attributes
         self.encoder_attributes = encoder_attributes
         self.deep_layer_size = deep_layer_size
         self.structure_head_attributes = structure_head_attributes
-        self.rate_head_attributes = parameter_head_attributes
+        self.parameter_head_attributes = parameter_head_attributes
         self.input_influence_head_attributes = input_influence_head_attributes
         self.allow_input_influence = allow_input_influence
         self.device = device
@@ -47,12 +58,14 @@ class AddReactionFromLibrary(torch.nn.Module):
         self.continuous_distribution = continuous_distribution
         self.discrete_distribution = discrete_distribution
 
-        # Get the masks from the reaction library and tensorize them
-        self.continuous_parameter_mask = reaction_library.get_parameter_mask(mode='continuous')
+        # Tensorize the masks, if provided, and tensorize them into the specified device
+        if masks is None:
+            masks = {'continuous': None, 'discrete': None, 'logit': None}
+        self.continuous_parameter_mask = masks['continuous']
         self.continuous_parameter_mask = torch.tensor(self.continuous_parameter_mask).to(self.device) if self.continuous_parameter_mask is not None else None # Shape: (M, max_num_continuous_parameters)
-        self.discrete_parameter_mask = reaction_library.get_parameter_mask(mode='discrete')
+        self.discrete_parameter_mask = masks['discrete']
         self.discrete_parameter_mask = torch.tensor(self.discrete_parameter_mask).to(self.device) if self.discrete_parameter_mask is not None else None  # Shape: (M, max_num_discrete_parameters)
-        self.logit_mask = reaction_library.get_logit_mask()
+        self.logit_mask = masks['logit']
 
         # Define the encoder that encodes the IOCRN observation into a deep layer representation
         self.encoder = FFNN(input_size=self.M + (self.p + 1) * self.K, output_size=deep_layer_size, hidden_size=encoder_attributes["hidden_size"], num_layers=encoder_attributes["num_layers"]).to(device=device)
@@ -95,12 +108,12 @@ class AddReactionFromLibrary(torch.nn.Module):
         The 'full' mode considers both the reaction structure and the reaction parameters.
         The 'partial' mode considers only the reaction parameters, assuming the reaction structure is given.
         Returns:
-        - actions (list): A list of dictionaries containing the actions. Each dictionary contains:
+        - actions (list): A list of dictionaries containing the actions in the batch. Each dictionary contains:
             - 'reaction index': The index of the sampled reaction (if mode is 'full').
             - 'parameters': A list of the sampled reaction parameters (continuous and discrete, if applicable).
         - log_probabilities (torch.Tensor): The log probability of the actions in the batch. Shape: (N,).
-        - entropies (torch.Tensor): The entropy of the actions in the batch. Shape: (N,).
-        """
+        - entropies (torch.Tensor): The entropy of the actions in the batch. Shape: (N,). """
+
         # Validate the input has no NaNs
         assert x.isnan().sum() == 0, "Input contains NaN values."
 
@@ -115,16 +128,19 @@ class AddReactionFromLibrary(torch.nn.Module):
 
             # Mask out already existing reactions in the IOCRN
             masked_reaction_structure_logits = reaction_structure_logits.masked_fill(x[:,:self.M].bool(), float('-inf')) # shape: (N, M)
-            # masked_reaction_structure_logits = reaction_structure_logits.exp() * (1 - x[:, :self.M]) + 1e-20
-            # masked_reaction_structure_logits = torch.log(masked_reaction_structure_logits)
+
+            # Construct the categorical distribution over the library reactions and compute their entropies
             reaction_structure_distribution = Categorical(logits=masked_reaction_structure_logits) # batch of N categorical distributions, each over M categories
-            samples_reaction_idx = reaction_structure_distribution.sample() # shape: (N,)
-            samples_reaction_hot = batch_multi_hot(samples_reaction_idx.unsqueeze(-1).cpu().numpy(), self.M, intensities=None, device=self.device) # shape: (N, M)
             entropies = reaction_structure_distribution.entropy() # shape: (N,)
+
+            # Sample the reaction structure from the distribution and compute the log probabilities of the sampled reactions
+            samples_reaction_idx = reaction_structure_distribution.sample() # shape: (N,)
             log_probabilities = reaction_structure_distribution.log_prob(samples_reaction_idx) # shape: (N,)
 
+            # Create the one-hot encoding of the sampled reactions
+            samples_reaction_hot = batch_multi_hot(samples_reaction_idx.unsqueeze(-1).cpu().numpy(), self.M, intensities=None, device=self.device) # shape: (N, M)
+               
         # Create masks corresponding to the sampled reactions
-        self.continuous_parameter_mask = None #TODO Remove this line after testing
         continuous_parameter_mask_subset = self.continuous_parameter_mask[samples_reaction_idx] if self.continuous_parameter_mask is not None else None # Shape: (N, max_num_continuous_parameters) or None
         discrete_parameter_mask_subset = self.discrete_parameter_mask[samples_reaction_idx] if self.discrete_parameter_mask is not None else None  # Shape: (N, max_num_discrete_parameters) or None
         logit_mask_subset = self.logit_mask[samples_reaction_idx] if self.logit_mask is not None else None  # Shape: (N, total_num_categories_for_all_discrete_parameters) or None

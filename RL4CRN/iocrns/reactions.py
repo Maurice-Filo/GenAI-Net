@@ -70,8 +70,7 @@ class Reaction:
         Arguments:
         - other: another Reaction instance to compare with.
         Returns:
-        - True if the reactions have the same signature, False otherwise.
-        """
+        - True if the reactions have the same signature, False otherwise. """
         return self.signature == other.signature
 
     def set_library_context(self, reaction_library):
@@ -85,11 +84,11 @@ class MassAction(Reaction):
     def __init__(self, reactant_labels, product_labels, input_channels=[None], params=[None], params_controllability=[True]):
         """ Initializes a mass action reaction.
         Arguments:
-        - reactant_labels: list of strings representing the labels of the reactants, can be empty
-        - product_labels: list of strings representing the labels of the products, can be empty
-        - input_channels: list of one string representing the channel of the input, cannot be empty, can contain None. If None, it indicates that the reaction does not depend on any input
-        - params: list of one float representing the rate constant of the reaction, cannot be empty, can contain None. If None, it indicates that the rate constant is unknown and needs to be set later
-        - params_controllability: list of one boolean representing whether the rate constant is controllable by an input, cannot be empty
+        - reactant_labels: list of strings representing the labels of the reactants, can be empty. If empty, it indicates a zeroth-order reaction (e.g., ∅ -> A).
+        - product_labels: list of strings representing the labels of the products, can be empty. If empty, it indicates a degradation reaction (e.g., A -> ∅).
+        - input_channels: list of one string representing the channel of the input, cannot be empty, can contain None. If None, it indicates that the reaction does not depend on any input.
+        - params: list of one float representing the rate constant of the reaction, cannot be empty, can contain None. If None, it indicates that the rate constant is unknown and needs to be set later.
+        - params_controllability: list of one boolean representing whether the rate constant is controllable by an input, cannot be empty.
         The lengths of input_channels, params, and params_controllability must be one. 
         """
         # Call the parent constructor
@@ -110,8 +109,8 @@ class MassAction(Reaction):
     def set_parameters(self, params):
         """ Sets the parameters of the mass action reaction.
         Arguments:
-        - params: list of one float representing the rate constant of the reaction. 
-        """
+        - params: list of one float representing the rate constant of the reaction. """
+        
         # Ensure params has exactly one element (the rate constant)
         assert len(params) == 1, "MassAction reaction must have exactly one parameter (the rate constant)."
 

@@ -54,8 +54,7 @@ class IOCRN:
         self.compile()
 
     def retrieve_species(self):
-        """ Retrieve and store the labels of the species present in the IOCRN and their corresponding indices in the IOCRN. 
-        """
+        """ Retrieve and store the labels of the species present in the IOCRN and their corresponding indices in the IOCRN. """
         # Get labels of all the species involved in the IOCRN, and sort them alphanumerically
         self.species_labels = list(set(sum([reaction.get_involved_species() for reaction in self.reactions], []))) # list of strings of all species
         self.species_labels.sort() 
@@ -105,6 +104,7 @@ class IOCRN:
         return [self.input_idx_dict[l] if l is not None else None for l in labels] # list of indices
     
     def set_library_context(self, reaction_library):
+        """ Set the context for each reaction in the IOCRN using the provided reaction library. """
         for reaction in self.reactions:
             reaction.set_library_context(reaction_library)
 
@@ -124,11 +124,9 @@ class IOCRN:
         return S
     
     def gather_reaction_IDs(self):
-        """
-        Gather and return the IDs of all reactions in the IOCRN.
+        """ Gather and return the IDs of all reactions in the IOCRN.
         Returns:
-        - reaction_IDs: A list of integers representing the IDs of the reactions.
-        """
+        - reaction_IDs: A list of integers representing the IDs of the reactions. """
         reaction_IDs = [reaction.ID for reaction in self.reactions]
         return reaction_IDs
     
@@ -136,8 +134,7 @@ class IOCRN:
         """
         Gather and return the parameters of all reactions in the IOCRN.
         Returns:
-        - reaction_params: A list of lists of parameters for all reactions.
-        """
+        - reaction_params: A list of lists of parameters for all reactions. """
         reaction_params = []
         for reaction in self.reactions:
             reaction_params.append(reaction.params)
