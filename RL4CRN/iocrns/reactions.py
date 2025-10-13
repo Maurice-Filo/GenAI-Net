@@ -197,3 +197,48 @@ class MassAction(Reaction):
         if inputs_str == '':
             return f"{reactants_str} ----> {products_str};  [MAK({self.rate_constant})]" #\n {species_str}"
         return f"{reactants_str} ----> {products_str};  [MAK({self.rate_constant}, {inputs_str})]" # \n {species_str}"
+    
+class HillProduction(Reaction):
+    def __init__(self, product_labels, activator_labels=None, repressor_labels=None, input_channels=[None], params=[None], params_controllability=[True]):
+
+        # Call the parent constructor
+        super().__init__([], product_labels, input_channels, params, params_controllability)
+
+        # Record the activator and repressor labels
+        self.activator_labels = activator_labels                    # list of strings, can be empty
+        self.repressor_labels = repressor_labels                    # list of strings, can be empty
+
+        # Sort the labels alphanumerically
+        self.activator_labels.sort()
+        self.repressor_labels.sort()
+        
+        # Ensure the number of parameters is correct (2 + 2*number of activators + 2*number of repressors)
+        assert len(params) ==  2 + 2*len(self.activator_labels) + 2*len(self.repressor_labels), "HillProduction reaction must have exactly 2 + 2*number of activators + 2*number of repressors parameters (the basal rate, the maximal rate, and the Hill coefficients and dissociation constants for each activator and repressor)."
+
+        # Create the reaction signature: depends on the reaction structure only, not on the parameters or inputs
+        self.signature = str(('HILLProd', product_labels, activator_labels, repressor_labels))
+
+        # Record the basal and maximal rates, the dissociation constants, and the Hill coefficients
+        self.basal_rate = params[0]                                                 # float or None
+        self.maximal_rate = params[1]                                               # float or None
+        self.activator_dissociation_constants = params[2:2+len(self.activator_labels)] if self.activator_labels else []  # list of floats or None
+        self.activator_hill_coefficients = params[2+len(self.activator_labels):2+2*len(self.activator_labels)] if self.activator_labels else []  # list of floats or None
+        self.repressor_dissociation_constants = params[2+2*len(self.activator_labels):2+2*len(self.activator_labels)+len(self.repressor_labels)] if self.repressor_labels else []  # list of floats or None
+        self.repressor_hill_coefficients = params[2+2*len(self.activator_labels)+len(self.repressor_labels):] if self.repressor_labels else []  # list of floats or None
+
+        self.num_continuous_parameters = 2 + len(self.activator_labels) + len(self.repressor_labels)                            # basal and maximal rates, and dissociation constants
+        self.num_discrete_parameters = len(self.activator_labels) + len(self.repressor_labels)                                  # Hill coefficients
+        self.num_unknown_params = self.get_num_unknown_params()   
+
+    def set_parameters(self, params):
+        """ Sets the whole parameter vector.
+        Layout: [b, Vmax, (Ka,na for each activator in sorted order), (Kr,nr for each repressor in sorted order)]. """
+        
+        # Ensure params has exactly one element (the rate constant)
+        assert len(params) == 1, "MassAction reaction must have exactly one parameter (the rate constant)."
+
+        # Set the rate constant
+        self.rate_constant = params[0]
+
+        # Update the params list
+        self.params = params  
