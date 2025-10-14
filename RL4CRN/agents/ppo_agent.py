@@ -122,7 +122,7 @@ class PPOAgent(AbstractAgent):
         ppo_loss_for_each_sample = self.compute_PPO_loss(self.states_sequence, self.actions_sequence, rewards_sequence_tensor, entropies_sequence_tensor)
 
         # Risky policy gradient and backpropagation
-        scores = rewards_sequence_tensor.mean(dim=0)  # Shape: (N,)
+        scores = rewards_sequence_tensor.sum(dim=0)  # Shape: (N,) TODO: is mean better than sum?
         top_k = torch.topk(scores.detach(), int(N * (1. - self.risk_scheduler['risk'])), largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
         torch.mean(ppo_loss_for_each_sample[top_k]).backward()
 

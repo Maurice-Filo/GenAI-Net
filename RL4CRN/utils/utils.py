@@ -1,17 +1,17 @@
 import torch
 import numpy as np
+from scipy.signal import find_peaks
 
 def performance_metric(r_list, y_list, w, norm=1):
-    """
-    Computes the performance metric based on the difference between reference signal r and output y.
+    """ Computes the performance metric based on the difference between reference signal r and output y.
     Args:
-        r: A list of reference signals, each of shape (q,).
-        y: A list of outputs, each of shape (q, time_steps).
+        r_list: A list of reference signals, each of shape (q,).
+        y_list: A list of outputs, each of shape (q, time_steps).
         w: A numpy array of weights, shape (q, time_steps).
         norm: An integer indicating the norm to use for the metric calculation.
     Returns:
-        float: Computed performance metric.
-    """
+        float: Computed performance metric. """
+    
     # Check if dimensions match
     if len(r_list) != len(y_list):
         raise ValueError(f"Length of reference and output lists must match. Got {len(r_list)} and {len(y_list)}.")
@@ -47,6 +47,7 @@ def batch_multi_hot(indices, num_classes, intensities=None, device=None, pad_val
 
     Returns:
         (multi_hot, intensity_tensor): both torch.FloatTensors of shape (B, num_classes). """
+    
     batch_size, num_reactions = indices.shape
     valid_mask = indices != pad_val
     row_indices = np.repeat(np.arange(batch_size), num_reactions)[valid_mask.ravel()]
@@ -64,6 +65,7 @@ def batch_multi_hot(indices, num_classes, intensities=None, device=None, pad_val
 def cartesian_prod(arrays, *, dtype=None):
     """ arrays: list/tuple of 1D numpy arrays.
     returns: (prod(len(a) for a in arrays), len(arrays)) ndarray. """
+    
     arrays = [np.asarray(a).ravel() for a in arrays]
     if not arrays:
         raise ValueError("arrays must be a non-empty list of 1D arrays")
@@ -81,13 +83,11 @@ def cartesian_prod(arrays, *, dtype=None):
     return out
     
 def print_task_info(last_task_info, mode='sizes'):
-    """
-    Prints the information of the last task performed on the IOCRN.
+    """ Prints the information of the last task performed on the IOCRN.
     Arguments:
     - last_task_info: A dictionary containing the information of the last task performed.
     - mode: A string indicating the mode of printing. It can be 'sizes' to print the sizes and types of the last task information, or 'values' to print the values of the last task information.
-    If no task has been performed yet, it prints a message indicating that.
-    """
+    If no task has been performed yet, it prints a message indicating that. """
     if not last_task_info:
         print("No task has been performed yet.")
         return
@@ -113,3 +113,107 @@ def print_task_info(last_task_info, mode='sizes'):
     else:
         for key, value in last_task_info.items():
             print(f"{key}: {value}")
+
+def oscillation_metrics(f_list, y_list, t, t0):
+    """ Computes oscillation metrics: frequency error, damping metric, and periodicity index.
+    Args:
+    - f_list: A list of frequencies.
+    - y_list: A list of outputs, each of shape (1, time_steps).
+    - t: A 1D numpy array representing the time vector.
+    - t0: A float representing the time after which to start considering peaks.
+    Returns:
+    - frequency_error: A float representing the mean absolute error between desired and estimated frequencies.
+    - avg_damping_metric: A float representing the average damping metric across all outputs. 
+    - periodicity_index: A float representing the average periodicity index across all outputs.
+    - peaks_flag: A boolean indicating if peaks were found for all outputs. """
+    
+    # Check if dimensions match
+    if len(f_list) != len(y_list):
+        raise ValueError(f"Length of frequency and output lists must match. Got {len(f_list)} and {len(y_list)}.")
+    if 1 != y_list[0].shape[0]:
+        raise ValueError("Reference signal and output must have the same number of dimensions.")
+    f_array = np.stack(f_list)   # shape (list_length,)
+    
+    # Focus on the time after t0
+    time_mask = t >= t0
+    t = t[time_mask]
+    y_list = [y[:, time_mask] for y in y_list]
+
+    # Compute the peaks of the output signals
+    peaks_indices_list = []
+    for y in y_list:
+        yy = np.squeeze(y)
+        dyn = float(np.max(yy) - np.min(yy)) if yy.size else 0.0
+        prom = max(0.01, 0.05 * dyn)  # 5% of dynamic range (with epsilon floor)
+        peaks_indices_list.append(find_peaks(yy, prominence=prom)[0])
+
+    # Compute the frequencies from the peaks
+    estimated_frequencies = []
+    damping_metrics = []
+    peaks_flag = True
+    for peaks_indices, y in zip(peaks_indices_list, y_list):
+        if len(peaks_indices) < 2:
+            estimated_frequencies.append(0.0)
+            damping_metrics.append(0.0)
+            peaks_flag = False
+        else:
+            peak_times = t[peaks_indices]
+            periods = np.diff(peak_times)
+            avg_period = np.mean(periods)
+            estimated_frequencies.append(1.0 / avg_period if avg_period > 0 else 0.0)
+
+            peak_heights = y[0, peaks_indices]
+            decrements = peak_heights[:-1] / peak_heights[1:]
+            avg_decrement = np.mean(decrements)
+            damping_metrics.append(avg_decrement)
+    estimated_frequencies = np.array(estimated_frequencies).reshape(f_array.shape)  # shape (list_length, 1)
+    damping_metrics = np.array(damping_metrics).reshape(f_array.shape)  # shape (list_length, 1)
+
+    # Compute the relative frequency error
+    frequency_error = np.mean(np.abs(f_array - estimated_frequencies)/ f_array)
+
+    # Compute the average damping metric
+    damping = np.mean(damping_metrics) 
+
+    # Compute the periodicity index
+    r1_list = []
+    for y in y_list:
+        x = np.squeeze(y) - np.mean(y)
+        if np.allclose(x, 0.0, atol=1e-2):
+            r1_list.append(0.0)
+            continue
+
+        R_full = np.correlate(x, x, mode='full')
+        mid = len(R_full) // 2
+
+        if R_full[mid] <= 0:
+            r1_list.append(0.0)
+            continue
+
+        R = R_full[mid:] / R_full[mid]  # normalize so R[0] = 1
+
+        # Find first nonzero-lag local maximum
+        if len(R) < 3:
+            r1_list.append(0.0)
+            continue
+
+        # Ignore lag=0
+        R_search = R[1:]
+        if len(R_search) < 3:
+            r1_list.append(0.0)
+            continue
+        
+        # Find indices where R[i-1] < R[i] > R[i+1]
+        candidates = np.where((R_search[1:-1] > R_search[:-2]) &
+                            (R_search[1:-1] > R_search[2:]))[0] + 1
+        if len(candidates) == 0:
+            r1_list.append(0.0)
+            continue
+
+        # Choose the first such peak
+        tau1 = candidates[0] + 1
+        r1 = R[tau1]
+        r1_list.append(r1)
+
+    r1 = np.mean(r1_list) if len(r1_list) else 0.0
+    return frequency_error, damping, r1, peaks_flag

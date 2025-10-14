@@ -62,9 +62,9 @@ class AddReactionByIndex(torch.nn.Module):
         if masks is None:
             masks = {'continuous': None, 'discrete': None, 'logit': None}
         self.continuous_parameter_mask = masks['continuous']
-        self.continuous_parameter_mask = torch.tensor(self.continuous_parameter_mask).to(self.device) if self.continuous_parameter_mask is not None else None # Shape: (M, max_num_continuous_parameters)
+        self.continuous_parameter_mask = torch.tensor(self.continuous_parameter_mask, dtype=torch.float32).to(self.device) if self.continuous_parameter_mask is not None else None # Shape: (M, max_num_continuous_parameters)
         self.discrete_parameter_mask = masks['discrete']
-        self.discrete_parameter_mask = torch.tensor(self.discrete_parameter_mask).to(self.device) if self.discrete_parameter_mask is not None else None  # Shape: (M, max_num_discrete_parameters)
+        self.discrete_parameter_mask = torch.tensor(self.discrete_parameter_mask, dtype=torch.float32).to(self.device) if self.discrete_parameter_mask is not None else None  # Shape: (M, max_num_discrete_parameters)
         self.logit_mask = masks['logit']
 
         # Define the encoder that encodes the IOCRN observation into a deep layer representation
