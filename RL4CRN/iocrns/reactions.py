@@ -259,10 +259,10 @@ class HillProduction(Reaction):
         # Record the basal and maximal rates, the dissociation constants, and the Hill coefficients
         self.basal_rate = self.params[0]                                                 # float or None
         self.maximal_rate = self.params[1]                                               # float or None
-        self.activator_dissociation_constants = self.params[2:2+len(self.activator_labels)] if self.activator_labels else []  # list of floats or None
-        self.activator_hill_coefficients = params[2+len(self.activator_labels):2+2*len(self.activator_labels)] if self.activator_labels else []  # list of floats or None
-        self.repressor_dissociation_constants = params[2+2*len(self.activator_labels):2+2*len(self.activator_labels)+len(self.repressor_labels)] if self.repressor_labels else []  # list of floats or None
-        self.repressor_hill_coefficients = params[2+2*len(self.activator_labels)+len(self.repressor_labels):] if self.repressor_labels else []  # list of floats or None
+        self.activator_dissociation_constants = self.params[2:2+2*self.num_activators:2] if self.activator_labels else []  # list of floats or None
+        self.activator_hill_coefficients = self.params[3:2+2*self.num_activators:2] if self.activator_labels else []  # list of floats or None
+        self.repressor_dissociation_constants = self.params[2+2*self.num_activators:2+2*self.num_activators+2*self.num_repressors:2] if self.repressor_labels else []  # list of floats or None
+        self.repressor_hill_coefficients = self.params[3+2*self.num_activators:2+2*self.num_activators+2*self.num_repressors:2] if self.repressor_labels else []  # list of floats or None
 
         self.num_continuous_parameters = 2 + len(self.activator_labels) + len(self.repressor_labels)                            # basal and maximal rates, and dissociation constants
         self.num_discrete_parameters = len(self.activator_labels) + len(self.repressor_labels)                                  # Hill coefficients
@@ -335,11 +335,14 @@ class HillProduction(Reaction):
         Returns:
         - propensity: float representing the propensity of the reaction. """
         
-        # Extract relevant species and inputs
-        x_product = x[self.product_idx] if self.product_idx else 0.0
+        # x = x[self.reactant_idx]
+        # u = u[self.input_idx[0]] if self.input_idx[0] is not None else 1.0
+        # return self.rate_constant * np.prod(x) * u
+    
+        # Extract relevant species and inputs        
         x_activators = x[self.activator_idx] if self.activator_idx else np.array([])
         x_repressors = x[self.repressor_idx] if self.repressor_idx else np.array([])
-        u = u[self.input_idx[0]] if self.input_idx[0] is not None else 1.0
+        u = np.array([u[i] if i is not None else 1 for i in self.input_idx])
 
         # Compute the activation term
         activation_term = 1.0
@@ -356,7 +359,7 @@ class HillProduction(Reaction):
             repression_term *= Kr**nr / (Kr**nr + x_repressors[i]**nr) if Kr is not None and nr is not None else 1.0
 
         # Compute the propensity using Hill kinetics
-        return (self.basal_rate + (self.maximal_rate - self.basal_rate) * activation_term * repression_term) * u if self.basal_rate is not None and self.maximal_rate is not None else 0.0
+        return self.basal_rate + (self.maximal_rate - self.basal_rate) * activation_term * repression_term 
     
     def __str__(self):
         """ Returns a string representation of the reaction in the format:
@@ -372,30 +375,36 @@ class HillProduction(Reaction):
             
         reactants_str = '∅'
         products_str = ' + '.join(self.product_labels) if self.product_labels else '∅'
-        inputs_str = self.input_channels[0] if self.input_channels[0] is not None else ''
         
         # Construct parameters string
-        params_str = f"{self.basal_rate}, {self.maximal_rate}"
+        # Basal rate
+        if self.input_channels[0] is None:
+            params_str = f"b = {self.basal_rate}, "
+        else:
+            params_str = f"b = {self.basal_rate}{self.input_channels[0]}, "
+
+        # Maximal rate
+        if self.input_channels[1] is None:
+            params_str += f"Vm = {self.maximal_rate},    "
+        else:
+            params_str += f"Vm = {self.maximal_rate}{self.input_channels[1]},    "
+
+        # Activators
+        params_str += f"(Ka, na) = "
         for i in range(self.num_activators):
-            params_str += f", ({self.activator_dissociation_constants[i]}, {self.activator_hill_coefficients[i]})"
+            if self.input_channels[2 + 2*i] is None:
+                params_str += f"{self.activator_labels[i]}({self.activator_dissociation_constants[i]}, {self.activator_hill_coefficients[i]})"
+            else:
+                params_str += f"{self.activator_labels[i]}({self.activator_dissociation_constants[i]}{self.input_channels[2 + 2*i]}, {self.activator_hill_coefficients[i]})"
+            params_str += ", " if i < self.num_activators - 1 else ""
+
+        # Repressors
+        params_str += f";    (Kr, nr) = "
         for i in range(self.num_repressors):
-            params_str += f", ({self.repressor_dissociation_constants[i]}, {self.repressor_hill_coefficients[i]})"
+            if self.input_channels[2 + 2*self.num_activators + 2*i] is None:
+                params_str += f"{self.repressor_labels[i]}({self.repressor_dissociation_constants[i]}, {self.repressor_hill_coefficients[i]})"
+            else:
+                params_str += f"{self.repressor_labels[i]}({self.repressor_dissociation_constants[i]}{self.input_channels[2 + 2*self.num_activators + 2*i]}, {self.repressor_hill_coefficients[i]})"
+            params_str += ", " if i < self.num_repressors - 1 else ""
         
-        # Construct inputs string
-        def safe(x):
-            return '.' if x is None else str(x)
-
-        inputs = [safe(self.input_channels[0]), safe(self.input_channels[1])]
-
-        for i in range(self.num_activators):
-            inputs += [safe(self.input_channels[2 + 2*i]), safe(self.input_channels[3 + 2*i])]
-
-        for i in range(self.num_repressors):
-            base = 2 + 2*self.num_activators
-            inputs += [safe(self.input_channels[base + 2*i]), safe(self.input_channels[base + 2*i + 1])]
-
-        inputs_str = ', '.join(inputs)
-
-        # if inputs_str == '':
-        #     return f"{reactants_str} ----> {products_str};  [HILLProd({params_str})]" 
-        return f"{reactants_str} ----> {products_str};  [HILLProd({params_str}, {inputs_str})]"
+        return f"{reactants_str} ----> {products_str};  [HILLProd({params_str})]"
