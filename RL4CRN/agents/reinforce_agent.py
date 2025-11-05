@@ -46,7 +46,7 @@ class REINFORCEAgent(AbstractAgent):
 
         # Risky policy scheduler
         if not risk_scheduler:
-            risk_scheduler = {'initial_risk': 0.8, 'risk_update': 0.00, 'max_risk': 1.00, 'risk_schedule': 20}
+            risk_scheduler = {'risk': 0.8, 'risk_update': 0.00, 'max_risk': 1.00, 'risk_schedule': 20}
         self.risk_scheduler = risk_scheduler
         self.risk_counter = 0
         
@@ -102,11 +102,13 @@ class REINFORCEAgent(AbstractAgent):
 
         # Risky policy gradient
         top_k = torch.topk(final_loss_for_each_sample, int(N * (1. - self.risk_scheduler['risk'])), largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
-        torch.mean(loss_for_gradient[top_k]).backward() # TODO: add another term to promote entropy for the remaining samples not in the top k
+        # torch.mean(loss_for_gradient[top_k]).backward() # TODO: add another term to promote entropy for the remaining samples not in the top k
+        tt = torch.sum(loss_for_gradient[top_k]) / N
+        tt.backward()
         self.optimizer.step()
         toc_backward = time.time()
 
-        # Update the entropy weight and the risk value
+        # Update the entropy weight and the risk value #TODO: risk scheduler never tested
         if self.entropy_scheduler['entropy_weight'] > self.entropy_scheduler["minimum_entropy_weight"]:
             self.entropy_counter += 1
             if self.entropy_counter % self.entropy_scheduler["entropy_schedule"] == 0:
@@ -126,6 +128,8 @@ class REINFORCEAgent(AbstractAgent):
             best = final_loss_for_each_sample[top_k[0]]
             worst = final_loss_for_each_sample[top_k[-1]]
             avg = final_loss_for_each_sample[top_k].float().mean()
+            batch_avg = final_loss_for_each_sample.float().mean()
+            self.logger.log_metric('full batch average loss', batch_avg.item(), step=step_iteration)
             self.logger.log_metric('best loss in the batch top k', best.item(), step=step_iteration)
             self.logger.log_metric('worst loss in the batch top k', worst.item(), step=step_iteration)
             self.logger.log_metric('average loss in the batch top k', avg.item(), step=step_iteration)

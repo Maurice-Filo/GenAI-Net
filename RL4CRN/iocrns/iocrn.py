@@ -131,10 +131,10 @@ class IOCRN:
         return reaction_IDs
     
     def gather_reaction_params(self):
-        """
-        Gather and return the parameters of all reactions in the IOCRN.
+        """ Gather and return the parameters of all reactions in the IOCRN.
         Returns:
         - reaction_params: A list of lists of parameters for all reactions. """
+
         reaction_params = []
         for reaction in self.reactions:
             reaction_params.append(reaction.params)
@@ -228,18 +228,26 @@ class IOCRN:
         stop_if_unstable.terminal = True
         stop_if_unstable.direction = 0
 
+        # Check if any reaction has negative parameters
+        params_all_reactions = self.gather_reaction_params()
+        has_negative = any(params < 0 for params_reaction in params_all_reactions for params in params_reaction)
+
         # Do the simulation for each input and initial condition scenario and store the results in lists
         x_list = []
         y_list = []
         for u, x0 in product(u_list, x0_list):
-            solution = solve_ivp(lambda t, x: self.rate_function(t, x, u), (time_horizon[0], time_horizon[-1]), x0, t_eval=time_horizon, method="LSODA", events=stop_if_unstable)
+            if has_negative is False:
+                solution = solve_ivp(lambda t, x: self.rate_function(t, x, u), (time_horizon[0], time_horizon[-1]), x0, t_eval=time_horizon, method="LSODA", events=stop_if_unstable)
 
-            if solution.status == -1: # if the integration failed, return large numbers for all species and outputs
-                x = np.full((self.num_species, time_horizon.shape[0]), LARGE_NUMBER) # numpy array of shape (n, steps)
+                if solution.status == -1: # if the integration failed, return large numbers for all species and outputs
+                    x = np.full((self.num_species, time_horizon.shape[0]), LARGE_NUMBER) # numpy array of shape (n, steps)
+                else:
+                    x = solution.y # numpy array of shape (n, steps)
+                    if solution.status == 1: # if the integration was stopped due to an event, fill the remaining time points after the event with large numbers
+                        x = np.concatenate([x, np.full((self.num_species, time_horizon.shape[0] - x.shape[1]), LARGE_NUMBER)], axis=1)
             else:
-                x = solution.y # numpy array of shape (n, steps)
-                if solution.status == 1: # if the integration was stopped due to an event, fill the remaining time points after the event with large numbers
-                    x = np.concatenate([x, np.full((self.num_species, time_horizon.shape[0] - x.shape[1]), LARGE_NUMBER)], axis=1)
+                x = np.full((self.num_species, time_horizon.shape[0]), -LARGE_NUMBER) # numpy array of shape (n, steps)
+
             y = x[self.output_idx, :] # select the output species from the state trajectory
 
             # Append the state trajectory and output trajectory to the lists
@@ -265,8 +273,8 @@ class IOCRN:
         - alpha: float, transparency level for the plot lines.
         Returns:
         - fig: matplotlib figure object containing the plots.
-        - axes: matplotlib axes object containing the plots.
-        """
+        - axes: matplotlib axes object containing the plots. """
+
         # Check if transient response data is available
         if self.last_task_info.get('type') != 'transient response':
             raise ValueError("No transient response data available. Run transient_response() first.")
@@ -284,5 +292,151 @@ class IOCRN:
                 axes[i].set_title(f"Transient Response of Output Species {self.species_labels[self.output_idx[i]]}")
                 axes[i].set_xlabel("Time")
                 axes[i].set_ylabel("Concentration")
+        plt.tight_layout()
+        return fig, axes
+    
+    def plot_phase_portrait(self, fig=None, axis=None, alpha=0.1):
+        """ Plots the phase portrait of the IOCRN.
+        Arguments:
+        - fig: matplotlib figure object to plot on. If None, a new figure is created.
+        - axes: matplotlib axis object to plot on. If None, a new axis is created.
+        - alpha: float, transparency level for the plot lines.
+        Returns:
+        - fig: matplotlib figure object containing the plots.
+        - axes: matplotlib axes object containing the plots. """
+
+        # Check if transient response data is available
+        if self.last_task_info.get('type') != 'transient response':
+            raise ValueError("No transient response data available. Run transient_response() first.")
+        
+        # If no figure or axes are provided, create a new figure and axes
+        if fig is None and axis is None:
+            if self.num_species == 2:
+                fig, axis = plt.subplots(figsize=(10, 10))
+            elif self.num_species == 3:
+                fig = plt.figure(figsize=(10, 10))
+                axis = fig.add_subplot(111, projection='3d')
+            else:
+                raise ValueError("Phase portrait can only be plotted for 2 or 3 species.")
+        
+        # Plot the phase portrait and return the figure and axes
+        if self.num_species == 2:
+            for j in range(len(self.last_task_info['trajectories'])):
+                axis.plot(self.last_task_info['trajectories'][j][0,:], self.last_task_info['trajectories'][j][1,:], alpha=alpha)
+            axis.set_xlabel(f"Species {self.species_labels[0]}")
+            axis.set_ylabel(f"Species {self.species_labels[1]}")
+            axis.set_title("Phase Portrait")
+        elif self.num_species == 3:
+            for j in range(len(self.last_task_info['trajectories'])):
+                axis.plot(self.last_task_info['trajectories'][j][0,:], self.last_task_info['trajectories'][j][1,:], self.last_task_info['trajectories'][j][2,:], alpha=alpha)
+            axis.set_xlabel(f"Species {self.species_labels[0]}")
+            axis.set_ylabel(f"Species {self.species_labels[1]}")
+            axis.set_zlabel(f"Species {self.species_labels[2]}")
+            axis.set_title("Phase Portrait")
+        plt.tight_layout()
+        return fig, axis
+    
+    def plot_dose_response(self, fig=None, axes=None, alpha=0.5):
+        """ Plots the dose response of the IOCRN for each output species. The dose response for each output species, for each input scenario is plotted versus the input dose.
+        Arguments:
+        - fig: matplotlib figure object to plot on. If None, a new figure is created.
+        - axes: matplotlib axes object to plot on. If None, a new set of axes is created.
+        - alpha: float, transparency level for the plot lines.
+        Returns:
+        - fig: matplotlib figure object containing the plots.
+        - axes: matplotlib axes object containing the plots. """
+
+        # Check if dose response data is available
+        if self.last_task_info.get('type') != 'dose response' and self.last_task_info.get('type') != 'transient response':
+            raise ValueError("No dose response data available. Run dose_response() or transient_response() first.")
+        
+        # If no figure or axes are provided, create a new figure and axes
+        if fig is None and axes is None:
+            fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
+            if not isinstance(axes, (list, np.ndarray)):
+                axes = [axes]
+        
+        # Plot the dose responses for each output species and return the figure and axes #TODO: generalize for multiple inputs and implement dose response algebraically
+        if self.last_task_info['type'] == 'dose response':
+            u_dose = self.last_task_info['input doses']
+            for i in range(self.num_outputs):
+                for j in range(len(self.last_task_info['input scenarios'])):
+                    axes[i].plot(u_dose, self.last_task_info['outputs'][j][i,:], alpha=alpha)
+                    axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.o[i]-1]}")
+                    axes[i].set_xlabel("Input Dose")
+                    axes[i].set_ylabel("Concentration")
+            plt.tight_layout()
+
+        elif self.last_task_info['type'] == 'transient response': # TODO: generalize for multiple inputs
+            u_list = self.last_task_info['inputs']
+            for i in range(self.num_outputs):
+                u_dose = np.array([u[0] for u in u_list])
+                y_dose = np.array([y[i,-1] for y in self.last_task_info['outputs']])
+                axes[i].plot(u_dose, y_dose, alpha=alpha)
+                axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.output_idx[i]]}")
+                axes[i].set_xlabel("Input Dose")
+                axes[i].set_ylabel("Concentration")
+            plt.tight_layout()
+
+        return fig, axes
+    
+    def plot_frequency_content(self, fig=None, axes=None, alpha=0.1, t0=0.0):
+        """Plots the frequency content (Fourier magnitude spectra) of each output species.
+        Arguments:
+        - fig: matplotlib figure object to plot on. If None, a new figure is created.
+        - axes: matplotlib axes object to plot on. If None, a new set of axes is created.
+        - alpha: float, transparency level for the plot lines.
+        - t0: float, time threshold; only data with time >= t0 are used for the Fourier transform.
+        Returns:
+        - fig: matplotlib figure object containing the plots.
+        - axes: matplotlib axes object containing the plots. """
+
+        # Check if transient response data is available
+        if self.last_task_info.get('type') != 'transient response':
+            raise ValueError("No transient response data available. Run transient_response() first.")
+        
+        # If no figure or axes are provided, create a new figure and axes
+        if fig is None and axes is None:
+            fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
+            if not isinstance(axes, (list, np.ndarray)):
+                axes = [axes]
+
+        # Truncate time vector and determine valid indices for t >= t0
+        time = np.asarray(self.last_task_info['time_horizon'])
+        mask = time >= t0
+        if mask.sum() < 2:
+            raise ValueError("Not enough data points after t0 to compute a Fourier transform.")
+
+        # Infer (assumed uniform) sampling interval from the truncated time vector
+        dt = float(np.mean(np.diff(time[mask])))
+        if dt <= 0:
+            raise ValueError("Non-positive sampling interval inferred from time_horizon.")  
+
+        # Plot Fourier magnitude spectra for each output species
+        N = int(mask.sum())
+        freqs = np.fft.rfftfreq(N, d=dt)
+
+        for i in range(self.num_outputs):
+            ax = axes[i]
+            for j in range(len(self.last_task_info['outputs'])):
+                # Extract the i-th output trace from the j-th run, truncated at t0
+                y = np.asarray(self.last_task_info['outputs'][j][i, :])[mask]
+
+                # Remove mean to emphasize oscillatory content
+                y = y - np.mean(y)
+
+                # Compute one-sided FFT magnitude
+                Y = np.fft.rfft(y)
+                mag = np.abs(Y) 
+                mag = mag / (np.max(mag) + 1e-12) # simple magnitude normalization
+
+                ax.plot(freqs, mag, alpha=alpha)
+
+            ax.set_title(
+                f"Frequency Content of Output Species {self.species_labels[self.output_idx[i]]} (t ≥ {t0})"
+            )
+            ax.set_xlabel("Frequency (1 / time unit)")
+            ax.set_ylabel("Magnitude")
+
         plt.tight_layout()
         return fig, axes

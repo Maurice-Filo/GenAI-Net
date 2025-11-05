@@ -2,13 +2,14 @@ import torch
 import numpy as np
 from scipy.signal import find_peaks
 
-def performance_metric(r_list, y_list, w, norm=1):
+def performance_metric(r_list, y_list, w, norm=1, relative=False):
     """ Computes the performance metric based on the difference between reference signal r and output y.
     Args:
         r_list: A list of reference signals, each of shape (q,).
         y_list: A list of outputs, each of shape (q, time_steps).
         w: A numpy array of weights, shape (q, time_steps).
         norm: An integer indicating the norm to use for the metric calculation.
+        relative: A boolean indicating whether to compute relative error.
     Returns:
         float: Computed performance metric. """
     
@@ -23,7 +24,7 @@ def performance_metric(r_list, y_list, w, norm=1):
     y_array = np.stack(y_list)   # shape (list_length, q, time_steps)
 
     # Compute the error and apply weights
-    error = r_array[:,:,None] - y_array
+    error = r_array[:,:,None] - y_array if not relative else (r_array[:,:,None] - y_array) / np.maximum(np.abs(r_array[:,:,None]), 1e-6)
     w = np.repeat(w[None, :, :], len(y_list), axis=0)
     match norm:
         case 1:

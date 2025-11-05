@@ -97,6 +97,10 @@ class AbstractMultiEnvironments:
                             fig, axes = self.envs[i].state.plot_transient_response(fig, axes)
                         fig.tight_layout(rect=[0, 0, 1, 0.95])
                         fig.suptitle(f'CRN Distribution {self.rendering_iteration}')
+                        bounds = mode.get('bounds')
+                        if bounds is not None:
+                            for a, b in zip(axes, bounds):
+                                a.set_ylim([0, b])
                         if mode['format'] == 'figure':
                             self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} (Top {(1.-disregarded_percentage)*100}%)', figure=fig)
                         elif mode['format'] == 'image':
@@ -109,6 +113,93 @@ class AbstractMultiEnvironments:
                             raise ValueError(f"Unknown mode: {mode[1]}. Use 'figure' or 'image'.")
                         plt.close(fig)
 
+                    case {'style': 'logger', 'task': 'transients + dose-response'}:
+                        fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
+                        if not isinstance(axes, (list, np.ndarray)):
+                            axes = [axes]
+                        for i in top_k:
+                            fig, axes = self.envs[i].state.plot_transient_response(fig, axes)
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f'CRN Distribution {self.rendering_iteration}')
+                        bounds = mode.get('bounds')
+                        if bounds is not None:
+                            for a, b in zip(axes, bounds):
+                                a.set_ylim([0, b])
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} (Top {(1.-disregarded_percentage)*100}%)', figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration}')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode[1]}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+
+                        fig1, axes1 = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
+                        if not isinstance(axes1, (list, np.ndarray)):
+                            axes1 = [axes1]
+                        for i in top_k:
+                            fig1, axes1 = self.envs[i].state.plot_dose_response(fig1, axes1)
+                        fig1.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig1.suptitle(f'CRN Distribution {self.rendering_iteration} Dose Response')
+                        if bounds is not None:
+                            for a, b in zip(axes1, bounds):
+                                a.set_ylim([0, b])
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} Dose Reponse (Top {(1.-disregarded_percentage)*100}%)', figure=fig1)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig1.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration} Dose Response')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode[1]}. Use 'figure' or 'image'.")
+                        plt.close(fig1)
+
+                    case {'style': 'logger', 'task': 'phase_plot'}:
+                        fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
+                        if not isinstance(axes, (list, np.ndarray)):
+                            axes = [axes]
+                        for i in top_k:
+                            fig, axes = self.envs[i].state.plot_transient_response(fig, axes)
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f'CRN Distribution {self.rendering_iteration}')
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} (Top {(1.-disregarded_percentage)*100}%)', figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration}')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode[1]}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+
+                        fig1, axis1 = plt.subplots(figsize=(10, 10))
+                        for i in top_k:
+                            fig1, axis1 = self.envs[i].state.plot_phase_portrait(fig1, axis1)
+                        fig1.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig1.suptitle(f'CRN Distribution Phase Portrait {self.rendering_iteration}')
+                        bounds = mode.get('bounds')
+                        if bounds is not None:
+                            axis1.set_xlim([0, bounds[0]])
+                            axis1.set_ylim([0, bounds[1]])
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f'CRN Distribution Phase Portrait {self.rendering_iteration} (Top {(1.-disregarded_percentage)*100}%)', figure=fig1)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig1.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution Phase Portrait {self.rendering_iteration}')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode[1]}. Use 'figure' or 'image'.")
+                        plt.close(fig1)
+
                     case {'style': 'logger', 'task': 'rank'}:
                         ranks = np.array([env.state.last_task_info['rank'] for env in self.envs])
                         fig, axes = plt.subplots(1, 1, figsize=(10, 5))
@@ -118,6 +209,58 @@ class AbstractMultiEnvironments:
                         axes.set_title('Histogram of Stoichiometry Matrix Rank')
                         self.logger.log_figure(figure_name=f'Stoichiometry Matrix Rank Distribution {self.rendering_iteration}', figure=fig)
                         plt.close(fig)
-                        
+                    
+                    case {'style': 'logger', 'task': 'transients + frequency content'}:
+                        fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
+                        if not isinstance(axes, (list, np.ndarray)):
+                            axes = [axes]
+                        for i in top_k:
+                            fig, axes = self.envs[i].state.plot_transient_response(fig, axes)
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f'CRN Distribution {self.rendering_iteration}')
+                        bounds = mode.get('bounds')
+                        if bounds is not None:
+                            for a, b in zip(axes, bounds):
+                                a.set_ylim([0, b])
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} (Top {(1.-disregarded_percentage)*100}%)', figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration}')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode[1]}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+
+                        fig1, axes1 = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
+                        if not isinstance(axes1, (list, np.ndarray)):
+                            axes1 = [axes1]
+                        for i in top_k:
+                            fig1, axes1 = self.envs[i].state.plot_frequency_content(fig1, axes1, t0=mode.get('t0', 0.0))
+                        fig1.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig1.suptitle(f'CRN Distribution {self.rendering_iteration} Frequency Content')
+                        bounds_freq = mode.get('bounds_freq')
+                        if bounds_freq is not None:
+                            for a, b in zip(axes1, bounds_freq):
+                                if b[0] is not None:
+                                    a.set_xlim([0, b[0]])
+                                if b[1] is not None:
+                                    a.set_ylim([0, b[1]])
+                                if mode.get('scale', 'linear') == 'log':
+                                    a.set_yscale('log')
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} Frequency Content (Top {(1.-disregarded_percentage)*100}%)', figure=fig1)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig1.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration} Frequency Content')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode[1]}. Use 'figure' or 'image'.")
+                        plt.close(fig1)
+
                     case _:
                         raise ValueError(f"Unknown mode: {mode}. Check the spelling!")

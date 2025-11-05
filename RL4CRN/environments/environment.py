@@ -60,7 +60,7 @@ class Environment():
         Args:
             mode (dict): A dictionary specifying the rendering style and task.
                 - 'style': 'human' for interactive display, 'logger' for logging to a file.
-                - 'task': 'transients' for transient response, 'rank' for ranking.
+                - 'task': 'transients' for transient response, 'rank' for matrix rank.
                 - 'format': 'figure' or 'image' for the output format.
             ID (str, optional): An identifier for the CRN, used in logging.
         """
@@ -89,6 +89,132 @@ class Environment():
                     except ValueError:
                         pass
 
+            case {'style': 'logger', 'task': 'phase_plot'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        fig, _ = self.state.plot_transient_response()
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID}, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID}", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID}')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                    except ValueError:
+                        pass
+
+                    try:
+                        fig1, _ = self.state.plot_phase_portrait()
+                        fig1.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig1.suptitle(f"CRN {ID}, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} Phase Portrait", figure=fig1)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig1.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} Phase Portrait')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig1)
+                    except ValueError:
+                        pass
+
             case {'style': 'logger', 'task': 'rank'}:
                 if self.logger is not None:
                     self.logger.log_text(f"CRN {ID} \nRank={self.state.last_task_info['rank']}"+ str(self.state))
+
+            case {'style': 'logger', 'task': 'transients + dose-response'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        fig, _ = self.state.plot_transient_response()
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID}, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID}", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID}')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                    except ValueError:
+                        pass
+
+                    try:
+                        fig1, _ = self.state.plot_dose_response()
+                        fig1.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig1.suptitle(f"CRN {ID}, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} Dose Response", figure=fig1)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig1.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} Dose Response')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig1)
+                    except ValueError:
+                        pass
+
+            case {'style': 'logger', 'task': 'transients + frequency content'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        fig, _ = self.state.plot_transient_response(alpha=1.0)
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID}, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID}", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID}')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                    except ValueError:
+                        pass
+
+                    try:
+                        fig1, axes1 = self.state.plot_frequency_content(alpha=1.0, t0=mode.get('t0', 0.0))
+                        fig1.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig1.suptitle(f"CRN {ID}, Reward: {self.state.last_task_info['reward']}")
+                        bounds_freq = mode.get('bounds_freq')
+                        if bounds_freq is not None:
+                            for a, b in zip(axes1, bounds_freq):
+                                if b[0] is not None:
+                                    a.set_xlim([0, b[0]])
+                                if b[1] is not None:
+                                    a.set_ylim([0, b[1]])
+                                if mode.get('scale', 'linear') == 'log':
+                                    a.set_yscale('log')
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} Frequency Content", figure=fig1)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig1.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} Frequency Content')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig1)
+                    except ValueError:
+                        pass

@@ -7,7 +7,7 @@ class MultivariateLogNormal(Distribution):
         "loc": constraints.real_vector,
         "covariance_matrix": constraints.positive_definite,
     }
-    support = constraints.independent(constraints.positive, 1)
+    support = constraints.independent(constraints.nonnegative, 1)
     has_rsample = True
 
     def __init__(self, loc, covariance_matrix, validate_args=None):
@@ -20,9 +20,10 @@ class MultivariateLogNormal(Distribution):
             validate_args=validate_args,
         )
 
-    def rsample(self, sample_shape=torch.Size()):
-        z = self.mvn.rsample(sample_shape)   # reparameterized in log-space
+    def sample(self, sample_shape=torch.Size()):
+        z = self.mvn.sample(sample_shape)   
         return z.exp()
+    
 
     def log_prob(self, value):
         if self._validate_args:

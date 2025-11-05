@@ -17,7 +17,8 @@ class AddReactionByIndex(torch.nn.Module):
                  encoder_attributes, deep_layer_size, structure_head_attributes, parameter_head_attributes, 
                  input_influence_head_attributes, masks=None,
                  continuous_distribution={"type": 'lognormal'}, 
-                 discrete_distribution={"type": 'categorical', "categories": [torch.tensor([1, 2])]}, 
+                 discrete_distribution={"type": 'categorical', "categories": torch.tensor([1, 2])}, # TODO: generalize to different categories per dimension
+                 entropy_weights_per_head=None,
                  allow_input_influence=False, device=None):
         """ Initializes the AddReactionByIndex policy.
         Arguments:
@@ -35,6 +36,7 @@ class AddReactionByIndex(torch.nn.Module):
             - 'logit': a binary numpy array of shape (num_reactions, total_num_categories_for_all_discrete_parameters) indicating the valid logits for the discrete parameters for each reaction.   
         - continuous_distribution: a dictionary specifying the type of the continuous parameter distribution (default is log-normal).
         - discrete_distribution: a dictionary specifying the type and categories of the discrete parameter distribution (default is categorical).
+        - entropy_weights_per_head: a dictionary specifying the entropy weight for each head (structure, continuous, discrete, input_influence). If None, default weights of 1 are used for all heads.
         - allow_input_influence: if True, the policy will include an input influence head (default is False).
         - device: device to run the policy on (default is None, which uses CPU). """
 
@@ -118,6 +120,9 @@ class AddReactionByIndex(torch.nn.Module):
             raise NotImplementedError("The input influence head is not implemented yet.")
         else:
             self.input_influence_head = None
+
+        # Record entropy weights per head
+        self.entropy_weights_per_head = entropy_weights_per_head if entropy_weights_per_head is not None else {'structure': 1, 'continuous': 1, 'discrete': 1, 'input_influence': 1}
                   
     def forward(self, state, mode='full', action=None):
         """ Generates an action (reaction structure, parameters and input influence) given the observation of the state received from the observer.
@@ -140,7 +145,7 @@ class AddReactionByIndex(torch.nn.Module):
             - 'continuous parameters': A list of the sampled continuous parameters (if applicable).
             - 'discrete parameters': A list of the sampled discrete parameters (if applicable).
         - log_probabilities (torch.Tensor): The log probability of the actions in the batch. Shape: (N,).
-        - entropies (torch.Tensor): The entropy of the actions in the batch. Shape: (N,). """
+        - entropies (torch.Tensor): The weighted entropy of the actions in the batch. Shape: (N,). """
 
         # Validate the input has no NaNs
         assert state.isnan().sum() == 0, "Input contains NaN values."
@@ -159,7 +164,7 @@ class AddReactionByIndex(torch.nn.Module):
 
             # Construct the categorical distribution over the library reactions and compute their entropies
             reaction_structure_distribution = Categorical(logits=masked_reaction_structure_logits) # batch of N categorical distributions, each over M categories
-            entropies = reaction_structure_distribution.entropy() # shape: (N,)
+            entropies = self.entropy_weights_per_head['structure'] * reaction_structure_distribution.entropy() # shape: (N,)
 
             # Sample the reaction structure from the distribution and compute the log probabilities of the sampled reactions
             samples_reaction_idx = reaction_structure_distribution.sample() if action is None else torch.tensor([a['reaction index'] for a in action], requires_grad=False).to(self.device)  # shape: (N,)
@@ -178,9 +183,10 @@ class AddReactionByIndex(torch.nn.Module):
             samples_continuous_parameters = None
             samples_discrete_parameters = None
         else:
-            samples_continuous_parameters = torch.tensor([a['continuous parameters'] for a in action], requires_grad=False).to(self.device) if self.continuous_parameter_generator is not None else None # shape: (N, max_num_continuous_parameters) or None
-            samples_discrete_parameters = torch.tensor([a['discrete parameters'] for a in action], requires_grad=False).to(self.device) if self.discrete_parameter_generator is not None else None # shape: (N, max_num_discrete_parameters) or None
-
+            # tensorize the provided action parameters and pad them with zeros to match the maximum number of parameters across all reactions
+            samples_continuous_parameters = torch.tensor([a['continuous parameters'] + [0.0]*(continuous_parameter_mask_subset.shape[1]-len(a['continuous parameters'])) for a in action], requires_grad=False).to(self.device) if self.continuous_parameter_generator is not None else None # shape: (N, max_num_continuous_parameters) or None
+            samples_discrete_parameters = torch.tensor([a['discrete parameters'] + [0]*(discrete_parameter_mask_subset.shape[1]-len(a['discrete parameters'])) for a in action], requires_grad=False).to(self.device) if self.discrete_parameter_generator is not None else None # shape: (N, max_num_discrete_parameters) or None
+        
         # Concatenate the encoded IOCRN with the one-hot encoding of the sampled reaction structure to form the input to the continuous parameter generator
         x = torch.cat([encoded, samples_reaction_hot], dim=-1) # shape: (N, deep_layer_size + M)
 
@@ -197,7 +203,7 @@ class AddReactionByIndex(torch.nn.Module):
                     samples_continuous_parameters, log_probs_continuous_parameters, entropies_continuous_parameters = self.continuous_parameter_generator(x, mask=continuous_parameter_mask_subset, samples=samples_continuous_parameters) # shapes: (N, max_num_continuous_parameters), (N,), (N,)
 
                     # Accumulate the log probabilities and entropies
-                    entropies = entropies + entropies_continuous_parameters # shape: (N,)
+                    entropies = entropies + self.entropy_weights_per_head['continuous'] * entropies_continuous_parameters # shape: (N,)
                     log_probabilities = log_probabilities + log_probs_continuous_parameters # shape: (N,)
 
                     # Mask out the parameters that do not exist for the sampled reactions
@@ -216,7 +222,7 @@ class AddReactionByIndex(torch.nn.Module):
                     samples_discrete_parameters, log_probs_discrete_parameters, entropies_discrete_parameters = self.discrete_parameter_generator(x, logit_mask=logit_mask_subset, dimension_mask=discrete_parameter_mask_subset, samples=samples_discrete_parameters) # shapes: (N, max_num_discrete_parameters), (N,), (N,)
                     
                     # Accumulate the log probabilities and entropies
-                    entropies = entropies + entropies_discrete_parameters # shape: (N,)
+                    entropies = entropies + self.entropy_weights_per_head['discrete'] * entropies_discrete_parameters # shape: (N,)
                     log_probabilities = log_probabilities + log_probs_discrete_parameters # shape: (N,)
                     
                     # Mask out the parameters that do not exist for the sampled reactions

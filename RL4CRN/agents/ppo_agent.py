@@ -47,7 +47,8 @@ class PPOAgent(AbstractAgent):
         self.entropies_sequence = []
 
         # Torch training
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate)
+        self.optimizer = torch.optim.Adam(list(self.policy.parameters()) + list(self.state_value_function.parameters()), lr=learning_rate)
+        # self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=learning_rate) # TODO: value network parameters not included!
         self.logger = logger
 
         # Entropy scheduler
@@ -58,7 +59,7 @@ class PPOAgent(AbstractAgent):
 
         # Risky policy scheduler
         if not risk_scheduler:
-            risk_scheduler = {'initial_risk': 0.8, 'risk_update': 0.00, 'max_risk': 1.00, 'risk_schedule': 20}
+            risk_scheduler = {'risk': 0.8, 'risk_update': 0.00, 'max_risk': 1.00, 'risk_schedule': 20}
         self.risk_scheduler = risk_scheduler
         self.risk_counter = 0
 
@@ -124,7 +125,7 @@ class PPOAgent(AbstractAgent):
         # Risky policy gradient and backpropagation
         scores = rewards_sequence_tensor.sum(dim=0)  # Shape: (N,) TODO: is mean better than sum?
         top_k = torch.topk(scores.detach(), int(N * (1. - self.risk_scheduler['risk'])), largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
-        torch.mean(ppo_loss_for_each_sample[top_k]).backward()
+        torch.mean(ppo_loss_for_each_sample[top_k]).backward() 
 
         # Step the optimizer
         self.optimizer.step()
@@ -156,6 +157,8 @@ class PPOAgent(AbstractAgent):
             best = scores[top_k[0]]
             worst = scores[top_k[-1]]
             avg = scores[top_k].float().mean()
+            batch_avg = scores.float().mean()
+            self.logger.log_metric('full batch average loss', batch_avg.item(), step=step_iteration)
             self.logger.log_metric('best loss in the batch top k', best.item(), step=step_iteration)
             self.logger.log_metric('worst loss in the batch top k', worst.item(), step=step_iteration)
             self.logger.log_metric('average loss in the batch top k', avg.item(), step=step_iteration)
@@ -263,7 +266,8 @@ class PPOAgent(AbstractAgent):
         new_logPs_sequence = self.p(states_sequence, actions_sequence, mode) # (T, N) tensor
 
         # Compute the risk ratio and the clipped policy improvement
-        risk_ratio_sequence = torch.exp(new_logPs_sequence) / (torch.exp(old_logPs_sequence) + 1e-6) # (T, N) tensor
+        risk_ratio_sequence = torch.exp(new_logPs_sequence - old_logPs_sequence) # (T, N) tensor
+
         clip_cpi_sequence = torch.min(risk_ratio_sequence * advantages_sequence, torch.clip(risk_ratio_sequence, 1 - eps, 1 + eps) * advantages_sequence) # (T, N) tensor
 
         # Log the risk ratio if a logger is available

@@ -1,5 +1,8 @@
 *.pth
 *.pt
+*.png
+*.gif
+*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
