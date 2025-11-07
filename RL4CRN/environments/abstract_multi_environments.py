@@ -105,8 +105,8 @@ class AbstractMultiEnvironments:
                     buf.seek(0)
                     self.logger.log_image(buf, name=f'CRN Diversity Graph (Clusters) {self.rendering_iteration}')
                     buf.close()
-                    fig_graph.close()
-                    fig_graph1.close()
+                    plt.close(fig_graph)
+                    plt.close(fig_graph1)
                 
                 # Render the top_k environments based on the specified mode
                 match mode:
