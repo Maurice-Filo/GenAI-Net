@@ -22,6 +22,7 @@ class IOCRN:
         self.reactions = reactions              # list of Reaction objects
         self.output_labels = output_labels      # list of strings of output species
         self.num_outputs = len(output_labels)   # number of outputs
+        self.reaction_library = None
 
         # Get the number of unknown parameteres in the IOCRN
         self.num_unknown_params = sum([reaction.num_unknown_params for reaction in self.reactions])
@@ -107,6 +108,15 @@ class IOCRN:
         """ Set the context for each reaction in the IOCRN using the provided reaction library. """
         for reaction in self.reactions:
             reaction.set_library_context(reaction_library)
+        self.reaction_library = reaction_library
+
+    def get_bool_signature(self):
+        """ Get the boolean signature of the IOCRN with respect to the provided reaction library. """
+        IDs = self.gather_reaction_IDs()
+        M = len(self.reaction_library)
+        signature = np.zeros(M, dtype=bool)
+        signature[IDs] = True
+        return signature
 
     def get_stoichiometry_matrix(self):
         """ Construct and return the stoichiometry matrix S of the IOCRN.
@@ -228,26 +238,18 @@ class IOCRN:
         stop_if_unstable.terminal = True
         stop_if_unstable.direction = 0
 
-        # Check if any reaction has negative parameters
-        params_all_reactions = self.gather_reaction_params()
-        has_negative = any(params < 0 for params_reaction in params_all_reactions for params in params_reaction)
-
         # Do the simulation for each input and initial condition scenario and store the results in lists
         x_list = []
         y_list = []
         for u, x0 in product(u_list, x0_list):
-            if has_negative is False:
-                solution = solve_ivp(lambda t, x: self.rate_function(t, x, u), (time_horizon[0], time_horizon[-1]), x0, t_eval=time_horizon, method="LSODA", events=stop_if_unstable)
+            solution = solve_ivp(lambda t, x: self.rate_function(t, x, u), (time_horizon[0], time_horizon[-1]), x0, t_eval=time_horizon, method="LSODA", events=stop_if_unstable)
 
-                if solution.status == -1: # if the integration failed, return large numbers for all species and outputs
-                    x = np.full((self.num_species, time_horizon.shape[0]), LARGE_NUMBER) # numpy array of shape (n, steps)
-                else:
-                    x = solution.y # numpy array of shape (n, steps)
-                    if solution.status == 1: # if the integration was stopped due to an event, fill the remaining time points after the event with large numbers
-                        x = np.concatenate([x, np.full((self.num_species, time_horizon.shape[0] - x.shape[1]), LARGE_NUMBER)], axis=1)
+            if solution.status == -1: # if the integration failed, return large numbers for all species and outputs
+                x = np.full((self.num_species, time_horizon.shape[0]), LARGE_NUMBER) # numpy array of shape (n, steps)
             else:
-                x = np.full((self.num_species, time_horizon.shape[0]), -LARGE_NUMBER) # numpy array of shape (n, steps)
-
+                x = solution.y # numpy array of shape (n, steps)
+                if solution.status == 1: # if the integration was stopped due to an event, fill the remaining time points after the event with large numbers
+                    x = np.concatenate([x, np.full((self.num_species, time_horizon.shape[0] - x.shape[1]), LARGE_NUMBER)], axis=1)
             y = x[self.output_idx, :] # select the output species from the state trajectory
 
             # Append the state trajectory and output trajectory to the lists

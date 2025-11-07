@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 import numpy as np
 from RL4CRN.environments.environment import Environment
+from RL4CRN.utils.visualizations import topology_graph
 
 class AbstractMultiEnvironments:
     """
@@ -86,6 +87,26 @@ class AbstractMultiEnvironments:
                 # Render the hall of fame
                 for i in range(self.hall_of_fame_size):
                     self.hall_of_fame[i].render(mode=mode, ID = f'hof_{i}')
+
+                # Render the IOCRN diversity graph
+                if mode.get('topology', True):
+                    iocrn_list = []
+                    for idx in top_k:
+                        iocrn_list.append(self.envs[idx].state)
+                    fig_graph = topology_graph(iocrn_list, t=10, figsize = (10,10))
+                    fig_graph1 = topology_graph(iocrn_list, t=3, figsize = (10,10))
+                    buf = BytesIO()
+                    fig_graph.savefig(buf, format='png')
+                    buf.seek(0)
+                    self.logger.log_image(buf, name=f'CRN Diversity Graph {self.rendering_iteration}')
+                    buf.close()
+                    buf = BytesIO()
+                    fig_graph1.savefig(buf, format='png')
+                    buf.seek(0)
+                    self.logger.log_image(buf, name=f'CRN Diversity Graph (Clusters) {self.rendering_iteration}')
+                    buf.close()
+                    fig_graph.close()
+                    fig_graph1.close()
                 
                 # Render the top_k environments based on the specified mode
                 match mode:
@@ -98,7 +119,7 @@ class AbstractMultiEnvironments:
                         fig.tight_layout(rect=[0, 0, 1, 0.95])
                         fig.suptitle(f'CRN Distribution {self.rendering_iteration}')
                         bounds = mode.get('bounds')
-                        if bounds is not None:
+                        if bounds is not None:  
                             for a, b in zip(axes, bounds):
                                 a.set_ylim([0, b])
                         if mode['format'] == 'figure':

@@ -94,17 +94,26 @@ class REINFORCEAgent(AbstractAgent):
         sum_entropies = torch.sum(torch.stack(self.entropies_sequence, dim=1), dim=1) # shape (N,), self.entropies_sequence is a list (length=total number of actions) of tensors of shape (N,)
         N = self.logPs_sequence[0].shape[0]
 
-        # Compute the loss that is used to compute the gradient
+        # Tensorize the rewards
         final_loss_for_each_sample = torch.tensor(final_loss_for_each_sample, device=sum_logPs.device, dtype=sum_logPs.dtype).detach() # shape (N,)
-        loss_for_gradient =  final_loss_for_each_sample * sum_logPs # shape (N,)
-        entropy_for_gradient = sum_entropies + sum_entropies.detach() * sum_logPs # shape (N,)
-        loss_for_gradient = loss_for_gradient - self.entropy_scheduler['entropy_weight'] * entropy_for_gradient # shape (N,)
 
         # Risky policy gradient
         top_k = torch.topk(final_loss_for_each_sample, int(N * (1. - self.risk_scheduler['risk'])), largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
-        # torch.mean(loss_for_gradient[top_k]).backward() # TODO: add another term to promote entropy for the remaining samples not in the top k
-        tt = torch.sum(loss_for_gradient[top_k]) / N
-        tt.backward()
+
+        # Compute the gradients with baseline (important: baseline = worst loss in top k, so that the weights are non-negative)
+        baseline = final_loss_for_each_sample[top_k[-1]]
+        loss_for_gradient =  (final_loss_for_each_sample[top_k] - baseline) * sum_logPs[top_k] # shape (k,)
+
+        entropy_for_gradient = torch.mean(sum_entropies + sum_entropies.detach() * sum_logPs) # shape (1,) # TODO: no topk for entropies
+        loss_for_gradient = loss_for_gradient - self.entropy_scheduler['entropy_weight'] * entropy_for_gradient # shape (k,)
+
+        loss_for_gradient_entropy_mean = torch.mean(loss_for_gradient) # TODO: add another term to promote entropy for the remaining samples not in the top k
+        loss_for_gradient_entropy_mean.backward()
+
+        # Do gradient clipping if needed
+        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
+
+        # torch.mean(loss_for_gradient[top_k]).backward() 
         self.optimizer.step()
         toc_backward = time.time()
 
@@ -120,19 +129,23 @@ class REINFORCEAgent(AbstractAgent):
 
         # Log the training process
         if self.logger is not None:
-            self.logger.log_metric('batch average of total sequence entropy', sum_entropies.mean().item(), step=step_iteration)
-            self.logger.log_metric('batch average of total sequence logP', sum_logPs.mean().item(), step=step_iteration)
+            self.logger.log_metric('batch logP', sum_logPs.mean().item(), step=step_iteration)
             self.logger.log_metric('entropy weight', self.entropy_scheduler['entropy_weight'], step=step_iteration)
             self.logger.log_metric('risk', self.risk_scheduler['risk'], step=step_iteration)
             self.logger.log_metric('backward time', toc_backward - tic_backward, step=step_iteration)
-            best = final_loss_for_each_sample[top_k[0]]
-            worst = final_loss_for_each_sample[top_k[-1]]
-            avg = final_loss_for_each_sample[top_k].float().mean()
-            batch_avg = final_loss_for_each_sample.float().mean()
-            self.logger.log_metric('full batch average loss', batch_avg.item(), step=step_iteration)
-            self.logger.log_metric('best loss in the batch top k', best.item(), step=step_iteration)
-            self.logger.log_metric('worst loss in the batch top k', worst.item(), step=step_iteration)
-            self.logger.log_metric('average loss in the batch top k', avg.item(), step=step_iteration)
+            best_loss = final_loss_for_each_sample[top_k[0]]
+            worst_loss_topk = final_loss_for_each_sample[top_k[-1]]
+            avg_loss_topk = final_loss_for_each_sample[top_k].float().mean()
+            avg_loss = final_loss_for_each_sample.float().mean()
+            worst_loss = final_loss_for_each_sample.float().max()
+            self.logger.log_metric('batch average loss', avg_loss.item(), step=step_iteration)
+            self.logger.log_metric('batch best loss', best_loss.item(), step=step_iteration)
+            self.logger.log_metric('batch worst loss', worst_loss.item(), step=step_iteration)
+            self.logger.log_metric('topk worst loss', worst_loss_topk.item(), step=step_iteration)
+            self.logger.log_metric('topk average loss', avg_loss_topk.item(), step=step_iteration)
+            self.logger.log_metric('batch entropy', sum_entropies.mean().item(), step=step_iteration)
+            total_loss_topk = torch.mean(final_loss_for_each_sample[top_k]) - self.entropy_scheduler['entropy_weight'] * torch.mean(sum_entropies)
+            self.logger.log_metric('topk total loss', total_loss_topk.item(), step=step_iteration)
 
         # Clear the lists of logPs and entropies
         self.logPs_sequence.clear()
