@@ -1,4 +1,5 @@
-from pathos.multiprocessing import ProcessingPool as Pool
+# from pathos.multiprocessing import ProcessingPool as Pool
+from joblib import Parallel, delayed
 import os
 import time
 from RL4CRN.environments.abstract_multi_environments import AbstractMultiEnvironments
@@ -15,7 +16,7 @@ class ParallelEnvironments(AbstractMultiEnvironments):
         """
         super().__init__(envs, hall_of_fame_size, logger=logger)
         self.N_CPUs = N_CPUs
-        self.pool = Pool(N_CPUs)
+        # self.pool = Pool(N_CPUs)
     
     def get_reward(self, routine):
         """
@@ -27,7 +28,8 @@ class ParallelEnvironments(AbstractMultiEnvironments):
             last_task_info_list: A list of information about the last task performed in each environment.
         """       
         tic_reward = time.time()
-        results = self.pool.map(routine, [env.state for env in self.envs])
+        results = Parallel(n_jobs=self.N_CPUs)(delayed(routine)(env.state) for env in self.envs)
+        # results = self.pool.map(routine, [env.state for env in self.envs])
         rewards_list, last_task_info_list = zip(*results)
         rewards_list = list(rewards_list)
         last_task_info_list = list(last_task_info_list)
@@ -46,14 +48,29 @@ class ParallelEnvironments(AbstractMultiEnvironments):
         else:
             combined_environments = self.hall_of_fame + self.envs
         sorted_environments = sorted(combined_environments, key=lambda x: x.state.last_task_info['reward'])
-        for i in range(min(self.hall_of_fame_size, len(sorted_environments))):
-            self.hall_of_fame[i].state = sorted_environments[i].state.clone()
+        self.hall_of_fame[0].state = sorted_environments[0].state.clone()
+        num_updated_hall_of_fame = 1
+        for i in range(1, len(sorted_environments)):
+            for j in range(num_updated_hall_of_fame):
+                if sorted_environments[i].state.is_topologically_equal(self.hall_of_fame[j].state):
+                    found = True
+                    break
+            else:
+                found = False
+            if not found:
+                self.hall_of_fame[num_updated_hall_of_fame].state = sorted_environments[i].state.clone()
+                num_updated_hall_of_fame += 1
+            if num_updated_hall_of_fame >= self.hall_of_fame_size:
+                break   
+            
+        # for i in range(min(self.hall_of_fame_size, len(sorted_environments))):
+        #     self.hall_of_fame[i].state = sorted_environments[i].state.clone()
         return rewards_list
 
-    def close(self):
-        """
-        Close the parallel processing pool.
-        This method should be called when the parallel environments are no longer needed to free up resources.
-        """
-        self.pool.close()
-        self.pool.join()   
+    # def close(self):
+    #     """
+    #     Close the parallel processing pool.
+    #     This method should be called when the parallel environments are no longer needed to free up resources.
+    #     """
+    #     self.pool.close()
+    #     self.pool.join()   

@@ -24,9 +24,7 @@ class Environment():
         self.logger_schedule = logger_schedule
 
     def reset(self):
-        """
-        Reset the state of the environment to an initial state by copying the CRN template
-        """
+        """ Reset the state of the environment to an initial state by copying the CRN template. """
         self.state = self.crn_template.clone()
         self.num_added_reactions = 0
         return self.state
@@ -93,7 +91,7 @@ class Environment():
                 if self.logger is not None:
                     self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
                     try:
-                        fig, _ = self.state.plot_transient_response()
+                        fig, _ = self.state.plot_transient_response(alpha=1.0)
                         fig.tight_layout(rect=[0, 0, 1, 0.95])
                         fig.suptitle(f"CRN {ID}, Reward: {self.state.last_task_info['reward']}")
                         if mode['format'] == 'figure':
@@ -111,7 +109,7 @@ class Environment():
                         pass
 
                     try:
-                        fig1, _ = self.state.plot_phase_portrait()
+                        fig1, _ = self.state.plot_phase_portrait(alpha=1.0)
                         fig1.tight_layout(rect=[0, 0, 1, 0.95])
                         fig1.suptitle(f"CRN {ID}, Reward: {self.state.last_task_info['reward']}")
                         if mode['format'] == 'figure':

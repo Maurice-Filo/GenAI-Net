@@ -26,11 +26,10 @@ class AbstractMultiEnvironments:
         self.hall_of_fame_empty = True
 
     def reset(self):
-        """
-        Reset all environments to their initial state.
+        """ Reset all environments to their initial state.
         Returns:
-            list: A list of initial states for each environment.
-        """
+            list: A list of initial states for each environment. """
+        
         return [env.reset() for env in self.envs]
     
     def gather(self):

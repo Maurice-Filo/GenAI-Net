@@ -117,6 +117,15 @@ class IOCRN:
         signature = np.zeros(M, dtype=bool)
         signature[IDs] = True
         return signature
+    
+    def is_topologically_equal(self, other_iocrn):
+        """ Compare the topology of this IOCRN with another IOCRN. Assumes both IOCRNs have the same reaction library set.
+        Arguments:
+        - other_iocrn: Another IOCRN object to compare with.
+        Returns:
+        - True if the topologies are the same, False otherwise. """
+        
+        return np.array_equal(self.get_bool_signature(), other_iocrn.get_bool_signature())
 
     def get_stoichiometry_matrix(self):
         """ Construct and return the stoichiometry matrix S of the IOCRN.
