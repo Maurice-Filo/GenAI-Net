@@ -199,7 +199,11 @@ class AbstractMultiEnvironments:
                             raise ValueError(f"Unknown mode: {mode[1]}. Use 'figure' or 'image'.")
                         plt.close(fig)
 
-                        fig1, axis1 = plt.subplots(figsize=(10, 10))
+                        if self.envs[0].state.num_species == 2:
+                            fig1, axis1 = plt.subplots(figsize=(10, 10))
+                        elif self.envs[0].state.num_species == 3:
+                            fig1 = plt.figure(figsize=(10, 10))
+                            axis1 = fig1.add_subplot(111, projection='3d')
                         for i in top_k:
                             fig1, axis1 = self.envs[i].state.plot_phase_portrait(fig1, axis1)
                         fig1.tight_layout(rect=[0, 0, 1, 0.95])
