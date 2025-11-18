@@ -1,7 +1,6 @@
 import torch
 import time
 import numpy as np
-import torchrl
 from copy import deepcopy
 from RL4CRN.agents.abstract_agent import AbstractAgent
 from tensordict import TensorDict  
@@ -73,10 +72,7 @@ class PPOAgent(AbstractAgent):
         # Torch training (as convention, actor is 3x faster lr than critic, we can change this later TODO)
         self.actor_opt  = torch.optim.Adam(self.policy.parameters(), lr=learning_rate*3)
 
-        torch.nn.utils.clip_grad_norm_(self.state_value_function.parameters(), max_norm=1.0)
-
         self.critic_opt = torch.optim.Adam(self.state_value_function.parameters(), lr=learning_rate)
-
 
         self.logger = logger
 

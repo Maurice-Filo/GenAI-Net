@@ -73,6 +73,7 @@ class AbstractMultiEnvironments:
                 - 'task': 'transients' for transient response, 'rank' for ranking.
                 - 'format': 'figure' or 'image' for the output format.
         """
+        tic_step = time.time()
         if mode['style'] == 'logger':
             if self.logger is not None:
                 # Collect the top_k environments (indices) based on the rewards
@@ -288,3 +289,7 @@ class AbstractMultiEnvironments:
 
                     case _:
                         raise ValueError(f"Unknown mode: {mode}. Check the spelling!")
+                    
+        toc_step = time.time()
+        if self.logger is not None:
+            self.logger.log_metric('Render Time', toc_step - tic_step)

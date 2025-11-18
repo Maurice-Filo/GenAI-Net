@@ -4,7 +4,7 @@ import numpy as np
 from RL4CRN.agents.abstract_agent import AbstractAgent
 
 class REINFORCEAgent(AbstractAgent):
-    def __init__(self, policy, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_scheduler = {}, risk_scheduler = {}, device=None):
+    def __init__(self, policy, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_scheduler={}, risk_scheduler={}, device=None):
         """ Initialize the REINFORCE agent with a policy, learning rate, and optional entropy and risk schedulers.
         Args:
         - policy (torch.nn.Module): The policy network to be used by the agent.
@@ -102,9 +102,14 @@ class REINFORCEAgent(AbstractAgent):
 
         # Compute the gradients with baseline (important: baseline = worst loss in top k, so that the weights are non-negative)
         baseline = final_loss_for_each_sample[top_k[-1]]
+        # baseline = torch.mean(final_loss_for_each_sample[top_k]).detach()  # shape (1,)
+        # advantages = final_loss_for_each_sample[top_k] - baseline  # shape (N,)
+        # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)  # Normalize advantage
+        # loss_for_gradient =  advantages.detach() * sum_logPs[top_k] # shape (k,)
         loss_for_gradient =  (final_loss_for_each_sample[top_k] - baseline) * sum_logPs[top_k] # shape (k,)
 
-        entropy_for_gradient = torch.mean(sum_entropies + sum_entropies.detach() * sum_logPs) # shape (1,) # TODO: no topk for entropies
+        # entropy_for_gradient = torch.mean(sum_entropies + sum_entropies.detach() * sum_logPs) # shape (1,) # TODO: no topk for entropies
+        entropy_for_gradient = torch.mean(sum_entropies) # shape (1,) # TODO: no topk for entropies
         loss_for_gradient = loss_for_gradient - self.entropy_scheduler['entropy_weight'] * entropy_for_gradient # shape (k,)
 
         loss_for_gradient_entropy_mean = torch.mean(loss_for_gradient) # TODO: add another term to promote entropy for the remaining samples not in the top k
@@ -146,6 +151,7 @@ class REINFORCEAgent(AbstractAgent):
             self.logger.log_metric('batch entropy', sum_entropies.mean().item(), step=step_iteration)
             total_loss_topk = torch.mean(final_loss_for_each_sample[top_k]) - self.entropy_scheduler['entropy_weight'] * torch.mean(sum_entropies)
             self.logger.log_metric('topk total loss', total_loss_topk.item(), step=step_iteration)
+            self.logger.log_metric('temperature', self.policy.structure_head_temperature["current_temperature"], step=step_iteration)
 
         # Clear the lists of logPs and entropies
         self.logPs_sequence.clear()

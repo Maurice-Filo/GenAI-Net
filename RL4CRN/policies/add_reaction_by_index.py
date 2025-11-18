@@ -19,6 +19,7 @@ class AddReactionByIndex(torch.nn.Module):
                  continuous_distribution={"type": 'lognormal'}, 
                  discrete_distribution={"type": 'categorical', "categories": torch.tensor([1, 2])}, # TODO: generalize to different categories per dimension
                  entropy_weights_per_head=None,
+                 structure_head_temperature={"target_entropy_ratio_to_max": 1.0, "initial_temperature": 1.0, "rate": 0.0, "current_temperature": 1.0},
                  allow_input_influence=False, device=None):
         """ Initializes the AddReactionByIndex policy.
         Arguments:
@@ -37,6 +38,7 @@ class AddReactionByIndex(torch.nn.Module):
         - continuous_distribution: a dictionary specifying the type of the continuous parameter distribution (default is log-normal).
         - discrete_distribution: a dictionary specifying the type and categories of the discrete parameter distribution (default is categorical).
         - entropy_weights_per_head: a dictionary specifying the entropy weight for each head (structure, continuous, discrete, input_influence). If None, default weights of 1 are used for all heads.
+        - structure_head_temperature: a dictionary specifying the temperature schedule for the structure head logits (target_entropy_ratio_to_max, initial_temperature, rate, current_temperature).
         - allow_input_influence: if True, the policy will include an input influence head (default is False).
         - device: device to run the policy on (default is None, which uses CPU). """
 
@@ -55,6 +57,8 @@ class AddReactionByIndex(torch.nn.Module):
         self.input_influence_head_attributes = input_influence_head_attributes
         self.allow_input_influence = allow_input_influence
         self.device = device if device is not None else torch.device('cpu')
+        self.structure_head_temperature = structure_head_temperature
+        self.max_structure_entropy = np.log(self.M)  # Maximum entropy of the reaction structure distribution
 
         # Record the distribution attributes
         self.continuous_distribution = continuous_distribution
@@ -124,7 +128,7 @@ class AddReactionByIndex(torch.nn.Module):
         # Record entropy weights per head
         self.entropy_weights_per_head = entropy_weights_per_head if entropy_weights_per_head is not None else {'structure': 1, 'continuous': 1, 'discrete': 1, 'input_influence': 1}
                   
-    def forward(self, state, mode='full', action=None):
+    def forward(self, state, mode='full', action=None, structure_temp=None):
         """ Generates an action (reaction structure, parameters and input influence) given the observation of the state received from the observer.
         Args:
         - state (torch.Tensor): The observation (state) of the IOCRN. Shape: (N, M + (p+1)*K)), where N is the batch size, M is the number of reactions in the library, p is the number of inputs in the IOCRN, and K is the total number of parameters in the IOCRN. 
@@ -162,9 +166,26 @@ class AddReactionByIndex(torch.nn.Module):
             # Mask out already existing reactions in the IOCRN
             masked_reaction_structure_logits = reaction_structure_logits.masked_fill(state[:,:self.M].bool(), float('-inf')) # shape: (N, M)
 
+            # Apply temperature to the logits
+            if structure_temp is not None:
+                self.structure_head_temperature["current_temperature"] = structure_temp
+            masked_reaction_structure_logits = masked_reaction_structure_logits / self.structure_head_temperature["current_temperature"]
+
             # Construct the categorical distribution over the library reactions and compute their entropies
             reaction_structure_distribution = Categorical(logits=masked_reaction_structure_logits) # batch of N categorical distributions, each over M categories
-            entropies = self.entropy_weights_per_head['structure'] * reaction_structure_distribution.entropy() # shape: (N,)
+            structure_entropies = reaction_structure_distribution.entropy() # shape: (N,)
+            entropies = self.entropy_weights_per_head['structure'] * structure_entropies # shape: (N,)
+
+            # Adapt the temperature based on the entropy of the distribution
+            if self.training and action is None:
+                with torch.no_grad():
+                    mean_structure_entropy = structure_entropies.mean().item()
+                    if mean_structure_entropy < self.max_structure_entropy * self.structure_head_temperature["target_entropy_ratio_to_max"]:
+                        self.structure_head_temperature["current_temperature"] += self.structure_head_temperature["rate"]
+                    else:
+                        self.structure_head_temperature["current_temperature"] -= self.structure_head_temperature["rate"]
+                    self.structure_head_temperature["current_temperature"] = max(0.05, min(20.0, self.structure_head_temperature["current_temperature"]))
+
 
             # Sample the reaction structure from the distribution and compute the log probabilities of the sampled reactions
             samples_reaction_idx = reaction_structure_distribution.sample() if action is None else torch.tensor([a['reaction index'] for a in action], requires_grad=False).to(self.device)  # shape: (N,)

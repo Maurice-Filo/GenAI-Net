@@ -94,45 +94,46 @@ file_name = "multistability_3species_8rxns_MAK_REINFORCE.xlsx"  # Filename for s
 
 # %%
 # Hyperparameters
-max_added_reactions = 8                             # Maximum number of reactions
+max_added_reactions = 6                             # Maximum number of reactions
 N_CPUs = os.cpu_count()                             # Number of CPUs          
-N = 10*N_CPUs                                       # Number of samples (batch size)    
+N = 2*N_CPUs                                       # Number of samples (batch size)    
 width = 1024                                        # Width of the neural networks  
 depth = 5                                           # Depth of the neural networks 
 deep_layer_size = 1024*10                           # Size of the deep layer encoding the CRNs
 allow_input_influence = False                       # Allow input influence in the policy
-learning_rate = 7e-5                                # Learning rate for the optimizer 
+learning_rate = 1e-4                                # Learning rate for the optimizer 
 hall_of_fame_size = 10                              # Size of the hall of fame  
 entropy_scheduler = {                               # Entropy scheduler parameters TODO: entropy_weight should factor in batch size and expected reward scale
-    'entropy_weight': 6e-4, 
+    'entropy_weight': 1e-1, 
     'entropy_update_coefficient': 0.1, 
     'entropy_schedule': 1000, 
-    'minimum_entropy_weight': 6e-4
+    'minimum_entropy_weight': 0.0
 }
 entropy_weights_per_head = {'structure': 1., 'continuous': 1., 'discrete': 0.0, 'input_influence': 0.0} 
+structure_head_temperature={'target_entropy_ratio_to_max': np.log(5)/np.log(M), 'initial_temperature': 1.0, 'rate': 0.0, 'current_temperature': 1.0}
 risk_scheduler = {                                  # Risk scheduler parameters
-    'risk': 0.95, 
+    'risk': 0.85, 
     'risk_update': 0.0, 
     'max_risk': 1.0, 
     'risk_schedule': 1000
 }
-epoch_num = 700                                     # Number of epochs for training
-render_schedule = 20                                 # Render every # of epochs
+epoch_num = 300                                     # Number of epochs for training
+render_schedule = 10                                 # Render every # of epochs
 render_mode = {                                            # Mode of the experiment
     'style': 'logger', 
     'task': 'phase_plot',
     'format': 'image',
     'topology': True,
-    'bounds': [12, 12, 12]
+    'bounds': [1.2, 1.2, 1.2]
 }
 render_n_best = 3                                   # Number of best CRNs to plot responses for
-render_disregard_percentage = risk_scheduler['risk']                   # Percentage of worst CRNs to disregard in the responses plotting
+render_disregard_percentage = 0.5 #risk_scheduler['risk']                   # Percentage of worst CRNs to disregard in the responses plotting
 
 # Parameter distribution for the reactions added by the agent
 continuous_distribution = {'type': 'lognormal_1D'}
 
 # Time horizon for the simulation
-t_f = 100                                           # Final time for the simulation
+t_f = 20                                           # Final time for the simulation
 N_t = 1000                                          # Number of time steps
 time_horizon = np.linspace(0, t_f, N_t, dtype=np.float32)
 
@@ -140,34 +141,34 @@ time_horizon = np.linspace(0, t_f, N_t, dtype=np.float32)
 u_list = [np.array([1], dtype=np.float32)]  # list of input combinations, each input is a numpy array of shape (p,)
 
 # Construct the IOCRN initial conditions
-ic_dict_diagonal = generate_triangular_prism_points(max_val=10.0, radius=2.0, n_height=10, n_along_edge=2)
+ic_dict_diagonal = generate_triangular_prism_points(max_val=1.0, radius=0.1, n_height=10, n_along_edge=2)
 ic_values_diagonal_1 = ic_dict_diagonal["A"]
 ic_values_diagonal_2 = ic_dict_diagonal["B"]
 ic_values_diagonal_3 = ic_dict_diagonal["C"]
 ic_values_diagonal = ic_values_diagonal_1 + ic_values_diagonal_2 + ic_values_diagonal_3
-ic_values_cluster_1 = [ [9, 0, 0], [10, 0, 0], [11, 0, 0], 
-                        [9, 1, 0], [10, 1, 0], [11, 1, 0], 
-                        [9, 0, 1], [10, 0, 1], [11, 0, 1], 
-                        [9, 1, 1], [10, 1, 1], [11, 1, 1]]
-ic_values_cluster_2 = [ [0, 9, 0], [0, 10, 0], [0, 11, 0], 
-                        [1, 9, 0], [1, 10, 0], [1, 11, 0],
-                        [0, 9, 1], [0, 10, 1], [0, 11, 1], 
-                        [1, 9, 1], [1, 10, 1], [1, 11, 1]]
-ic_values_cluster_3 = [ [0, 0, 9], [0, 0, 10], [0, 0, 11], 
-                        [1, 0, 9], [1, 0, 10], [1, 0, 11],
-                        [0, 1, 9], [0, 1, 10], [0, 1, 11], 
-                        [1, 1, 9], [1, 1, 10], [1, 1, 11]]
+ic_values_cluster_1 = [ [0.9, 0.0, 0.0], [1.0, 0.0, 0.0], [1.1, 0.0, 0.0], 
+                        [0.9, 0.1, 0.0], [1.0, 0.1, 0.0], [1.1, 0.1, 0.0], 
+                        [0.9, 0.0, 0.1], [1.0, 0.0, 0.1], [1.1, 0.0, 0.1], 
+                        [0.9, 0.1, 0.1], [1.0, 0.1, 0.1], [1.1, 0.1, 0.1]]
+ic_values_cluster_2 = [ [0.0, 0.9, 0.0], [0.0, 1.0, 0.0], [0.0, 1.1, 0.0], 
+                        [0.1, 0.9, 0.0], [0.1, 1.0, 0.0], [0.1, 1.1, 0.0],
+                        [0.0, 0.9, 0.1], [0.0, 1.0, 0.1], [0.0, 1.1, 0.1], 
+                        [0.1, 0.9, 0.1], [0.1, 1.0, 0.1], [0.1, 1.1, 0.1]]
+ic_values_cluster_3 = [ [0.0, 0.0, 0.9], [0.0, 0.0, 1.0], [0.0, 0.0, 1.1], 
+                        [0.1, 0.0, 0.9], [0.1, 0.0, 1.0], [0.1, 0.0, 1.1],
+                        [0.0, 0.1, 0.9], [0.0, 0.1, 1.0], [0.0, 0.1, 1.1], 
+                        [0.1, 0.1, 0.9], [0.1, 0.1, 1.0], [0.1, 0.1, 1.1]]
 ic_values_cluster = ic_values_cluster_1 + ic_values_cluster_2 + ic_values_cluster_3
 ic_values = ic_values_diagonal + ic_values_cluster
 ic = IC(names=species_labels, values=ic_values)
 
 # Construct the desired fixed points
-r_list = [np.array([10, 0, 0])] * len(ic_values_diagonal_1) + \
-         [np.array([0, 10, 0])] * len(ic_values_diagonal_2) + \
-         [np.array([0, 0, 10])] * len(ic_values_diagonal_3) + \
-         [np.array([10, 0, 0])] * len(ic_values_cluster_1) + \
-         [np.array([0, 10, 0])] * len(ic_values_cluster_2) + \
-         [np.array([0, 0, 10])] * len(ic_values_cluster_3)
+r_list = [np.array([1, 0, 0])] * len(ic_values_diagonal_1) + \
+         [np.array([0, 1, 0])] * len(ic_values_diagonal_2) + \
+         [np.array([0, 0, 1])] * len(ic_values_diagonal_3) + \
+         [np.array([1, 0, 0])] * len(ic_values_cluster_1) + \
+         [np.array([0, 1, 0])] * len(ic_values_cluster_2) + \
+         [np.array([0, 0, 1])] * len(ic_values_cluster_3)
 
 # Construct the weights for the performance metric
 w = np.ones(N_t)
@@ -178,7 +179,7 @@ w = w[np.newaxis, :]
 # Construct the compute reward routine
 def compute_reward(state):
     x0_list = ic.get_ic(state)
-    return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, relative=False, LARGE_NUMBER=1e4)
+    return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, relative=False, LARGE_NUMBER=1e1)
 
 # %%
 # Plot Initial Conditions
@@ -202,7 +203,7 @@ if save_sheet_flag:
                "Risk Scheduler",
                "Render Schedule", "Hall of Fame Size", 
                "Simulation Time", "Number of Time Steps", "Initial Condition Scenarios", "Input Scenarios",
-               "Continuous Distribution", 
+               "Continuous Distribution", "Entropy Weights per Head", "Structure Head Temperature",
                "Epochs Completed", "Successful", "Saved", "Useful", "Comments"]
     data_row = [timestamp, logger.url, 
                 max_added_reactions, 
@@ -214,7 +215,7 @@ if save_sheet_flag:
                 str(risk_scheduler),
                 render_schedule, hall_of_fame_size,
                 t_f, N_t, len(ic.values), len(u_list),
-                str(continuous_distribution), 
+                str(continuous_distribution), str(entropy_weights_per_head), str(structure_head_temperature),
                 None, None, None, None]
 
     if os.path.exists(file_name):
@@ -251,7 +252,7 @@ structure_head_attributes = {"hidden_size": width, "num_layers": depth}
 rate_head_attributes = {"hidden_size": width, "num_layers": depth}
 input_influence_head_attributes = {"hidden_size": width, "num_layers": depth}
 masks = {"continuous": library.get_parameter_mask(mode="continuous"), "discrete": library.get_parameter_mask(mode="discrete"), "logit": library.get_logit_mask()}
-policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
+policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head, structure_head_temperature=structure_head_temperature)
 
 # Construct the agent
 agent = REINFORCEAgent(policy, allow_input_influence=False, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device)

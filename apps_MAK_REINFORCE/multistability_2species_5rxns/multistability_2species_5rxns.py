@@ -45,16 +45,16 @@ timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 api_key = "o77J6VCMDamustkfJuMXZ2jdV"
 logger = CometLogger(
     api_key=api_key,
-    project="multistability_2species_5rxns_1_MAK_REINFORCE",        
+    project="multistability_2species_5rxns_MAK_REINFORCE",        
     workspace="maurice-filo", 
-    name=f'multistability_2species_5rxns_1_MAK_REINFORCE_{timestamp}',
+    name=f'multistability_2species_5rxns_MAK_REINFORCE_{timestamp}',
 )
 logger = logger.experiment
 
 # %%
 # Construct the template CRN
-r1 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_1'], params=[0.1], params_controllability=[True])
-r2 = MassAction(reactant_labels=['X_2'], product_labels=[], input_channels=[None], params=[0.1], params_controllability=[True])
+r1 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_1'], params=[1.0], params_controllability=[True])
+r2 = MassAction(reactant_labels=['X_2'], product_labels=[], input_channels=[None], params=[1.0], params_controllability=[True])
 crn_template = IOCRN([r1, r2], output_labels=['X_1', 'X_2'])
 crn_template.compile()
 p = crn_template.num_inputs # Number of inputs of the IOCRNs
@@ -86,11 +86,11 @@ save_sheet_flag = True                                          # Save the confi
 
 save_filename = timestamp + '.pth'                              # Filename for saving the agent checkpoint
 load_filename = ''                                              # Filename for loading the agent checkpoint
-file_name = "multistability_2species_6rxns_1_MAK_REINFORCE.xlsx"                           # Filename for saving the Excel sheet
+file_name = "multistability_2species_5rxns_MAK_REINFORCE.xlsx"                           # Filename for saving the Excel sheet
 
 # %%
 # Hyperparameters
-max_added_reactions = 6                             # Maximum number of reactions
+max_added_reactions = 5                             # Maximum number of reactions
 N_CPUs = os.cpu_count()                             # Number of CPUs          
 N = 10*N_CPUs                                       # Number of samples (batch size)    
 width = 1024                                        # Width of the neural networks  
@@ -98,23 +98,23 @@ depth = 5                                           # Depth of the neural networ
 deep_layer_size = 1024*10                           # Size of the deep layer encoding the CRNs
 allow_input_influence = False                       # Allow input influence in the policy
 learning_rate = 1e-4                                # Learning rate for the optimizer 
-hall_of_fame_size = 20                              # Size of the hall of fame  
+hall_of_fame_size = 10                              # Size of the hall of fame  
 entropy_scheduler = {                               # Entropy scheduler parameters TODO: entropy_weight should factor in batch size and expected reward scale
     'entropy_weight': 1e-3, 
     'entropy_update_coefficient': 0.1, 
     'entropy_schedule': 1000, 
-    'minimum_entropy_weight': 1e-3
+    'minimum_entropy_weight': 0.0
 }
-entropy_weights_per_head = {'structure': 1., 'continuous': 1., 'discrete': 0.0, 'input_influence': 0.0} 
-structure_head_temperature={'target_entropy_ratio_to_max': np.log(5)/np.log(M), 'initial_temperature': 1.0, 'rate': 0.1, 'current_temperature': 1.0}
+entropy_weights_per_head = {'structure': 1., 'continuous': 0.1, 'discrete': 0.0, 'input_influence': 0.0}
+structure_head_temperature = {"target_entropy_ratio_to_max": np.log(5)/np.log(M), "initial_temperature": 1.0, "rate": 0.0, "current_temperature": 1.0}
 risk_scheduler = {                                  # Risk scheduler parameters
-    'risk': 0.99, 
+    'risk': 0.95, 
     'risk_update': 0.0, 
     'max_risk': 1.0, 
     'risk_schedule': 1000
 }
 epoch_num = 300                                     # Number of epochs for training
-render_schedule = 20                                 # Render every # of epochs
+render_schedule = 10                                 # Render every # of epochs
 render_mode = {                                            # Mode of the experiment
     'style': 'logger', 
     'task': 'phase_plot',
@@ -129,7 +129,7 @@ render_disregard_percentage = risk_scheduler['risk']                   # Percent
 continuous_distribution = {'type': 'lognormal_1D'}
 
 # Time horizon for the simulation
-t_f = 20                                           # Final time for the simulation
+t_f = 100                                           # Final time for the simulation
 N_t = 1000                                          # Number of time steps
 time_horizon = np.linspace(0, t_f, N_t, dtype=np.float32)
 
