@@ -19,7 +19,7 @@ class ExplicitObserver(AbstractObserver):
         reaction_multihot = self.reactions_to_multihot()               # shape (M,)
         params_cross_multihot = self.params_cross_multihot()          # shape (P,)
         inputs_multihot = self.inputs_to_multihot()                   # shape (p, C)
-        explicit_state = (reaction_multihot, params_cross_multihot, inputs_multihot)
+        explicit_state = (reaction_multihot, params_cross_multihot)
         return explicit_state
         
     def reactions_to_multihot(self):

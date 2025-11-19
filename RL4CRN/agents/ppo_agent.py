@@ -197,6 +197,7 @@ class PPOAgent(AbstractAgent):
         self.logPs_sequence.clear()
         self.entropies_sequence.clear()
 
+
     def compute_PPO_loss(self, states_sequence, actions_sequence, rewards_sequence, entropies_sequence, masks=1., mode='full'):
         """ Compute the PPO loss for the given states, actions, rewards, and entropies.
         Args:

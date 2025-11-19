@@ -6,7 +6,7 @@ from RL4CRN.utils.utils import batch_multi_hot
 class StateValueFunction(torch.nn.Module):
     
     def __init__(self, num_reactions, num_parameters, num_inputs, 
-                 encoder_attributes, deep_layer_size, output_head_attributes, device=None):
+                 encoder_attributes, deep_layer_size, output_head_attributes, device=None, use_input_influence=False):
         """ Initialize the StateValueFunction.
         Args:
         - num_reactions: total number of reactions to select from (assumed to be the same for all IOCRNs in the batch).
@@ -31,7 +31,12 @@ class StateValueFunction(torch.nn.Module):
         self.device = device if device is not None else torch.device('cpu')
 
         # Define the encoder that encodes the IOCRN observation into a deep layer representation
-        self.encoder = FFNN(input_size=self.M + (self.p + 1) * self.K, output_size=deep_layer_size, hidden_size=encoder_attributes["hidden_size"], num_layers=encoder_attributes["num_layers"]).to(device=device)
+        if use_input_influence:
+            input_layer_size = self.M + (self.p + 1) * self.K
+        else:
+            input_layer_size = self.M + self.K
+
+        self.encoder = FFNN(input_size=input_layer_size, output_size=deep_layer_size, hidden_size=encoder_attributes["hidden_size"], num_layers=encoder_attributes["num_layers"]).to(device=device)
         
         # Define the output head that computes the value of the state at time t
         self.output_head = FFNN(input_size=deep_layer_size, output_size=1, hidden_size=output_head_attributes["hidden_size"], num_layers=output_head_attributes["num_layers"]).to(device=device)
