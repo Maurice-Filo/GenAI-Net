@@ -228,6 +228,7 @@ class IOCRN:
             - time_horizon: numpy array of shape (T,) representing the time points at which the system was evaluated.
             - x_list: A list of numpy arrays of shape (n, T) representing the full state trajectories for each input and initial condition scenario.
             - y_list: A list of numpy arrays of shape (q, T) representing the output trajectories for each input and initial condition scenario.
+            - last_task_info: A dictionary containing information about the last task performed, including inputs, initial conditions, time horizon, trajectories, and outputs.
         """
         # If the CRN dynamics has been simulated and stored before, return the stored results
         if self.last_task_info['type'] == 'transient response':

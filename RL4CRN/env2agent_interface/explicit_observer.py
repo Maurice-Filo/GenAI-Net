@@ -2,9 +2,10 @@ import numpy as np
 from RL4CRN.env2agent_interface.abstract_observer import AbstractObserver
 
 class ExplicitObserver(AbstractObserver):
-    def __init__(self, reaction_library):
+    def __init__(self, reaction_library, allow_input_observation=False):
         super().__init__()
         self.reaction_library = reaction_library
+        self.allow_input_observation = allow_input_observation
         self.iocrn = None
 
     def observe(self, iocrn):
@@ -18,8 +19,11 @@ class ExplicitObserver(AbstractObserver):
         self.iocrn = iocrn
         reaction_multihot = self.reactions_to_multihot()               # shape (M,)
         params_cross_multihot = self.params_cross_multihot()          # shape (P,)
-        inputs_multihot = self.inputs_to_multihot()                   # shape (p, C)
-        explicit_state = (reaction_multihot, params_cross_multihot, inputs_multihot)
+        if self.allow_input_observation:
+            inputs_multihot = self.inputs_to_multihot()                   # shape (p, C)
+            explicit_state = (reaction_multihot, params_cross_multihot, inputs_multihot)
+        else:
+            explicit_state = (reaction_multihot, params_cross_multihot)
         return explicit_state
         
     def reactions_to_multihot(self):
