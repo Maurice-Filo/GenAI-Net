@@ -14,6 +14,10 @@ class AbstractAgent:
         Update the agent with the rewards received from the environment by doing the backward pass.
         NOTE: This function does not return anything. It is meant to update the agent's internal state.
         """
+        # reset the initial mask after each update
+        if hasattr(self, "policy"):
+            if hasattr(self.policy, "reset_template"):
+                self.policy.reset_template() # used to distinguish the template reactions from the added reactions
         pass
 
     def translate_state(self, state):
