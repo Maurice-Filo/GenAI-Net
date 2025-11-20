@@ -99,16 +99,16 @@ deep_layer_size = 1024*10                           # Size of the deep layer enc
 allow_input_influence = False                       # Allow input influence in the policy
 learning_rate = 1e-4                                # Learning rate for the optimizer 
 hall_of_fame_size = 10                              # Size of the hall of fame  
-entropy_scheduler = {                               # Entropy scheduler parameters TODO: entropy_weight should factor in batch size and expected reward scale
-    'entropy_weight': 1e-3, 
+entropy_scheduler = {                               # Entropy scheduler parameters
+    'entropy_weight': 1e-2, 
     'entropy_update_coefficient': 0.1, 
     'entropy_schedule': 1000, 
     'minimum_entropy_weight': 0.0
 }
-entropy_weights_per_head = {'structure': 1., 'continuous': 0.1, 'discrete': 0.0, 'input_influence': 0.0}
+entropy_weights_per_head = {'structure': 1.3, 'continuous': 1.0, 'discrete': 0.0, 'input_influence': 0.0}
 structure_head_temperature = {"target_entropy_ratio_to_max": np.log(5)/np.log(M), "initial_temperature": 1.0, "rate": 0.0, "current_temperature": 1.0}
 risk_scheduler = {                                  # Risk scheduler parameters
-    'risk': 0.95, 
+    'risk': 0.9, 
     'risk_update': 0.0, 
     'max_risk': 1.0, 
     'risk_schedule': 1000
@@ -236,7 +236,7 @@ if load_flag:
 
 # %%
 # Construct the interfaces
-observer = ExplicitObserver(reaction_library=library)
+observer = ExplicitObserver(reaction_library=library, allow_input_observation=allow_input_influence)
 tensorizer = ExplicitTensorizer(device=device)
 actuator = LibraryActuator(reaction_library=library)
 stepper = IOCRNStepper()

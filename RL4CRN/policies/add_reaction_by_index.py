@@ -74,8 +74,11 @@ class AddReactionByIndex(torch.nn.Module):
         self.logit_mask = masks['logit']
 
         # Define the encoder that encodes the IOCRN observation into a deep layer representation
-        self.encoder = FFNN(input_size=self.M + self.K, output_size=deep_layer_size, hidden_size=encoder_attributes["hidden_size"], num_layers=encoder_attributes["num_layers"]).to(device=device)
-        
+        if allow_input_influence:
+            self.encoder = FFNN(input_size=self.M + (self.p + 1) * self.K, output_size=deep_layer_size, hidden_size=encoder_attributes["hidden_size"], num_layers=encoder_attributes["num_layers"]).to(device=device)
+        else:
+            self.encoder = FFNN(input_size=self.M + self.K, output_size=deep_layer_size, hidden_size=encoder_attributes["hidden_size"], num_layers=encoder_attributes["num_layers"]).to(device=device)
+
         # Define the reaction structure head that reads the deep layer representation to output the logits for the reaction structure
         self.reaction_structure_head = FFNN(input_size=deep_layer_size, output_size=self.M, hidden_size=structure_head_attributes["hidden_size"], num_layers=structure_head_attributes["num_layers"]).to(device=device)
         
