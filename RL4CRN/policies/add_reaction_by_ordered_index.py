@@ -180,7 +180,7 @@ class AddReactionByOrderedIndex(AddReactionByIndex):
                 # Force last index as dummy action for broken/finished rows
                 masked_reaction_structure_logits[all_logits_neg_inf, -1] = 0.0
 
-            # --- STEP 7: Sampling ---
+            # --- STEP 7: Sampling --- (this is as before)
             if structure_temp is not None:
                 self.structure_head_temperature["current_temperature"] = structure_temp
             
@@ -203,7 +203,7 @@ class AddReactionByOrderedIndex(AddReactionByIndex):
 
             samples_reaction_idx = reaction_structure_distribution.sample() if action is None else torch.tensor([a['reaction index'] for a in action], requires_grad=False).to(self.device)
             
-            # Bound guard
+            # Bound guard (in principle not needed)
             samples_reaction_idx = torch.clamp(samples_reaction_idx, 0, self.M - 1)
 
             log_probabilities = reaction_structure_distribution.log_prob(samples_reaction_idx)

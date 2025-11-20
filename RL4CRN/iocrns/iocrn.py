@@ -378,15 +378,31 @@ class IOCRN:
                     axes[i].set_ylabel("Concentration")
             plt.tight_layout()
 
-        elif self.last_task_info['type'] == 'transient response': # TODO: generalize for multiple inputs
+        # elif self.last_task_info['type'] == 'transient response': # TODO: generalize for multiple inputs
+        #     u_list = self.last_task_info['inputs']
+        #     for i in range(self.num_outputs):
+        #         u_dose = np.array([u[0] for u in u_list])
+        #         y_dose = np.array([y[i,-1] for y in self.last_task_info['outputs']])
+        #         axes[i].plot(u_dose, y_dose, alpha=alpha)
+        #         axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.output_idx[i]]}")
+        #         axes[i].set_xlabel("Input Dose")
+        #         axes[i].set_ylabel("Concentration")
+        #     plt.tight_layout()
+
+        elif self.last_task_info['type'] == 'transient response': # TODO: It is time to generalize for multiple inputs
             u_list = self.last_task_info['inputs']
+            x0_list = self.last_task_info['initial_conditions']
+
+            step = len(self.last_task_info['outputs']) // len(x0_list)
+
             for i in range(self.num_outputs):
-                u_dose = np.array([u[0] for u in u_list])
-                y_dose = np.array([y[i,-1] for y in self.last_task_info['outputs']])
-                axes[i].plot(u_dose, y_dose, alpha=alpha)
-                axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.output_idx[i]]}")
-                axes[i].set_xlabel("Input Dose")
-                axes[i].set_ylabel("Concentration")
+                for k in enumerate(x0_list):
+                    u_dose = np.array([u[0] for u in u_list])
+                    y_dose = np.array([y[i,-1] for y in self.last_task_info['outputs'][step*(k):step*(k+1)]])
+                    axes[i].plot(u_dose, y_dose, alpha=alpha)
+                    axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.output_idx[i]]}")
+                    axes[i].set_xlabel("Input Dose")
+                    axes[i].set_ylabel("Concentration")
             plt.tight_layout()
 
         return fig, axes
