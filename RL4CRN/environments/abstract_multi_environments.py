@@ -53,7 +53,7 @@ class AbstractMultiEnvironments:
         output = [env.step(action, stepper) for env,action in zip(self.envs, actions)]
         toc_step = time.time()
         if self.logger is not None:
-            self.logger.log_metric('Step Time', toc_step - tic_step)
+            self.logger.log_metric('Timing: Step', toc_step - tic_step)
         return output
     
     def observe(self, observer, tensorizer):
@@ -292,4 +292,4 @@ class AbstractMultiEnvironments:
                     
         toc_step = time.time()
         if self.logger is not None:
-            self.logger.log_metric('Render Time', toc_step - tic_step)
+            self.logger.log_metric('Timing: Render', toc_step - tic_step)
