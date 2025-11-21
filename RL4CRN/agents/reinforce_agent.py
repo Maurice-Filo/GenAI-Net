@@ -13,6 +13,8 @@ class REINFORCEAgent(AbstractAgent):
         - learning_rate (float): The learning rate for the optimizer.
         - entropy_scheduler (dict): A dictionary containing parameters for the entropy scheduler:
             - entropy_weight (float): Initial weight for entropy. It is modified during training.
+            - topk_entropy_weight (float): Weight for entropy computed over top-k samples.
+            - remainder_entropy_weight (float): Weight for entropy computed over the remaining samples after removing the topk.
             - entropy_update_coefficient (float): Multiplicative coefficient to update the entropy weight.
             - entropy_schedule (int): Number of iterations after which to update the entropy weight.
             - minimum_entropy_weight (float): Minimum value for the entropy weight.
@@ -40,13 +42,15 @@ class REINFORCEAgent(AbstractAgent):
 
         # Entropy scheduler
         if not entropy_scheduler:
-            entropy_scheduler = {'entropy_weight': 1, 'entropy_update_coefficient': 0.9, 'entropy_schedule': 20, 'minimum_entropy_weight': 1}
+            entropy_scheduler = {'entropy_weight': 1.0, 'topk_entropy_weight': 1.0, 'remainder_entropy_weight': 1.0, 'entropy_update_coefficient': 1.0, 'entropy_schedule': 20, 'minimum_entropy_weight': 0.0}
         self.entropy_scheduler = entropy_scheduler
+        self.entropy_scheduler['topk_entropy_weight'] = entropy_scheduler.get('topk_entropy_weight', 1.0)
+        self.entropy_scheduler['remainder_entropy_weight'] = entropy_scheduler.get('remainder_entropy_weight', 1.0)
         self.entropy_counter = 0
 
         # Risky policy scheduler
         if not risk_scheduler:
-            risk_scheduler = {'risk': 0.8, 'risk_update': 0.00, 'max_risk': 1.00, 'risk_schedule': 20}
+            risk_scheduler = {'risk': 0.9, 'risk_update': 0.0, 'max_risk': 1.00, 'risk_schedule': 20}
         self.risk_scheduler = risk_scheduler
         self.risk_counter = 0
         
@@ -73,7 +77,7 @@ class REINFORCEAgent(AbstractAgent):
 
         # Log the forward pass time and return the actions
         if self.logger is not None:
-            self.logger.log_metric('forward_time', toc_forward - tic_forward, step=None)    
+            self.logger.log_metric('Timing: Forward', toc_forward - tic_forward, step=None)    
 
         actions = [actuator.actuate(a) for a in actions]
         return actions
@@ -98,27 +102,25 @@ class REINFORCEAgent(AbstractAgent):
         final_loss_for_each_sample = torch.tensor(final_loss_for_each_sample, device=sum_logPs.device, dtype=sum_logPs.dtype).detach() # shape (N,)
 
         # Risky policy gradient
-        top_k = torch.topk(final_loss_for_each_sample, int(N * (1. - self.risk_scheduler['risk'])), largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
+        k = int(N * (1. - self.risk_scheduler['risk']))
+        top_k = torch.topk(final_loss_for_each_sample, k, largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
 
-        # Compute the gradients with baseline (important: baseline = worst loss in top k, so that the weights are non-negative)
+        # Compute the loss component of the gradient with baseline being the worst loss in the top k
         baseline = final_loss_for_each_sample[top_k[-1]]
-        # baseline = torch.mean(final_loss_for_each_sample[top_k]).detach()  # shape (1,)
-        # advantages = final_loss_for_each_sample[top_k] - baseline  # shape (N,)
-        # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)  # Normalize advantage
-        # loss_for_gradient =  advantages.detach() * sum_logPs[top_k] # shape (k,)
         loss_for_gradient =  (final_loss_for_each_sample[top_k] - baseline) * sum_logPs[top_k] # shape (k,)
 
-        # entropy_for_gradient = torch.mean(sum_entropies + sum_entropies.detach() * sum_logPs) # shape (1,) # TODO: no topk for entropies
-        entropy_for_gradient = torch.mean(sum_entropies) # shape (1,) # TODO: no topk for entropies
+        # Compute the entropy component of the gradient
+        # entropy_for_gradient = torch.mean(sum_entropies + sum_entropies.detach() * sum_logPs) # shape (1,)
+        entropy_batch = torch. mean(sum_entropies) # shape (1,)
+        entropy_topk = torch.mean(sum_entropies[top_k]) # shape (1,)
+        entropy_remainder = (N * entropy_batch - k * entropy_topk) / (N - k) if N > k else 0.0 # shape (1,)
+        entropy_for_gradient = self.entropy_scheduler['topk_entropy_weight'] * ((N-k)/N) * entropy_topk + self.entropy_scheduler['remainder_entropy_weight'] * (k/N) * entropy_remainder # shape (1,)
         loss_for_gradient = loss_for_gradient - self.entropy_scheduler['entropy_weight'] * entropy_for_gradient # shape (k,)
-
-        loss_for_gradient_entropy_mean = torch.mean(loss_for_gradient) # TODO: add another term to promote entropy for the remaining samples not in the top k
+        loss_for_gradient_entropy_mean = torch.mean(loss_for_gradient)
         loss_for_gradient_entropy_mean.backward()
 
-        # Do gradient clipping if needed
+        # Do gradient clipping if needed and perform the optimization step
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
-
-        # torch.mean(loss_for_gradient[top_k]).backward() 
         self.optimizer.step()
         toc_backward = time.time()
 
@@ -134,24 +136,37 @@ class REINFORCEAgent(AbstractAgent):
 
         # Log the training process
         if self.logger is not None:
-            self.logger.log_metric('batch logP', sum_logPs.mean().item(), step=step_iteration)
-            self.logger.log_metric('entropy weight', self.entropy_scheduler['entropy_weight'], step=step_iteration)
-            self.logger.log_metric('risk', self.risk_scheduler['risk'], step=step_iteration)
-            self.logger.log_metric('backward time', toc_backward - tic_backward, step=step_iteration)
+            # Compute losses relevant for logging
             best_loss = final_loss_for_each_sample[top_k[0]]
             worst_loss_topk = final_loss_for_each_sample[top_k[-1]]
             avg_loss_topk = final_loss_for_each_sample[top_k].float().mean()
             avg_loss = final_loss_for_each_sample.float().mean()
             worst_loss = final_loss_for_each_sample.float().max()
-            self.logger.log_metric('batch average loss', avg_loss.item(), step=step_iteration)
-            self.logger.log_metric('batch best loss', best_loss.item(), step=step_iteration)
-            self.logger.log_metric('batch worst loss', worst_loss.item(), step=step_iteration)
-            self.logger.log_metric('topk worst loss', worst_loss_topk.item(), step=step_iteration)
-            self.logger.log_metric('topk average loss', avg_loss_topk.item(), step=step_iteration)
-            self.logger.log_metric('batch entropy', sum_entropies.mean().item(), step=step_iteration)
-            total_loss_topk = torch.mean(final_loss_for_each_sample[top_k]) - self.entropy_scheduler['entropy_weight'] * torch.mean(sum_entropies)
-            self.logger.log_metric('topk total loss', total_loss_topk.item(), step=step_iteration)
-            self.logger.log_metric('temperature', self.policy.structure_head_temperature["current_temperature"], step=step_iteration)
+            total_loss_topk = torch.mean(final_loss_for_each_sample[top_k]) - self.entropy_scheduler['entropy_weight'] * entropy_for_gradient
+
+            # Log the losses
+            self.logger.log_metric('Loss: Batch Average', avg_loss.item(), step=step_iteration)
+            self.logger.log_metric('Loss: Batch Best', best_loss.item(), step=step_iteration)
+            self.logger.log_metric('Loss: Batch Worst', worst_loss.item(), step=step_iteration)
+            self.logger.log_metric('Loss: Top-' + str(k) + ' Worst', worst_loss_topk.item(), step=step_iteration)
+            self.logger.log_metric('Loss: Top-' + str(k) + ' Average', avg_loss_topk.item(), step=step_iteration)
+            self.logger.log_metric('Loss: Top-' + str(k) + ' Total', total_loss_topk.item(), step=step_iteration)
+
+            # Log the entropies
+            self.logger.log_metric('Entropy: Batch', entropy_batch.item(), step=step_iteration)
+            self.logger.log_metric('Entropy: Top-' + str(k), entropy_topk.item(), step=step_iteration)
+            self.logger.log_metric('Entropy: Global Weight', self.entropy_scheduler['entropy_weight'], step=step_iteration)
+            self.logger.log_metric('Temperature', self.policy.structure_head_temperature["current_temperature"], step=step_iteration)
+
+            # Log the probabilities
+            self.logger.log_metric('LogP: Batch', sum_logPs.mean().item(), step=step_iteration)
+            self.logger.log_metric('LogP: Top-' + str(k), sum_logPs[top_k].mean().item(), step=step_iteration)
+
+            # Log the risk value
+            self.logger.log_metric('Risk', self.risk_scheduler['risk'], step=step_iteration)
+
+            # Log the timing
+            self.logger.log_metric('Timing: Backward', toc_backward - tic_backward, step=step_iteration)
 
         # Clear the lists of logPs and entropies
         self.logPs_sequence.clear()

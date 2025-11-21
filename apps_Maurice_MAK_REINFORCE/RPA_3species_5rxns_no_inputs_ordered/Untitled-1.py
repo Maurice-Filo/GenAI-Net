@@ -9,6 +9,7 @@ print('Working directory set to:', parent_dir)
 # %%
 # Import general packages
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils import get_column_letter
 from datetime import datetime
 import torch
 from matplotlib import pyplot as plt
@@ -22,6 +23,8 @@ from RL4CRN.environments.environment import Environment
 from RL4CRN.environments.parallel_environments import ParallelEnvironments
 from RL4CRN.environments.serial_environments import SerialEnvironments
 from RL4CRN.agents.reinforce_agent import REINFORCEAgent
+from RL4CRN.policies.add_reaction_by_ordered_index import AddReactionByOrderedIndex
+from RL4CRN.policies.add_reaction_by_ordered_index import AddReactionByOrderedIndex
 from RL4CRN.policies.add_reaction_by_index import AddReactionByIndex
 
 # Import Interface packages
@@ -45,25 +48,25 @@ timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 api_key = "o77J6VCMDamustkfJuMXZ2jdV"
 logger = CometLogger(
     api_key=api_key,
-    project="multistability_2species_5rxns_MAK_REINFORCE",        
+    project="RPA_3species_5rxns_MAK_REINFORCE",        
     workspace="maurice-filo", 
-    name=f'multistability_2species_5rxns_MAK_REINFORCE_{timestamp}',
+    name=f'RPA_3species_5rxns_MAK_REINFORCE_{timestamp}',
 )
 logger = logger.experiment
 
 # %%
 # Construct the template CRN
-r1 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_1'], params=[1.0], params_controllability=[True])
-r2 = MassAction(reactant_labels=['X_2'], product_labels=[], input_channels=[None], params=[1.0], params_controllability=[True])
-crn_template = IOCRN([r1, r2], output_labels=['X_1', 'X_2'])
+r1 = MassAction(reactant_labels=[], product_labels=['Z_1'], input_channels=['u_1'], params=[1.], params_controllability=[True])
+r2 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_2'], params=[1.], params_controllability=[True])
+crn_template = IOCRN([r1, r2], output_labels=['X_1'])
 crn_template.compile()
 p = crn_template.num_inputs # Number of inputs of the IOCRNs
 print("Template CRN:")
 print(crn_template)
 
 # Construct the library of possible reactions
-species_labels = ['X_1', 'X_2']
-library = construct_mass_action_library(species_labels=species_labels, order_reactants=2, order_products=2)
+species_labels = ['X_1', 'Z_1', 'Z_2']
+library = construct_mass_action_library(species_labels=species_labels, order=2)
 crn_template.set_library_context(library)
 M = len(library.reactions) # Number of possible reactions
 K = library.get_num_parameters() # Total number of parameters in all the reactions of the library
@@ -80,13 +83,13 @@ print(f'Number of CPUs available: {os.cpu_count()}')
 # %%
 # Flags and filenames
 save_flag = True                                                # Save the agent checkpoint
-load_flag = False                                              # Load the agent checkpoint 
+load_flag = False                                               # Load the agent checkpoint 
 train_flag = True                                               # Train the agent
 save_sheet_flag = True                                          # Save the configuration to an Excel sheet
 
 save_filename = timestamp + '.pth'                              # Filename for saving the agent checkpoint
 load_filename = ''                                              # Filename for loading the agent checkpoint
-file_name = "multistability_2species_5rxns_MAK_REINFORCE.xlsx"                           # Filename for saving the Excel sheet
+file_name = "RPA_3species_5rxns_MAK_REINFORCE.xlsx"             # Filename for saving the Excel sheet
 
 # %%
 # Hyperparameters
@@ -96,16 +99,18 @@ N = 10*N_CPUs                                       # Number of samples (batch s
 width = 1024                                        # Width of the neural networks  
 depth = 5                                           # Depth of the neural networks 
 deep_layer_size = 1024*10                           # Size of the deep layer encoding the CRNs
-allow_input_influence = False                       # Allow input influence in the policy
+allow_input_influence = False                      # Allow input influence in the policy
 learning_rate = 1e-4                                # Learning rate for the optimizer 
-hall_of_fame_size = 10                              # Size of the hall of fame  
-entropy_scheduler = {                               # Entropy scheduler parameters
-    'entropy_weight': 1e-2, 
-    'entropy_update_coefficient': 0.1, 
+hall_of_fame_size = 30                              # Size of the hall of fame  
+entropy_scheduler = {                               # Entropy scheduler parameters 
+    'entropy_weight': 1e-3 , 
+    'topk_entropy_weight' : 1.0,
+    'remainder_entropy_weight' : 1.0,
+    'entropy_update_coefficient': 1, 
     'entropy_schedule': 1000, 
     'minimum_entropy_weight': 0.0
 }
-entropy_weights_per_head = {'structure': 1.3, 'continuous': 1.0, 'discrete': 0.0, 'input_influence': 0.0}
+entropy_weights_per_head = {'structure': 2.0, 'continuous': 1.0, 'discrete': 0.0, 'input_influence': 0.0} 
 structure_head_temperature = {"target_entropy_ratio_to_max": np.log(5)/np.log(M), "initial_temperature": 1.0, "rate": 0.0, "current_temperature": 1.0}
 risk_scheduler = {                                  # Risk scheduler parameters
     'risk': 0.9, 
@@ -115,18 +120,18 @@ risk_scheduler = {                                  # Risk scheduler parameters
 }
 epoch_num = 300                                     # Number of epochs for training
 render_schedule = 10                                 # Render every # of epochs
-render_mode = {                                            # Mode of the experiment
+render_mode = {                                     # Mode of the experiment
     'style': 'logger', 
-    'task': 'phase_plot',
+    'task': 'transients', 
     'format': 'image',
     'topology': True,
-    'bounds': [1.2, 1.2]
+    'bounds': [2.5]
 }
-render_n_best = 3                                   # Number of best CRNs to plot responses for
-render_disregard_percentage = risk_scheduler['risk']                   # Percentage of worst CRNs to disregard in the responses plotting
+render_n_best = 10                                  # Number of best CRNs to plot responses for
+render_disregard_percentage = risk_scheduler['risk']                  # Percentage of worst CRNs to disregard in the responses plotting
 
 # Parameter distribution for the reactions added by the agent
-continuous_distribution = {'type': 'lognormal_1D'}
+continuous_distribution = {"type": 'lognormal_1D'}
 
 # Time horizon for the simulation
 t_f = 100                                           # Final time for the simulation
@@ -134,23 +139,14 @@ N_t = 1000                                          # Number of time steps
 time_horizon = np.linspace(0, t_f, N_t, dtype=np.float32)
 
 # Construct the IOCRN inputs
-u_list = [np.array([1], dtype=np.float32)]  # list of input combinations, each input is a numpy array of shape (p,)
+nums = [0.5, 1.0, 1.5]
+u_list = [np.array(u) for u in product(nums, repeat=p)] # list of input combinations, each input is a numpy array of shape (p,)
+
+# Construct the reference setpoints
+r_list = [np.array([u[0]]) for u in u_list]
 
 # Construct the IOCRN initial conditions
-ic_values_diagonal_1 = [[x/10, x/10 - 0.1] for x in range(1, 11)]
-ic_values_diagonal_2 = [[x/10, x/10 + 0.1] for x in range(0, 10)]
-ic_values_cluster_1 = [ [.9, 0], [1, 0], [1.1, 0], 
-                        [.9, .1], [1, .1], [1.1, .1]]
-ic_values_cluster_2 = [ [0, .9], [0, 1], [0, 1.1], 
-                        [.1, .9], [.1, 1], [.1, 1.1]]
-ic_values = ic_values_diagonal_1 + ic_values_diagonal_2 + ic_values_cluster_1 + ic_values_cluster_2
-ic = IC(names=species_labels, values=ic_values)
-
-# Construct the desired fixed points
-r_list = [np.array([1, 0])] * len(ic_values_diagonal_1) + \
-         [np.array([0, 1])] * len(ic_values_diagonal_2) + \
-         [np.array([1, 0])] * len(ic_values_cluster_1) + \
-         [np.array([0, 1])] * len(ic_values_cluster_2)
+ic = IC(names=species_labels, values=[[0.0, 0.0, 0.0]])
 
 # Construct the weights for the performance metric
 w = np.ones(N_t)
@@ -161,37 +157,39 @@ w = w[np.newaxis, :]
 # Construct the compute reward routine
 def compute_reward(state):
     x0_list = ic.get_ic(state)
-    return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, relative=False, LARGE_NUMBER=1e4)
+    return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4)
 
 # %%
-# Save the experiment discription in an Excel sheet
 if save_sheet_flag:
     sheet_name = "Data"
-    headers = ["Timestamp", "URL", 
-               "Maximum Number of Added Reactions", 
-               "Number of Species", 
-               "Number of Inputs", 
-               "Batch Size", 
-               "Allow Input Influence", 
-               "Learning Rate", "Number of Epochs", "Neural Network Depth", "Neural Network Width", "Deep Layer Size", "Number of CPUs",
-               "Entropy Scheduler", 
-               "Risk Scheduler",
-               "Render Schedule", "Hall of Fame Size", 
-               "Simulation Time", "Number of Time Steps", "Initial Condition Scenarios", "Input Scenarios",
-               "Continuous Distribution", "Entropy Weights per Head", "Structure Head Temperature",
-               "Epochs Completed", "Successful", "Saved", "Useful", "Comments"]
-    data_row = [timestamp, logger.url, 
-                max_added_reactions, 
-                len(species_labels), 
-                p, N,
-                allow_input_influence, 
-                learning_rate, epoch_num, depth, width, deep_layer_size, N_CPUs, 
-                str(entropy_scheduler),
-                str(risk_scheduler),
-                render_schedule, hall_of_fame_size,
-                t_f, N_t, len(ic.values), len(u_list),
-                str(continuous_distribution), str(entropy_weights_per_head), str(structure_head_temperature),
-                None, None, None, None]
+    headers = [
+        "Timestamp", "URL",
+        "Epochs Completed", "Successful", "Saved", "Comments",
+        "Learning Rate", "Epochs #",
+        "(m, n, p, N)",
+        "NN Depth", "NN Width", "Deep Layer Size", "CPUs #",
+        "Entropy Scheduler",
+        "Risk Scheduler",
+        "Render Schedule", "HoF Size",
+        "Simulation Time", "Time Steps #",
+        "Initial Conditions #", "Input Scenarios#",
+        "Continuous Distribution", "Entropy Weights per Head",
+        "Structure Head Temperature"
+    ]
+
+    data_row = [
+        timestamp, logger.url,
+        None, None, None, None,
+        learning_rate, epoch_num,
+        str((max_added_reactions, len(species_labels), p, N)),
+        depth, width, deep_layer_size, N_CPUs,
+        str(entropy_scheduler),
+        str(risk_scheduler),
+        render_schedule, hall_of_fame_size,
+        t_f, N_t, len(ic.values), len(u_list),
+        str(continuous_distribution), str(entropy_weights_per_head),
+        str(structure_head_temperature)
+    ]
 
     if os.path.exists(file_name):
         wb = load_workbook(file_name)
@@ -204,15 +202,45 @@ if save_sheet_flag:
         ws = wb.active
         ws.title = sheet_name
 
-    if ws.max_column < 2:
-        for i, header in enumerate(headers, start=1):
-            ws.cell(row=i, column=1, value=header)
-    next_col = ws.max_column + 1
-    for i, value in enumerate(data_row, start=1):
-        ws.cell(row=i, column=next_col, value=value)
+    # Write headers if sheet is empty
+    if ws.max_row == 1 and ws.max_column == 1 and ws.cell(row=1, column=1).value is None:
+        for col, header in enumerate(headers, start=1):
+            ws.cell(row=1, column=col, value=header)
+
+    # Append experiment as next row
+    next_row = ws.max_row + 1
+    for col, value in enumerate(data_row, start=1):
+        ws.cell(row=next_row, column=col, value=value)
+
+    # Freeze header row and add filter
+    ws.freeze_panes = "B1" 
+    ws.auto_filter.ref = ws.dimensions
+
+    # === Auto-fit column widths (except URL column) ===
+    # URL column is column 2 (B), we leave its width unchanged.
+    url_col_index = 2
+
+    for col in range(1, ws.max_column + 1):
+        if col == url_col_index:
+            continue  # keep URL column width as-is
+
+        max_length = 0
+        for row in range(1, ws.max_row + 1):
+            cell = ws.cell(row=row, column=col)
+            value = cell.value
+            if value is not None:
+                # Convert to string to measure length
+                length = len(str(value))
+                if length > max_length:
+                    max_length = length
+
+        # Some padding so text isn't touching the cell border
+        adjusted_width = max_length + 2 if max_length > 0 else 10
+        col_letter = get_column_letter(col)
+        ws.column_dimensions[col_letter].width = adjusted_width
 
     wb.save(file_name)
-    print(f"New experiment data saved in column {next_col} of '{file_name}'.")
+    print(f"New experiment data saved in row {next_row} of '{file_name}'.")
 
 # %%
 # Construct parallel environments
@@ -227,7 +255,8 @@ structure_head_attributes = {"hidden_size": width, "num_layers": depth}
 rate_head_attributes = {"hidden_size": width, "num_layers": depth}
 input_influence_head_attributes = {"hidden_size": width, "num_layers": depth}
 masks = {"continuous": library.get_parameter_mask(mode="continuous"), "discrete": library.get_parameter_mask(mode="discrete"), "logit": library.get_logit_mask()}
-policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head, structure_head_temperature=structure_head_temperature)
+# policy = AddReactionByOrderedIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, target_set_size=crn_template.num_reactions+max_added_reactions, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head, combinatorial_bias_enabled=True)
+policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
 
 # Construct the agent
 agent = REINFORCEAgent(policy, allow_input_influence=False, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device)
@@ -242,7 +271,7 @@ actuator = LibraryActuator(reaction_library=library)
 stepper = IOCRNStepper()
 
 # %%
-# Training Loop     
+# Training Loop   
 if train_flag:
     agent.policy.train()
     for i in tqdm(range(epoch_num)):
@@ -273,31 +302,24 @@ crns = mult_env.gather()
 sorted_crns_rewards = sorted(zip(crns, rewards), key=lambda x: x[1])
 
 # %%
-# Plot the results versus time
-n_plot = 10
+# Plot the results
+n_plot = 100
 ax = None
 for i in range(n_plot):
     x0_list = ic.get_ic(sorted_crns_rewards[i][0])
     time_horizon, x_list, y_list, last_task_info = sorted_crns_rewards[i][0].transient_response(u_list, x0_list, time_horizon)
     fig, ax = sorted_crns_rewards[i][0].plot_transient_response(axes=ax)
     print(f"IOCRN {i}, Reward: {sorted_crns_rewards[i][1]}")
-    print(sorted_crns_rewards[0][0])
-
-# %%
-# Plot the results versus time
-n_plot = 10
-ax = None
-for i in range(n_plot):
-    x0_list = ic.get_ic(sorted_crns_rewards[i][0])
-    time_horizon, x_list, y_list, last_task_info = sorted_crns_rewards[i][0].transient_response(u_list, x0_list, time_horizon)
-    fig, ax = sorted_crns_rewards[i][0].plot_phase_portrait(axis=ax)
-    print(f"IOCRN {i}, Reward: {sorted_crns_rewards[i][1]}")
-    print(sorted_crns_rewards[0][0])
+    print(sorted_crns_rewards[i][0])
 
 # %%
 hall_of_fame_crns = [env.state for env in mult_env.hall_of_fame]
 if save_flag:
-    torch.save(agent.policy.state_dict(), save_filename)
-    torch.save(hall_of_fame_crns, 'hall_of_fame_' + save_filename)
+    if not os.path.exists('models'):
+        os.makedirs('models')
+    if not os.path.exists('hof'):
+        os.makedirs('hof')
+    torch.save(agent.policy.state_dict(), 'models/' + save_filename)
+    torch.save(hall_of_fame_crns, 'hof/hall_of_fame_' + save_filename)
 
 

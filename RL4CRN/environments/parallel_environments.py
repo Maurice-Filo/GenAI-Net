@@ -39,7 +39,7 @@ class ParallelEnvironments(AbstractMultiEnvironments):
             env.state.last_task_info = last_task_info_list[i]
         toc_reward = time.time()
         if self.logger is not None:
-            self.logger.log_metric('Reward Time', toc_reward - tic_reward)
+            self.logger.log_metric('Timing: Rewards', toc_reward - tic_reward)
             
         # Update the hall of fame
         if self.hall_of_fame_empty:

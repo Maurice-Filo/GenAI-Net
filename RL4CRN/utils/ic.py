@@ -28,3 +28,6 @@ class IC():
                     raise ValueError(f"Initial condition for species '{species}' not found.")
             ic_list.append(np.array(ic_values))
         return ic_list
+    
+    def __str__(self):
+        return f"IC(names={self.names}, values={self.values})"  
