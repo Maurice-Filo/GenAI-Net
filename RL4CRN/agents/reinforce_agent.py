@@ -101,7 +101,10 @@ class REINFORCEAgent(AbstractAgent):
         top_k = torch.topk(final_loss_for_each_sample, int(N * (1. - self.risk_scheduler['risk'])), largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
 
         # Compute the gradients with baseline (important: baseline = worst loss in top k, so that the weights are non-negative)
-        baseline = final_loss_for_each_sample[top_k[-1]]
+        if top_k.numel() == 0:
+            baseline = final_loss_for_each_sample.max()
+        else:
+            baseline = final_loss_for_each_sample[top_k[-1]]
         # baseline = torch.mean(final_loss_for_each_sample[top_k]).detach()  # shape (1,)
         # advantages = final_loss_for_each_sample[top_k] - baseline  # shape (N,)
         # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)  # Normalize advantage
