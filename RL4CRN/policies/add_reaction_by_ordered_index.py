@@ -37,7 +37,7 @@ class AddReactionByOrderedIndex(AddReactionByIndex):
                  discrete_distribution={"type": 'categorical', "categories": torch.tensor([1, 2])},
                  entropy_weights_per_head=None,
                  structure_head_temperature={"target_entropy_ratio_to_max": 1.0, "initial_temperature": 1.0, "rate": 0.0, "current_temperature": 1.0},
-                 allow_input_influence=False, device=None, combinatorial_bias_enabled=True):
+                 allow_input_influence=False, device=None, combinatorial_bias_enabled=True, constraint_strength=float('inf')):
         
         super().__init__(num_reactions, num_parameters, num_inputs, 
                  encoder_attributes, deep_layer_size, structure_head_attributes, parameter_head_attributes, 
@@ -54,6 +54,7 @@ class AddReactionByOrderedIndex(AddReactionByIndex):
         self.template_mask = None 
         self.library_indices = torch.arange(self.M, device=self.device).float()
         self.combinatorial_bias_enabled = combinatorial_bias_enabled
+        self.constraint_strength = constraint_strength
 
         # self._initialize_structure_head_bias()
 
@@ -142,45 +143,57 @@ class AddReactionByOrderedIndex(AddReactionByIndex):
             reaction_structure_logits = self.reaction_structure_head(encoded)
 
             if torch.isnan(reaction_structure_logits).any():
-                reaction_structure_logits = torch.nan_to_num(reaction_structure_logits, nan=float('-inf')) # remove NaNs, set to p=-inf # it was 0, check TODO
+                reaction_structure_logits = torch.nan_to_num(reaction_structure_logits, nan=float('-inf'))
 
             # --- STEP 4: Combinatorial Bias ---
-            # Bias based on remaining slots needed (clamping is just for numerical safety, probably not needed)
             reactions_left_to_pick = torch.clamp(self.target_set_size - total_existing_counts, min=0)
             k_req = (torch.clamp(reactions_left_to_pick, min=1) - 1).unsqueeze(-1)
 
-            # this means: sum all trailing ones in the template mask, this will reduce the available choices
-            template_correction = torch.flip(torch.cumsum(torch.flip(self.template_mask, dims=[1]), dim=1), dims=[1]) # we count also the current slot, but it's ok due to the masking later
-            # count trailing empty slots
+            # Effective Availability (Memory Optimized)
+            template_correction = torch.flip(torch.cumsum(torch.flip(self.template_mask, dims=[1]), dim=1), dims=[1])
             n_trailing = torch.flip(torch.arange(0, self.M, device=self.device), dims=[0]).unsqueeze(0)
-            n_avail = n_trailing - template_correction # how many available choices for the next pick if I choose this slot? (corrected for template)
+            n_avail = n_trailing - template_correction
 
-            combinatorial_bias = log_combinations(n_avail, k_req) # weighting for all the choices 
+            combinatorial_bias = log_combinations(n_avail, k_req)
             
-            # Mute bias if done (this part is useless now, by how we use the policy)
             is_done_mask = (reactions_left_to_pick <= 0).unsqueeze(-1)
             combinatorial_bias = combinatorial_bias.masked_fill(is_done_mask, 0.0)
             
             if self.combinatorial_bias_enabled:
-                reaction_structure_logits = reaction_structure_logits + combinatorial_bias # + as we work in log-prob space
+                reaction_structure_logits = reaction_structure_logits + combinatorial_bias
 
-            # --- STEP 5: Apply Masks ---
-            # 1. The Template (Cannot pick what's already there)
-            # 2. The Sequential Order (Strictly > last ADDED item)
-            # 3. Impossible paths (Combinatorial -inf)
-            full_mask = self.template_mask.bool() | sequentiality_mask.bool()
-            full_mask = full_mask | (combinatorial_bias == float('-inf'))
-
-            masked_reaction_structure_logits = reaction_structure_logits.masked_fill(full_mask, float('-inf'))
+            # --- STEP 5: Apply Masks (Split into Hard vs Soft) ---
             
-            # --- STEP 6: Emergency Valve (NOTE: This should never happen!!) ---
+            # A. HARD MASKS (Physical/Mathematical Impossibilities)
+            # 1. Template: Cannot pick what is already fixed.
+            # 2. Combinatorial -inf: Mathematically impossible to finish the set.
+            hard_mask = self.template_mask.bool() | (combinatorial_bias == float('-inf'))
+            
+            masked_reaction_structure_logits = reaction_structure_logits.masked_fill(hard_mask, float('-inf'))
+
+            # B. SOFT MASKS (Order Violations)
+            # The sequentiality mask marks indices <= max_added (out of order).
+            # We separate items that are already hard-masked to apply penalty only to physically valid but unordered items.
+            soft_mask = sequentiality_mask.bool() & (~hard_mask)
+            
+            # Penalty strength: Turns the "Hard Wall" into a "Steep Hill" 
+            soft_order_penalty = self.constraint_strength 
+            
+            # Apply Penalty
+            # if finite
+            if math.isfinite(soft_order_penalty):
+                masked_reaction_structure_logits = masked_reaction_structure_logits - (soft_mask.float() * soft_order_penalty)
+            else:
+                # if infinite, treat as hard mask
+                masked_reaction_structure_logits = masked_reaction_structure_logits.masked_fill(soft_mask, float('-inf'))
+
+            
+            # --- STEP 6: Emergency Valve ---
             all_logits_neg_inf = (masked_reaction_structure_logits == float('-inf')).all(dim=-1)
-            
             if all_logits_neg_inf.any():
-                # Force last index as dummy action for broken/finished rows
                 masked_reaction_structure_logits[all_logits_neg_inf, -1] = 0.0
 
-            # --- STEP 7: Sampling --- (this is as before)
+            # --- STEP 7: Sampling ---
             if structure_temp is not None:
                 self.structure_head_temperature["current_temperature"] = structure_temp
             
@@ -189,6 +202,21 @@ class AddReactionByOrderedIndex(AddReactionByIndex):
 
             reaction_structure_distribution = Categorical(logits=masked_reaction_structure_logits)
             structure_entropies = reaction_structure_distribution.entropy()
+            
+            # --- ENTROPY CORRECTION (Relative to Bias) ---
+            if self.combinatorial_bias_enabled:
+                # Subtract the combinatorial bias contribution from the entropy target.
+                # This encourages the agent to match the combinatorial prior (uniform sets) 
+                # rather than uniform actions when it is uncertain.
+                
+                # Zero out bias where probabilities are 0 (Hard Mask) to avoid NaN (0 * -inf)
+                # Note: Soft masked items have finite prob and finite bias, so they contribute correctly.
+                safe_bias = torch.where(hard_mask, torch.zeros_like(combinatorial_bias), combinatorial_bias)
+                
+                # Add Expectation[Bias] to Entropy
+                # Target: Maximize H(P) + E_P[Bias]  <=> Minimize KL(P || exp(Bias))
+                structure_entropies = structure_entropies + ((safe_bias * reaction_structure_distribution.probs).sum(dim=1))
+
             entropies = self.entropy_weights_per_head['structure'] * structure_entropies
 
             # Temp update logic
@@ -202,12 +230,11 @@ class AddReactionByOrderedIndex(AddReactionByIndex):
                     self.structure_head_temperature["current_temperature"] = max(0.05, min(20.0, self.structure_head_temperature["current_temperature"]))
 
             samples_reaction_idx = reaction_structure_distribution.sample() if action is None else torch.tensor([a['reaction index'] for a in action], requires_grad=False).to(self.device)
-            
-            # Bound guard (in principle not needed)
             samples_reaction_idx = torch.clamp(samples_reaction_idx, 0, self.M - 1)
 
             log_probabilities = reaction_structure_distribution.log_prob(samples_reaction_idx)
             samples_reaction_hot = batch_multi_hot(samples_reaction_idx.unsqueeze(-1).cpu().numpy(), self.M, intensities=None, device=self.device)
+        
             
         # back to parameter generation
         continuous_parameter_mask_subset = self.continuous_parameter_mask[samples_reaction_idx] if self.continuous_parameter_mask is not None else None

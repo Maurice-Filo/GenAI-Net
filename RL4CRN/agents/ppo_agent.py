@@ -146,7 +146,12 @@ class PPOAgent(AbstractAgent):
         k = max(1, int(N * (1. - self.risk_scheduler['risk'])))
         top_k = torch.topk(scores.detach(), k, largest=True).indices
 
-        (torch.mean(-ppo_cpi[top_k]) - ppo_entropy + ppo_value).backward() 
+        entropy_batch = torch. mean(ppo_entropy) # shape (1,)
+        entropy_topk = torch.mean(ppo_entropy[top_k]) # shape (1,)
+        entropy_remainder = (N * entropy_batch - k * entropy_topk) / (N - k) if N > k else 0.0 # shape (1,)
+        entropy_for_gradient = self.entropy_scheduler['topk_entropy_weight'] * ((N-k)/N) * entropy_topk + self.entropy_scheduler['remainder_entropy_weight'] * (k/N) * entropy_remainder # shape (1,)
+
+        (torch.mean(-ppo_cpi[top_k]) - entropy_for_gradient + ppo_value).backward() 
 
         # add clipping
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
@@ -236,13 +241,10 @@ class PPOAgent(AbstractAgent):
         # Compute the entropy bonus
         T = entropies_sequence.shape[0]
         N = entropies_sequence.shape[1]
-        entropy_bonus = (entropies_sequence * masks).sum() / (T * N) # .mean(dim=0) # shape: (N,) # TODO we want the global mean entropy over the sequence so shape (1,) 
+        entropy_bonus = (entropies_sequence * masks).sum(dim=0) # shape: (N,) # TODO we want the global mean entropy over the sequence so shape (1,) 
 
         # Compute the state value loss
         v_loss = self.state_value_loss(states_sequence, state_value_targets_sequence) # shape: (1,)
-
-        # Sum up the losses # TODO 
-        total_loss = -(cpi.mean() + self.entropy_scheduler['entropy_weight'] * entropy_bonus) + self.ppo_parameters['value_loss_weight'] * v_loss # shape: (N,)
 
         # Log the calculated metrics
         if self.logger is not None:
@@ -252,7 +254,6 @@ class PPOAgent(AbstractAgent):
             self.logger.log_metric('cpi', cpi.mean().item())
             self.logger.log_metric('entropy bonus', entropy_bonus.mean().item())
             self.logger.log_metric('value loss', v_loss.item())
-            self.logger.log_metric('total loss (without topk)', total_loss.mean().item())
             self.logger.log_metric('adv_norm std', adv_norm.std().item())
             self.logger.log_metric('adv_norm max', adv_norm.max().item())
             self.logger.log_metric('adv_norm min', adv_norm.min().item())
@@ -337,8 +338,9 @@ class PPOAgent(AbstractAgent):
         # --- 2. Prepare things for TorchRL layout (N, T, 1) ---
 
         T, N_rewards = rewards_sequence.shape
+
         assert N_rewards == N, "Batch size mismatch between states and rewards"
-        assert T_plus_1 == T + 1, "states_sequence should have length T+1"
+        assert T_plus_1 == T + 1, "states_sequence should have length T+1. got length {}".format(T_plus_1)
 
         # arrange to (N, T, 1)
         value      = values_sequence[:T].permute(1, 0).unsqueeze(-1)      # (N, T, 1)
