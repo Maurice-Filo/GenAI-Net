@@ -7,6 +7,7 @@ sys.path.append(parent_dir)
 print('Working directory set to:', parent_dir)
 
 # %%
+# Import packages
 # Import general packages
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
@@ -150,7 +151,7 @@ u_list = [np.array(u) for u in product(nums, repeat=p)] # list of input combinat
 r_list = [np.array([u[0]]) for u in u_list]
 
 # Construct the IOCRN initial conditions
-ic = IC(names=species_labels, values=[[0.0, 0.0, 0.0]])
+ic = IC(names=species_labels, values=[[0.01, 0.01, 0.01]])
 
 # Construct the weights for the performance metric
 w = np.ones(N_t)
@@ -164,6 +165,11 @@ def compute_reward(state):
     return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4)
 
 # %%
+# Log the code and hyperparameters
+# Log the code of the current file
+current_file_path = os.path.abspath(__file__)
+logger.log_code(file_name=os.path.basename(current_file_path))
+
 # Log the hyperparameters
 hyperparameters = {
     'species_labels': str(species_labels),
@@ -294,10 +300,10 @@ rate_head_attributes = {"hidden_size": width, "num_layers": depth}
 input_influence_head_attributes = {"hidden_size": width, "num_layers": depth}
 masks = {"continuous": library.get_parameter_mask(mode="continuous"), "discrete": library.get_parameter_mask(mode="discrete"), "logit": library.get_logit_mask()}
 entropy_weights_per_head = {'structure': entropy_scheduler['entropy_weight_structure_head'], 'continuous': entropy_scheduler['entropy_weight_continuous_head'], 'discrete': 0.0, 'input_influence': 0.0} 
-policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
+policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=allow_input_influence, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
 
 # Construct the agent
-agent = REINFORCEAgent(policy, allow_input_influence=False, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device)
+agent = REINFORCEAgent(policy, allow_input_influence=allow_input_influence, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device)
 if load_flag:
     agent.policy.load_state_dict(torch.load(load_filename+'.pth', map_location=device))
 
@@ -351,6 +357,7 @@ for i in range(n_plot):
     print(sorted_crns_rewards[i][0])
 
 # %%
+# Save the agent and the hall of fame CRNs
 hall_of_fame_crns = [env.state for env in mult_env.hall_of_fame]
 if save_flag:
     if not os.path.exists('models'):

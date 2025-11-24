@@ -121,7 +121,9 @@ class REINFORCEAgent(AbstractAgent):
         entropy_batch = torch. mean(sum_entropies) # shape (1,)
         entropy_topk = torch.mean(sum_entropies[top_k]) # shape (1,)
         entropy_remainder = (N * entropy_batch - k * entropy_topk) / (N - k) if N > k else 0.0 # shape (1,)
-        entropy_for_gradient = self.entropy_scheduler['topk_entropy_weight'] * ((N-k)/N) * entropy_topk + self.entropy_scheduler['remainder_entropy_weight'] * (k/N) * entropy_remainder # shape (1,)
+ 
+        entropy_for_gradient = self.entropy_scheduler['topk_entropy_weight'] * (k/N) * entropy_topk + self.entropy_scheduler['remainder_entropy_weight'] * ((N-k)/N) * entropy_remainder # shape (1,)
+
         loss_for_gradient = loss_for_gradient - self.entropy_scheduler['entropy_weight'] * entropy_for_gradient # shape (k,)
         loss_for_gradient_entropy_mean = torch.mean(loss_for_gradient)
         loss_for_gradient_entropy_mean.backward()
