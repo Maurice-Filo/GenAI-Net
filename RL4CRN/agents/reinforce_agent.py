@@ -106,7 +106,7 @@ class REINFORCEAgent(AbstractAgent):
         top_k = torch.topk(final_loss_for_each_sample, k, largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
 
         # Compute the loss component of the gradient with baseline being the worst loss in the top k
-        baseline = final_loss_for_each_sample[top_k[-1]]
+        baseline = final_loss_for_each_sample[top_k[-1]].detach()
         loss_for_gradient =  (final_loss_for_each_sample[top_k] - baseline) * sum_logPs[top_k] # shape (k,)
 
         # Compute the entropy component of the gradient
@@ -115,6 +115,8 @@ class REINFORCEAgent(AbstractAgent):
         entropy_topk = torch.mean(sum_entropies[top_k]) # shape (1,)
         entropy_remainder = (N * entropy_batch - k * entropy_topk) / (N - k) if N > k else 0.0 # shape (1,)
         entropy_for_gradient = self.entropy_scheduler['topk_entropy_weight'] * ((N-k)/N) * entropy_topk + self.entropy_scheduler['remainder_entropy_weight'] * (k/N) * entropy_remainder # shape (1,)
+        entropy_for_gradient = self.entropy_scheduler['topk_entropy_weight'] * (k/N) * entropy_topk + self.entropy_scheduler['remainder_entropy_weight'] * ((N-k)/N) * entropy_remainder # shape (1,)
+
         loss_for_gradient = loss_for_gradient - self.entropy_scheduler['entropy_weight'] * entropy_for_gradient # shape (k,)
         loss_for_gradient_entropy_mean = torch.mean(loss_for_gradient)
         loss_for_gradient_entropy_mean.backward()

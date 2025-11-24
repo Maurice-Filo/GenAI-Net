@@ -7,7 +7,6 @@ sys.path.append(parent_dir)
 print('Working directory set to:', parent_dir)
 
 # %%
-# Import packages
 # Import general packages
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
@@ -48,24 +47,24 @@ timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 api_key = "o77J6VCMDamustkfJuMXZ2jdV"
 logger = CometLogger(
     api_key=api_key,
-    project="RPA_3species_5rxns_MAK_REINFORCE",        
+    project="RPA_2species_2rxns_MAK_REINFORCE",        
     workspace="maurice-filo", 
-    name=f'RPA_3species_5rxns_MAK_REINFORCE_{timestamp}',
+    name=f'RPA_2species_2rxns_MAK_REINFORCE_{timestamp}',
 )
 logger = logger.experiment
 
 # %%
 # Construct the template CRN
-r1 = MassAction(reactant_labels=[], product_labels=['Z_1'], input_channels=['u_1'], params=[1.], params_controllability=[True])
-r2 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_2'], params=[1.], params_controllability=[True])
-crn_template = IOCRN([r1, r2], output_labels=['X_1'])
+r1 = MassAction(reactant_labels=['Z'], product_labels=[], input_channels=['u_1'], params=[1.], params_controllability=[True])
+r2 = MassAction(reactant_labels=['X'], product_labels=[], input_channels=['u_2'], params=[1.], params_controllability=[True])
+crn_template = IOCRN([r1, r2], output_labels=['X'])
 crn_template.compile()
 p = crn_template.num_inputs # Number of inputs of the IOCRNs
 print("Template CRN:")
 print(crn_template)
 
 # Construct the library of possible reactions
-species_labels = ['X_1', 'Z_1', 'Z_2']
+species_labels = ['X', 'Z']
 library = construct_mass_action_library(species_labels=species_labels, order=2)
 crn_template.set_library_context(library)
 M = len(library.reactions) # Number of possible reactions
@@ -89,11 +88,11 @@ save_sheet_flag = True                                          # Save the confi
 
 save_filename = timestamp + '.pth'                              # Filename for saving the agent checkpoint
 load_filename = ''                                              # Filename for loading the agent checkpoint
-file_name = "RPA_3species_5rxns_MAK_REINFORCE.xlsx"             # Filename for saving the Excel sheet
+file_name = "RPA_2species_2rxns_MAK_REINFORCE.xlsx"             # Filename for saving the Excel sheet
 
 # %%
 # Hyperparameters
-max_added_reactions = 5                                 # Maximum number of reactions
+max_added_reactions = 2                                 # Maximum number of reactions
 N_CPUs = os.cpu_count()                                 # Number of CPUs          
 N = 10*N_CPUs                                           # Number of samples (batch size)    
 width = 1024                                            # Width of the neural networks  
@@ -104,8 +103,8 @@ learning_rate = 1e-4                                    # Learning rate for the 
 hall_of_fame_size = 30                                  # Size of the hall of fame  
 entropy_scheduler = {                                   # Entropy scheduler parameters 
     'entropy_weight': 1e-3 ,                            # Global entropy weight
-    'entropy_weight_structure_head': 2.0,               # Entropy weight for the structure head
-    'entropy_weight_continuous_head': 1.0,              # Entropy weight for the continuous parameters head
+    'entropy_weight_structure_head': 100.0,              # Entropy weight for the structure head
+    'entropy_weight_continuous_head': 1e-2,              # Entropy weight for the continuous parameters head
     'topk_entropy_weight': 1.0,                         # Entropy weight for the top-k actions
     'remainder_entropy_weight': 1.0,                    # Entropy weight for the remainder actions
     'entropy_update_coefficient': 1,                    # Entropy update coefficient (multiplicative)
@@ -165,7 +164,6 @@ def compute_reward(state):
     return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4)
 
 # %%
-# Log the code and hyperparameters
 # Log the code of the current file
 current_file_path = os.path.abspath(__file__)
 logger.log_code(file_name=os.path.basename(current_file_path))
@@ -357,7 +355,6 @@ for i in range(n_plot):
     print(sorted_crns_rewards[i][0])
 
 # %%
-# Save the agent and the hall of fame CRNs
 hall_of_fame_crns = [env.state for env in mult_env.hall_of_fame]
 if save_flag:
     if not os.path.exists('models'):
