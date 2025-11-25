@@ -10,11 +10,14 @@ class IOCRN:
     """ A class representing a general Input-Output Chemical Reaction Network (IOCRN). """
 
     # ------------------------ Construction Methods ------------------------
-    def __init__(self, reactions, output_labels):
+    def __init__(self, reactions, output_labels, solver='CVODE', atol=1e-6, rtol=1e-3): 
         """ Initialize an IOCRN with the given reactions and output labels.
         Arguments:
         - reactions: List of Reaction objects.
         - outputs_labels: List of strings representing the labels of the outputs in the IOCRN. 
+        - solver: String representing the ODE solver to be used for simulations. Default is 'CVODE'. alternative is 'LSODA'.
+        - atol: Float representing the absolute tolerance for the ODE solver. Default is 1e-6. (as in scipy.solve_ivp)
+        - rtol: Float representing the relative tolerance for the ODE solver. Default is 1e-3. (as in scipy.solve_ivp)
         Compile must be called after initialization to set up the internal representations of the IOCRN.
         """
         
@@ -30,6 +33,10 @@ class IOCRN:
         # Initialize a dictionary to store the last task information
         self.last_task_info = {}
         self.last_task_info['type'] = None
+
+        self.solver = solver
+        self.atol = atol
+        self.rtol = rtol
 
     def clone(self):
         return copy.deepcopy(self)
@@ -251,20 +258,61 @@ class IOCRN:
         # Do the simulation for each input and initial condition scenario and store the results in lists
         x_list = []
         y_list = []
-        for u, x0 in product(u_list, x0_list):
-            solution = solve_ivp(lambda t, x: self.rate_function(t, x, u), (time_horizon[0], time_horizon[-1]), x0, t_eval=time_horizon, method="LSODA", events=stop_if_unstable)
 
-            if solution.status == -1: # if the integration failed, return large numbers for all species and outputs
-                x = np.full((self.num_species, time_horizon.shape[0]), LARGE_NUMBER) # numpy array of shape (n, steps)
-            else:
-                x = solution.y # numpy array of shape (n, steps)
-                if solution.status == 1: # if the integration was stopped due to an event, fill the remaining time points after the event with large numbers
-                    x = np.concatenate([x, np.full((self.num_species, time_horizon.shape[0] - x.shape[1]), LARGE_NUMBER)], axis=1)
-            y = x[self.output_idx, :] # select the output species from the state trajectory
+        
+        if self.solver == 'LSODA':
+            for u, x0 in product(u_list, x0_list):
+                solution = solve_ivp(lambda t, x: self.rate_function(t, x, u), (time_horizon[0], time_horizon[-1]), x0, t_eval=time_horizon, method="LSODA", events=stop_if_unstable, atol=self.atol, rtol=self.rtol)
+                if solution.status == -1: # if the integration failed, return large numbers for all species and outputs
+                    x = np.full((self.num_species, time_horizon.shape[0]), LARGE_NUMBER) # numpy array of shape (n, steps)
+                else:
+                    x = solution.y # numpy array of shape (n, steps)
+                    if solution.status == 1: # if the integration was stopped due to an event, fill the remaining time points after the event with large numbers
+                        x = np.concatenate([x, np.full((self.num_species, time_horizon.shape[0] - x.shape[1]), LARGE_NUMBER)], axis=1)
+                y = x[self.output_idx, :] # select the output species from the state trajectory
+                # Append the state trajectory and output trajectory to the lists
+                x_list.append(x)
+                y_list.append(y)
 
-            # Append the state trajectory and output trajectory to the lists
-            x_list.append(x)
-            y_list.append(y)
+        elif self.solver == 'CVODE':
+
+            for u, x0 in product(u_list, x0_list):
+
+                solution = self.solve_with_cvode(
+                    x0,
+                    time_horizon,
+                    u,
+                    nonneg_idx=np.arange(len(x0)),
+                    stop_fn=stop_if_unstable,
+                )
+
+                T = time_horizon.shape[0]
+                if solution.status < 0 or not solution.raw.success:
+                    # integration failed → fill with LARGE_NUMBER
+                    x = np.full((self.num_species, T), LARGE_NUMBER)
+                else:
+                    t_sol = np.asarray(solution.t, dtype=float)           # (n_t,)
+                    y_sol = np.asarray(solution.y, dtype=float)           # (n_species, n_t)
+
+                    x = np.empty((self.num_species, T), dtype=float)
+
+                    # last time actually reached by CVODE
+                    t_last = t_sol[-1]
+                    mask = time_horizon <= t_last
+                    mask_rest = ~mask
+
+                    # interpolate each species onto the grid up to t_last
+                    for i in range(self.num_species):
+                        x[i, mask] = np.interp(time_horizon[mask], t_sol, y_sol[i, :])
+                        # fill remainder (beyond last CVODE time) with LARGE_NUMBER
+                        x[i, mask_rest] = LARGE_NUMBER
+
+                y = x[self.output_idx, :]
+
+                x_list.append(x)
+                y_list.append(y)
+        else:
+            raise ValueError(f"Unknown solver '{self.solver}'. Supported solvers are 'LSODA' and 'CVODE'.")
 
         # Store and return the last task information
         self.last_task_info = {}
@@ -390,7 +438,7 @@ class IOCRN:
         #         axes[i].set_ylabel("Concentration")
         #     plt.tight_layout()
 
-        elif self.last_task_info['type'] == 'transient response': # TODO: It is time to generalize for multiple inputs
+        elif self.last_task_info['type'] == 'transient response': # TODO: Now generalized
             u_list = self.last_task_info['inputs']
             x0_list = self.last_task_info['initial_conditions']
 
@@ -468,3 +516,70 @@ class IOCRN:
 
         plt.tight_layout()
         return fig, axes
+    
+    def solve_with_cvode(self, x0, time_horizon, u, nonneg_idx, stop_fn):
+        t0 = float(time_horizon[0])
+        tf = float(time_horizon[-1])
+        x0 = np.asarray(x0, dtype=float)
+        time_horizon = np.asarray(time_horizon, dtype=float)
+
+        rhsfn = _make_rhs(self.rate_function, u)
+
+        # wrap your stop_if_unstable
+        eventsfn = make_eventsfn(stop_fn)
+
+        options = dict(
+            rtol=self.rtol,
+            atol=self.atol,
+            eventsfn=eventsfn,
+            num_events=1,
+        )
+
+        # CVODE inequality constraints y[i] >= 0
+        if nonneg_idx is not None and len(nonneg_idx) > 0:
+            nonneg_idx = np.asarray(nonneg_idx, dtype=int)
+            options["constraints_idx"] = nonneg_idx
+            options["constraints_type"] = np.ones_like(nonneg_idx, dtype=int)  # 1 → y[i] >= 0 :contentReference[oaicite:1]{index=1}
+
+        solver = CVODE(rhsfn, **options)
+
+        # ask for output exactly at your time grid, like t_eval
+        soln = solver.solve(time_horizon, x0)
+
+        # adapt to solve_ivp-like shape: y → (n_states, n_times)
+        class Solution:
+            pass
+
+        solution = Solution()
+        solution.t = soln.t
+        solution.y = soln.y.T
+        solution.message = soln.message
+        solution.status = soln.status
+        solution.raw = soln
+        return solution
+
+
+import numpy as np
+from sksundae.cvode import CVODE
+
+def make_eventsfn(stop_if_unstable):
+    def eventsfn(t, y, events):
+        # single event → use slot 0
+        events[0] = stop_if_unstable(t, y)
+
+    # carry over your SciPy-style attributes, but as 1-element lists
+    term = getattr(stop_if_unstable, "terminal", True)
+    direction = getattr(stop_if_unstable, "direction", 0)
+
+    eventsfn.terminal = [term]       # list length = num_events
+    eventsfn.direction = [direction] # same as SciPy’s direction
+    return eventsfn
+
+
+def _make_rhs(rate_function, u):
+    # CVODE rhs: rhs(t, y, yp) — fill yp[:] in place
+    def rhsfn(t, y, yp):
+        yp[:] = rate_function(t, y, u)
+    return rhsfn
+
+
