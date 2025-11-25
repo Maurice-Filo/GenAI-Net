@@ -22,6 +22,7 @@ def dynamic_tracking_error(crn, u_list, x0_list, time_horizon, r_list, w, norm=1
     performance = performance_metric(r_list, y_list, w, norm=norm, relative=relative)
     crn.last_task_info['reward'] = performance
     crn.last_task_info['setpoint'] = r_list
+    crn.last_task_info['initial_conditions'] = x0_list
     crn.last_task_info['reward type'] = 'dynamic_tracking_error'
     return performance, crn.last_task_info
 

@@ -8,7 +8,7 @@ from torchrl.objectives.value import GAE  # put this at the top of ppo_agent.py
 
 
 class PPOAgent(AbstractAgent):
-    def __init__(self, policy, state_value_function, ppo_parameters={}, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_scheduler={}, risk_scheduler={}, device=None):
+    def __init__(self, policy, state_value_function, ppo_parameters={}, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_scheduler={}, risk_scheduler={}, device=None, use_skewed_weighting=False):
         """ Initialize the PPO agent with a policy, state value function, learning rate, and optional entropy and risk schedulers.
         Args:
         - policy (torch.nn.Module): The policy network to be used by the agent.
@@ -84,6 +84,8 @@ class PPOAgent(AbstractAgent):
             device=self.device
         )
 
+        self.use_skewed_weighting = use_skewed_weighting
+
         
     def act(self, states, actuator, mode='full'):
         """ Select actions based on the current policy and the observed states.
@@ -134,19 +136,45 @@ class PPOAgent(AbstractAgent):
         logPs_sequence_tensor = torch.stack(self.logPs_sequence, dim=0).to(self.device)  # Shape: (T, N)
         entropies_sequence_tensor = torch.stack(self.entropies_sequence, dim=0).to(self.device)  # Shape: (T, N)
         rewards_sequence_tensor = torch.zeros_like(logPs_sequence_tensor)
-        rewards_sequence_tensor[-1,:] = -torch.tensor(losses, device=self.device) 
+        rewards_sequence_tensor[-1,:] = -torch.tensor(losses, device=self.device) # TODO want to try log!
 
-        # Compute the PPO loss
-        ppo_cpi, ppo_entropy, ppo_value = self.compute_PPO_loss(self.states_sequence, self.actions_sequence, rewards_sequence_tensor, entropies_sequence_tensor)
-
-        # Risky policy gradient and backpropagation
-        scores = rewards_sequence_tensor.sum(dim=0)  # Shape: (N,) TODO: is mean better than sum?
-        # top_k = torch.topk(scores.detach(), int(N * (1. - self.risk_scheduler['risk'])), largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
-
+        # compute the topk ordering
+        scores = rewards_sequence_tensor.sum(dim=0)
         k = max(1, int(N * (1. - self.risk_scheduler['risk'])))
         top_k = torch.topk(scores.detach(), k, largest=True).indices
 
-        (torch.mean(-ppo_cpi[top_k]) - ppo_entropy + ppo_value).backward() 
+        # Compute the PPO loss
+        ppo_cpi, ppo_entropy, ppo_value = self.compute_PPO_loss(self.states_sequence, self.actions_sequence, rewards_sequence_tensor, entropies_sequence_tensor, top_k=top_k)
+
+        # Risky policy gradient and backpropagation
+        entropy_batch = torch. mean(ppo_entropy) # shape (1,)
+        entropy_topk = torch.mean(ppo_entropy[top_k]) # shape (1,)
+        entropy_remainder = (N * entropy_batch - k * entropy_topk) / (N - k) if N > k else 0.0 # shape (1,)
+        entropy_for_gradient = self.entropy_scheduler['topk_entropy_weight'] * ((N-k)/N) * entropy_topk + self.entropy_scheduler['remainder_entropy_weight'] * (k/N) * entropy_remainder # shape (1,)
+
+        # --- SKEWED WEIGHTING LOGIC ---
+        # 1. Extract scores of the elite group
+        elite_scores = scores[top_k].detach()
+        
+        # 2. Normalize (Z-score) to ensure consistent softmax behavior regardless of reward scale
+        if elite_scores.std() > 1e-4: # also check that the difference is meaningfully large
+            elite_scores_norm = (elite_scores - elite_scores.mean()) / elite_scores.std()
+        else:
+            elite_scores_norm = torch.zeros_like(elite_scores)
+
+        # 3. Apply Softmax to generate weights (Sum = 1.0)
+        #    Higher scores get exponentially higher weights.
+        elite_weights = torch.softmax(elite_scores_norm, dim=0)
+
+        # 4. Compute Weighted Policy Loss
+        #    We replace torch.mean() with a weighted sum.
+        if not self.use_skewed_weighting:
+            policy_loss = -torch.mean(ppo_cpi[top_k])
+        else:
+            policy_loss = -torch.sum(ppo_cpi[top_k] * elite_weights) 
+
+        # Backward pass
+        (policy_loss - entropy_for_gradient + ppo_value).backward()
 
         # add clipping
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
@@ -198,7 +226,7 @@ class PPOAgent(AbstractAgent):
         self.entropies_sequence.clear()
 
 
-    def compute_PPO_loss(self, states_sequence, actions_sequence, rewards_sequence, entropies_sequence, masks=1., mode='full'):
+    def compute_PPO_loss(self, states_sequence, actions_sequence, rewards_sequence, entropies_sequence, masks=1., mode='full', top_k=None):
         """ Compute the PPO loss for the given states, actions, rewards, and entropies.
         Args:
             states_sequence (list): A (T+1)-list of states.
@@ -207,26 +235,29 @@ class PPOAgent(AbstractAgent):
             entropies_sequence (torch.Tensor): The entropies of the actions taken at each time step. Shape: (T, N).
             masks (torch.Tensor or None): A mask tensor indicating which states are valid. Shape: (T, N). If None, all states are considered valid.
             mode (str): The mode of the policy ('full' or 'partial'). Default is 'full'.
+            top_k (torch.Tensor or None): Indices of the top k samples for risky policy gradient. If None, all samples are considered.
         Returns:
             cpi, entropy_bonus, v_loss (torch.Tensor): The computed clipped policy improvement, entropy bonus, and value loss. """
         
         # Compute the GAE
         advantages_sequence, state_value_targets_sequence = self.compute_gae(states_sequence, rewards_sequence, masks)
 
-        # --- per batch --- (it feels that the one per time step is better, but they are very similar)
-        # std = advantages_sequence.std()
-        # adv_norm = (advantages_sequence - advantages_sequence.mean()) / (
-        #     std +1e-8
-        # )
-        # # clip advantages
-        # adv_norm = torch.clamp(adv_norm, -5.0, 5.0)
+        if top_k is not None:
+            # Extract only the elite advantages to compute statistics
+            elite_advantages = advantages_sequence[:, top_k] # Shape (T, k)
+            
+            # Compute Mean/Std only on the elite set
+            # We use these stats to normalize EVERYONE (or just top_k, practically mostly affects top_k in backward)
+            mean = elite_advantages.mean(dim=1, keepdim=True)
+            std  = elite_advantages.std(dim=1, keepdim=True)
+        else:
+            # Fallback to batch statistics
+            mean = advantages_sequence.mean(dim=1, keepdim=True)
+            std  = advantages_sequence.std(dim=1, keepdim=True)
 
         # --- per time step --- 
         # advantages_sequence: (T, N)
-        mean = advantages_sequence.mean(dim=1, keepdim=True)   # (T, 1)
-        std  = advantages_sequence.std(dim=1, keepdim=True)    # (T, 1)
-        std  = torch.clamp(std, min=0.1)
-
+        std = torch.clamp(std, min=0.1)
         adv_norm = (advantages_sequence - mean) / (std + 1e-8)
         adv_norm = torch.clamp(adv_norm, -5.0, 5.0)
 
@@ -236,13 +267,10 @@ class PPOAgent(AbstractAgent):
         # Compute the entropy bonus
         T = entropies_sequence.shape[0]
         N = entropies_sequence.shape[1]
-        entropy_bonus = (entropies_sequence * masks).sum() / (T * N) # .mean(dim=0) # shape: (N,) # TODO we want the global mean entropy over the sequence so shape (1,) 
+        entropy_bonus = (entropies_sequence * masks).sum(dim=0) # shape: (N,) # TODO we want the global mean entropy over the sequence so shape (1,) 
 
         # Compute the state value loss
-        v_loss = self.state_value_loss(states_sequence, state_value_targets_sequence) # shape: (1,)
-
-        # Sum up the losses # TODO 
-        total_loss = -(cpi.mean() + self.entropy_scheduler['entropy_weight'] * entropy_bonus) + self.ppo_parameters['value_loss_weight'] * v_loss # shape: (N,)
+        v_loss = self.state_value_loss(states_sequence, state_value_targets_sequence, top_k=None) # shape: (1,)
 
         # Log the calculated metrics
         if self.logger is not None:
@@ -252,7 +280,6 @@ class PPOAgent(AbstractAgent):
             self.logger.log_metric('cpi', cpi.mean().item())
             self.logger.log_metric('entropy bonus', entropy_bonus.mean().item())
             self.logger.log_metric('value loss', v_loss.item())
-            self.logger.log_metric('total loss (without topk)', total_loss.mean().item())
             self.logger.log_metric('adv_norm std', adv_norm.std().item())
             self.logger.log_metric('adv_norm max', adv_norm.max().item())
             self.logger.log_metric('adv_norm min', adv_norm.min().item())
@@ -337,8 +364,9 @@ class PPOAgent(AbstractAgent):
         # --- 2. Prepare things for TorchRL layout (N, T, 1) ---
 
         T, N_rewards = rewards_sequence.shape
+
         assert N_rewards == N, "Batch size mismatch between states and rewards"
-        assert T_plus_1 == T + 1, "states_sequence should have length T+1"
+        assert T_plus_1 == T + 1, "states_sequence should have length T+1. got length {}".format(T_plus_1)
 
         # arrange to (N, T, 1)
         value      = values_sequence[:T].permute(1, 0).unsqueeze(-1)      # (N, T, 1)
@@ -405,7 +433,7 @@ class PPOAgent(AbstractAgent):
 
         return clip_cpi_sequence * masks
     
-    def state_value_loss(self, states_sequence, state_value_targets_sequence):
+    def state_value_loss(self, states_sequence, state_value_targets_sequence, top_k=None):
         """ Compute the state value loss for the given states and targets.
         Args:
             states_sequence: A (T+1)-list of states.
@@ -413,7 +441,14 @@ class PPOAgent(AbstractAgent):
         Returns:
             torch.Tensor: The computed state value loss. """
         v_pred = self.v(states_sequence)[:-1]
-        return torch.nn.functional.mse_loss(v_pred, state_value_targets_sequence)
+        
+        if top_k is not None:
+            # Slice the batch dimension (dim 1) to keep only top_k samples
+            v_pred_k = v_pred[:, top_k]
+            targets_k = state_value_targets_sequence[:, top_k]
+            return torch.nn.functional.mse_loss(v_pred_k, targets_k)
+        else:
+            return torch.nn.functional.mse_loss(v_pred, state_value_targets_sequence)
 
 
     #--------------------------- Functions for applying the policy and value networks across sequences ---------------------------#

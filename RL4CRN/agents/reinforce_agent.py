@@ -105,8 +105,15 @@ class REINFORCEAgent(AbstractAgent):
         k = int(N * (1. - self.risk_scheduler['risk']))
         top_k = torch.topk(final_loss_for_each_sample, k, largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
 
-        # Compute the loss component of the gradient with baseline being the worst loss in the top k
-        baseline = final_loss_for_each_sample[top_k[-1]].detach()
+        # Compute the gradients with baseline (important: baseline = worst loss in top k, so that the weights are non-negative)
+        if top_k.numel() == 0:
+            baseline = final_loss_for_each_sample.max()
+        else:
+            baseline = final_loss_for_each_sample[top_k[-1]]
+        # baseline = torch.mean(final_loss_for_each_sample[top_k]).detach()  # shape (1,)
+        # advantages = final_loss_for_each_sample[top_k] - baseline  # shape (N,)
+        # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)  # Normalize advantage
+        # loss_for_gradient =  advantages.detach() * sum_logPs[top_k] # shape (k,)
         loss_for_gradient =  (final_loss_for_each_sample[top_k] - baseline) * sum_logPs[top_k] # shape (k,)
 
         # Compute the entropy component of the gradient
@@ -114,7 +121,7 @@ class REINFORCEAgent(AbstractAgent):
         entropy_batch = torch. mean(sum_entropies) # shape (1,)
         entropy_topk = torch.mean(sum_entropies[top_k]) # shape (1,)
         entropy_remainder = (N * entropy_batch - k * entropy_topk) / (N - k) if N > k else 0.0 # shape (1,)
-        entropy_for_gradient = self.entropy_scheduler['topk_entropy_weight'] * ((N-k)/N) * entropy_topk + self.entropy_scheduler['remainder_entropy_weight'] * (k/N) * entropy_remainder # shape (1,)
+ 
         entropy_for_gradient = self.entropy_scheduler['topk_entropy_weight'] * (k/N) * entropy_topk + self.entropy_scheduler['remainder_entropy_weight'] * ((N-k)/N) * entropy_remainder # shape (1,)
 
         loss_for_gradient = loss_for_gradient - self.entropy_scheduler['entropy_weight'] * entropy_for_gradient # shape (k,)

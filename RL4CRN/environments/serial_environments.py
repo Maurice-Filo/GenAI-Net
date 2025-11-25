@@ -34,7 +34,13 @@ class SerialEnvironments(AbstractMultiEnvironments):
             self.hall_of_fame_empty = False
         else:
             combined_environments = self.hall_of_fame + self.envs
-        sorted_environments = sorted(combined_environments, key=lambda x: x.state.last_task_info['reward'])
-        for i in range(min(self.hall_of_fame_size, len(sorted_environments))):
-            self.hall_of_fame[i].state = sorted_environments[i].state.clone()
+
+        try:
+            sorted_environments = sorted(combined_environments, key=lambda x: x.state.last_task_info['reward'])
+            for i in range(min(self.hall_of_fame_size, len(sorted_environments))):
+                self.hall_of_fame[i].state = sorted_environments[i].state.clone()
+        except KeyError:
+            pass
+            # print("Warning: Some environments do not have 'reward' in last_task_info. Skipping hall of fame update.")
+        
         return rewards_list
