@@ -115,13 +115,14 @@ def print_task_info(last_task_info, mode='sizes'):
         for key, value in last_task_info.items():
             print(f"{key}: {value}")
 
-def oscillation_metrics(f_list, y_list, t, t0):
-    """ Computes oscillation metrics: frequency error, damping metric, and periodicity index.
+def oscillation_metrics(y_list, t, t0, f_list=None, mean_list=None):
+    """ Computes oscillation metrics: frequency error, damping metric, periodicity index, and means.
     Args:
-    - f_list: A list of frequencies.
     - y_list: A list of outputs, each of shape (1, time_steps).
     - t: A 1D numpy array representing the time vector.
     - t0: A float representing the time after which to start considering peaks.
+    - f_list: A list of frequencies.
+    - mean_list: A list of desired mean values for each output.
     Returns:
     - frequency_error: A float representing the mean absolute error between desired and estimated frequencies.
     - avg_damping_metric: A float representing the average damping metric across all outputs. 
@@ -129,24 +130,33 @@ def oscillation_metrics(f_list, y_list, t, t0):
     - peaks_flag: A boolean indicating if peaks were found for all outputs. """
     
     # Check if dimensions match
-    if len(f_list) != len(y_list):
-        raise ValueError(f"Length of frequency and output lists must match. Got {len(f_list)} and {len(y_list)}.")
     if 1 != y_list[0].shape[0]:
-        raise ValueError("Reference signal and output must have the same number of dimensions.")
-    f_array = np.stack(f_list)   # shape (list_length,)
+            raise ValueError("Reference signal and output must have the same number of dimensions.")
+    
+    if f_list is not None:
+        if len(f_list) != len(y_list):
+            raise ValueError(f"Length of frequency and output lists must match. Got {len(f_list)} and {len(y_list)}.")
+        f_array = np.stack(f_list)   # shape (list_length,)
+
+    if mean_list is not None:
+        if len(mean_list) != len(y_list):
+            raise ValueError(f"Length of mean and output lists must match. Got {len(mean_list)} and {len(y_list)}.")
+        mean_array = np.stack(mean_list)   # shape (list_length,)
     
     # Focus on the time after t0
     time_mask = t >= t0
     t = t[time_mask]
     y_list = [y[:, time_mask] for y in y_list]
 
-    # Compute the peaks of the output signals
+    # Compute the peaks of the output signals and the temporal means
     peaks_indices_list = []
+    y_mean_list = []
     for y in y_list:
         yy = np.squeeze(y)
         dyn = float(np.max(yy) - np.min(yy)) if yy.size else 0.0
         prom = max(0.01, 0.05 * dyn)  # 5% of dynamic range (with epsilon floor)
         peaks_indices_list.append(find_peaks(yy, prominence=prom)[0])
+        y_mean_list.append(np.mean(yy))
 
     # Compute the frequencies from the peaks
     estimated_frequencies = []
@@ -167,11 +177,21 @@ def oscillation_metrics(f_list, y_list, t, t0):
             decrements = peak_heights[:-1] / peak_heights[1:]
             avg_decrement = np.mean(decrements)
             damping_metrics.append(avg_decrement)
-    estimated_frequencies = np.array(estimated_frequencies).reshape(f_array.shape)  # shape (list_length, 1)
-    damping_metrics = np.array(damping_metrics).reshape(f_array.shape)  # shape (list_length, 1)
+    estimated_frequencies = np.array(estimated_frequencies).reshape(-1, 1)  # shape (list_length, 1)
+    damping_metrics = np.array(damping_metrics).reshape(-1, 1)  # shape (list_length, 1)
 
     # Compute the relative frequency error
-    frequency_error = np.mean(np.abs(f_array - estimated_frequencies)/ f_array)
+    if f_list is not None:
+        frequency_error = np.mean(np.abs(f_array - estimated_frequencies)/ f_array)
+    else:
+        frequency_error = None
+
+    # Compute the relative means error if mean_list is provided
+    if mean_list is not None:
+        y_mean_array = np.stack(y_mean_list)   # shape (list_length,)
+        mean_error = np.mean(np.abs(y_mean_array - mean_array) / np.maximum(np.abs(mean_array), 1e-6))
+    else:
+        mean_error = None
 
     # Compute the average damping metric
     damping = np.mean(damping_metrics) 
@@ -217,4 +237,4 @@ def oscillation_metrics(f_list, y_list, t, t0):
         r1_list.append(r1)
 
     r1 = np.mean(r1_list) if len(r1_list) else 0.0
-    return frequency_error, damping, r1, peaks_flag
+    return frequency_error, mean_error, damping, r1, peaks_flag

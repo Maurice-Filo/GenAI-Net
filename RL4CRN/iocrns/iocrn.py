@@ -445,7 +445,7 @@ class IOCRN:
             step = len(self.last_task_info['outputs']) // len(x0_list)
 
             for i in range(self.num_outputs):
-                for k in enumerate(x0_list):
+                for k,_ in enumerate(x0_list):
                     u_dose = np.array([u[0] for u in u_list])
                     y_dose = np.array([y[i,-1] for y in self.last_task_info['outputs'][step*(k):step*(k+1)]])
                     axes[i].plot(u_dose, y_dose, alpha=alpha)

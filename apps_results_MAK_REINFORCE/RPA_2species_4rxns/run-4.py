@@ -103,7 +103,7 @@ allow_input_influence = False                           # Allow input influence 
 learning_rate = 1e-4                                    # Learning rate for the optimizer 
 hall_of_fame_size = 30                                  # Size of the hall of fame  
 entropy_scheduler = {                                   # Entropy scheduler parameters 
-    'entropy_weight': 1e-3 ,                            # Global entropy weight
+    'entropy_weight': 3e-3 ,                            # Global entropy weight
     'entropy_weight_structure_head': 1.0,               # Entropy weight for the structure head
     'entropy_weight_continuous_head': 0.1,              # Entropy weight for the continuous parameters head
     'topk_entropy_weight': 1.0,                         # Entropy weight for the top-k actions

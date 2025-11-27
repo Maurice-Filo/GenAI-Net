@@ -103,9 +103,9 @@ allow_input_influence = False                           # Allow input influence 
 learning_rate = 1e-4                                    # Learning rate for the optimizer 
 hall_of_fame_size = 30                                  # Size of the hall of fame  
 entropy_scheduler = {                                   # Entropy scheduler parameters 
-    'entropy_weight': 1e-3 ,                            # Global entropy weight
+    'entropy_weight': 3e-3 ,                            # Global entropy weight
     'entropy_weight_structure_head': 1.0,               # Entropy weight for the structure head
-    'entropy_weight_continuous_head': 1.0,              # Entropy weight for the continuous parameters head
+    'entropy_weight_continuous_head': 0.1,              # Entropy weight for the continuous parameters head
     'topk_entropy_weight': 1.0,                         # Entropy weight for the top-k actions
     'remainder_entropy_weight': 1.0,                    # Entropy weight for the remainder actions
     'entropy_update_coefficient': 1,                    # Entropy update coefficient (multiplicative)
@@ -151,7 +151,7 @@ u_list = [np.array(u) for u in product(nums, repeat=p)] # list of input combinat
 r_list = [np.array([u[0]]) for u in u_list]
 
 # Construct the IOCRN initial conditions
-ic = IC(names=species_labels, values=[[0.01, 0.01, 0.01]])
+ic = IC(names=species_labels, values=[[0.01, 0.01]])
 
 # Construct the weights for the performance metric
 w = np.ones(N_t)
