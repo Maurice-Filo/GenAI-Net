@@ -1,5 +1,6 @@
 from io import BytesIO
 from matplotlib import pyplot as plt
+from RL4CRN.utils.visualizations import plot_truth_table
 
 class Environment():
     """
@@ -214,5 +215,52 @@ class Environment():
                         else:
                             raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
                         plt.close(fig1)
+                    except ValueError:
+                        pass
+
+            case {'style': 'logger', 'task': 'transients + logic'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    
+                    # 1. Plot Transients
+                    try:
+                        fig, _ = self.state.plot_transient_response(alpha=1.0)
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID} Transients, Reward: {self.state.last_task_info['reward']}")
+                        
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} Transients", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} Transients')
+                            buf.close()
+                        plt.close(fig)
+                    except ValueError:
+                        pass
+
+                    # No need to plot Truth Table at the environment level.
+
+            case {'style': 'logger', 'task': 'SSA_transients'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        # alpha=0.2 ensures the std dev shading is transparent
+                        fig, _ = self.state.plot_SSA_transient_response(alpha=0.2)
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID} (SSA), Reward: {self.state.last_task_info['reward']}")
+                        
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} SSA", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} SSA')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
                     except ValueError:
                         pass

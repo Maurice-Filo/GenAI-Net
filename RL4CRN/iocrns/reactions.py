@@ -82,6 +82,20 @@ class Reaction:
                 self.ID = reaction.ID
                 return
         raise ValueError("Reaction not found in the provided reaction library.")
+    
+    def to_reaction_format(self):
+        """ Returns the string representation of the reaction in the CRN format (e.g. 'A:1 -- mak(k) -> B:1;'). """
+        raise NotImplementedError("Subclasses must implement to_reaction_format")
+
+    def _format_species_list(self, labels):
+        """ Helper to format species list for CRN (e.g. ['A', 'A', 'B'] -> 'A:2, B:1'). """
+        if not labels:
+            return "emptyset"
+        
+        counts = {s: labels.count(s) for s in set(labels)}
+        # Sort by keys to ensure deterministic output
+        formatted_parts = [f"{name}:{counts[name]}" for name in sorted(counts.keys())]
+        return ", ".join(formatted_parts)
 
 class MassAction(Reaction):
     def __init__(self, reactant_labels, product_labels, input_channels=[None], params=[None], params_controllability=[True]):
@@ -198,6 +212,26 @@ class MassAction(Reaction):
         if inputs_str == '':
             return f"{reactants_str} ----> {products_str};  [MAK({self.rate_constant})]" 
         return f"{reactants_str} ----> {products_str};  [MAK({self.rate_constant}, {inputs_str})]" 
+    
+    def to_reaction_format(self):
+        """ Formats as 'LHS -- ARROW -> RHS;' """
+        lhs = self._format_species_list(self.reactant_labels)
+        rhs = self._format_species_list(self.product_labels)
+        
+        inp = self.input_channels[0]
+        k = self.rate_constant
+
+        # Case 1: Zero-order input generation: 'emptyset -- u -> X:1'
+        if not self.reactant_labels and inp is not None:
+             arrow = f"-- {inp} ->"
+        # Case 2: Standard or Input-Modulated Mass Action
+        else:
+            if inp is not None:
+                arrow = f"-- mak({k}*{inp}) ->"
+            else:
+                arrow = f"-- mak({k}) ->"
+        
+        return f"{lhs} {arrow} {rhs};"
 
 class HillProduction(Reaction):
     def __init__(self, product_labels, activator_labels, repressor_labels, input_channels=[None], params=[None], params_controllability=[True]):
@@ -419,6 +453,44 @@ class HillProduction(Reaction):
             params_str += ", " if i < self.num_repressors - 1 else ""
         
         return f"{reactants_str} ----> {products_str};  [HILLProd({params_str})]"
+    
+
+    def to_reaction_format(self): # TODO: verify this method
+        """ Formats as '∅ -- hill(...) -> RHS;' """
+        # Reusing the string construction logic from __str__ but adapting the output format
+        rhs = self._format_species_list(self.product_labels)
+        
+        # Helper to fmt param
+        def fmt_p(val, inp):
+            return f"{val}" if inp is None else f"{val}*{inp}"
+
+        # 1. Basal
+        b_str = fmt_p(self.basal_rate, self.input_channels[0])
+        # 2. Vmax
+        vm_str = fmt_p(self.maximal_rate, self.input_channels[1])
+        
+        # 3. Activators
+        act_parts = []
+        for i in range(self.num_activators):
+            ka = fmt_p(self.activator_dissociation_constants[i], self.input_channels[2 + i])
+            # DSL format for activation: species(Ka, na)
+            act_parts.append(f"{self.activator_labels[i]}({ka}, 1)")
+            
+        # 4. Repressors
+        rep_parts = []
+        for i in range(self.num_repressors):
+            kr = fmt_p(self.repressor_dissociation_constants[i], self.input_channels[2 + self.num_activators + i])
+            rep_parts.append(f"{self.repressor_labels[i]}({kr}, 1)")
+
+        # Assemble inside hill(...)
+        # Assuming args order: b, Vm, [activators...], [repressors...]
+        args = [f"b={b_str}", f"Vm={vm_str}"]
+        if act_parts: args.extend(act_parts)
+        if rep_parts: args.extend(rep_parts)
+        
+        hill_def = f"hill({', '.join(args)})"
+        
+        return f"emptyset -- {hill_def} -> {rhs};"
 
 
 
