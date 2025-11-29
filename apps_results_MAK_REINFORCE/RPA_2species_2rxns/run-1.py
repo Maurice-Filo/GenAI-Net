@@ -7,6 +7,7 @@ sys.path.append(parent_dir)
 print('Working directory set to:', parent_dir)
 
 # %%
+# Import packages
 # Import general packages
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
@@ -103,7 +104,7 @@ learning_rate = 1e-4                                    # Learning rate for the 
 hall_of_fame_size = 30                                  # Size of the hall of fame  
 entropy_scheduler = {                                   # Entropy scheduler parameters 
     'entropy_weight': 1e-3 ,                            # Global entropy weight
-    'entropy_weight_structure_head': 1.0,              # Entropy weight for the structure head
+    'entropy_weight_structure_head': 1.0,               # Entropy weight for the structure head
     'entropy_weight_continuous_head': 1.0,              # Entropy weight for the continuous parameters head
     'topk_entropy_weight': 1.0,                         # Entropy weight for the top-k actions
     'remainder_entropy_weight': 1.0,                    # Entropy weight for the remainder actions
@@ -122,7 +123,7 @@ risk_scheduler = {                                      # Risk scheduler paramet
     'max_risk': 1.0,                                    # Maximum risk
     'risk_schedule': 1000                               # Risk schedule (in epochs)
 }
-epoch_num = 300                                         # Number of epochs for training
+epoch_num = 200                                         # Number of epochs for training
 render_schedule = 10                                    # Render every # of epochs
 render_mode = {                                         # Mode of the experiment
     'style': 'logger',                                  
@@ -131,7 +132,7 @@ render_mode = {                                         # Mode of the experiment
     'topology': True,
     'bounds': [2.5]
 }
-render_n_best = 10                                      # Number of best CRNs to plot responses for
+render_n_best = 3                                       # Number of best CRNs to plot responses for
 render_disregard_percentage = risk_scheduler['risk']    # Percentage of worst CRNs to disregard in the responses plotting
 
 # Parameter distribution for the reactions added by the agent
@@ -164,6 +165,7 @@ def compute_reward(state):
     return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4)
 
 # %%
+# Log the code and hyperparameters
 # Log the code of the current file
 current_file_path = os.path.abspath(__file__)
 logger.log_code(file_name=os.path.basename(current_file_path))
@@ -355,6 +357,7 @@ for i in range(n_plot):
     print(sorted_crns_rewards[i][0])
 
 # %%
+# Save the agent and the hall of fame CRNs
 hall_of_fame_crns = [env.state for env in mult_env.hall_of_fame]
 if save_flag:
     if not os.path.exists('models'):

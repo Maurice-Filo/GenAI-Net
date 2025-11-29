@@ -26,11 +26,31 @@ def dynamic_tracking_error(crn, u_list, x0_list, time_horizon, r_list, w, norm=1
     crn.last_task_info['reward type'] = 'dynamic_tracking_error'
     return performance, crn.last_task_info
 
-def oscillation_error(crn, u_list, x0_list, time_horizon, f_list, w, t0, LARGE_NUMBER=1e4):
+def oscillation_error(crn, u_list, x0_list, time_horizon, f_list=None, mean_list=None, w=[1/4, 1/4, 1/4, 1/4], t0=0, LARGE_NUMBER=1e4):
+    """ Computes the oscillation error for an IOCRN given a list of control inputs and initial states. 
+    Args:
+        crn: An IOCRN object with a transient_response method.
+        u_list: A list of control inputs, each of shape (p,).
+        x0_list: A list of initial states, each of shape (n,).
+        time_horizon: The time horizon for the transient response.
+        f_list: A list of desired frequencies for the outputs, each of shape (q,). If None, frequency error is not computed.
+        mean_list: A list of desired mean values for the outputs, each of shape (q,). If None, mean error is not computed.
+        w: A list of weights for the different error components [mean_error, frequency_error, damping_error, r1_error].
+        t0: The time after which to evaluate the oscillation metrics.
+        LARGE_NUMBER: A large number to handle cases where the CRN does not converge.
+    Returns:
+        performance: A float representing the computed performance metric.
+        last_task_info: A dictionary containing the last task information, including the reward and frequencies. """
+    
     t, x_list, y_list, last_task_info = crn.transient_response(u_list, x0_list, time_horizon, LARGE_NUMBER=LARGE_NUMBER)
-    frequency_error, damping, r1, peaks_flag = oscillation_metrics(f_list, y_list, t, t0)
+    frequency_error, mean_error, damping, r1, peaks_flag = oscillation_metrics(y_list, t, t0, f_list, mean_list)
 
-    performance = w[0] * frequency_error + w[1] * np.abs(1 - damping) + w[2] * np.abs(1 - r1)
+    if mean_error is None:
+        mean_error = 0.0
+    if frequency_error is None:
+        frequency_error = 0.0
+        
+    performance = w[0]*mean_error + w[1]*frequency_error + w[2]*np.abs(1 - damping) + w[3]*np.abs(1 - r1)
 
     crn.last_task_info['reward'] = performance
     crn.last_task_info['frequency'] = f_list

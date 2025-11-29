@@ -48,24 +48,26 @@ timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 api_key = "o77J6VCMDamustkfJuMXZ2jdV"
 logger = CometLogger(
     api_key=api_key,
-    project="RPA_2species_2rxns_MAK_REINFORCE",        
+    project="RPA_6species_8rxns_MAK_REINFORCE",        
     workspace="maurice-filo", 
-    name=f'RPA_2species_2rxns_MAK_REINFORCE_{timestamp}',
+    name=f'RPA_6species_8rxns_MAK_REINFORCE_{timestamp}',
 )
 logger = logger.experiment
 
 # %%
 # Construct the template CRN
-r1 = MassAction(reactant_labels=['Z'], product_labels=[], input_channels=['u_1'], params=[1.], params_controllability=[True])
-r2 = MassAction(reactant_labels=['X'], product_labels=[], input_channels=['u_2'], params=[1.], params_controllability=[True])
-crn_template = IOCRN([r1, r2], output_labels=['X'])
+r1 = MassAction(reactant_labels=[], product_labels=['Z_1'], input_channels=['u_1'], params=[1.], params_controllability=[True])
+r2 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_2'], params=[1.], params_controllability=[True])
+r3 = MassAction(reactant_labels=['X_1'], product_labels=['X_1', 'X_2'], input_channels=[None], params=[1.], params_controllability=[True])
+r4 = MassAction(reactant_labels=['X_2'], product_labels=[], input_channels=['u_3'], params=[1.], params_controllability=[True])
+crn_template = IOCRN([r1, r2, r3, r4], output_labels=['X_2'])
 crn_template.compile()
 p = crn_template.num_inputs # Number of inputs of the IOCRNs
 print("Template CRN:")
 print(crn_template)
 
 # Construct the library of possible reactions
-species_labels = ['X', 'Z']
+species_labels = ['X_1', 'X_2', 'Z_1', 'Z_2', 'Z_3', 'Z_4']
 library = construct_mass_action_library(species_labels=species_labels, order=2)
 crn_template.set_library_context(library)
 M = len(library.reactions) # Number of possible reactions
@@ -89,13 +91,13 @@ save_sheet_flag = True                                          # Save the confi
 
 save_filename = timestamp + '.pth'                              # Filename for saving the agent checkpoint
 load_filename = ''                                              # Filename for loading the agent checkpoint
-file_name = "RPA_2species_2rxns_MAK_REINFORCE.xlsx"             # Filename for saving the Excel sheet
+file_name = "RPA_6species_8rxns_MAK_REINFORCE.xlsx"             # Filename for saving the Excel sheet
 
 # %%
 # Hyperparameters
-max_added_reactions = 2                                 # Maximum number of reactions
+max_added_reactions = 8                                 # Maximum number of reactions
 N_CPUs = os.cpu_count()                                 # Number of CPUs          
-N = 10*N_CPUs                                           # Number of samples (batch size)    
+N = 10*N_CPUs                                            # Number of samples (batch size)    
 width = 1024                                            # Width of the neural networks  
 depth = 5                                               # Depth of the neural networks 
 deep_layer_size = 1024*10                               # Size of the deep layer encoding the CRNs
@@ -104,8 +106,8 @@ learning_rate = 1e-4                                    # Learning rate for the 
 hall_of_fame_size = 30                                  # Size of the hall of fame  
 entropy_scheduler = {                                   # Entropy scheduler parameters 
     'entropy_weight': 1e-3 ,                            # Global entropy weight
-    'entropy_weight_structure_head': 8.0,               # Entropy weight for the structure head
-    'entropy_weight_continuous_head': 1.0,              # Entropy weight for the continuous parameters head
+    'entropy_weight_structure_head': 1.0,               # Entropy weight for the structure head
+    'entropy_weight_continuous_head': 0.5,              # Entropy weight for the continuous parameters head
     'topk_entropy_weight': 1.0,                         # Entropy weight for the top-k actions
     'remainder_entropy_weight': 1.0,                    # Entropy weight for the remainder actions
     'entropy_update_coefficient': 1,                    # Entropy update coefficient (multiplicative)
@@ -123,7 +125,7 @@ risk_scheduler = {                                      # Risk scheduler paramet
     'max_risk': 1.0,                                    # Maximum risk
     'risk_schedule': 1000                               # Risk schedule (in epochs)
 }
-epoch_num = 200                                         # Number of epochs for training
+epoch_num = 300                                         # Number of epochs for training
 render_schedule = 10                                    # Render every # of epochs
 render_mode = {                                         # Mode of the experiment
     'style': 'logger',                                  
@@ -151,7 +153,7 @@ u_list = [np.array(u) for u in product(nums, repeat=p)] # list of input combinat
 r_list = [np.array([u[0]]) for u in u_list]
 
 # Construct the IOCRN initial conditions
-ic = IC(names=species_labels, values=[[0.01, 0.01, 0.01]])
+ic = IC(names=species_labels, values=[[0.01, 0.01, 0.01, 0.01, 0.01, 0.01]])
 
 # Construct the weights for the performance metric
 w = np.ones(N_t)
