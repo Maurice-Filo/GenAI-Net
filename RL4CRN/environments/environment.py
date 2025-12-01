@@ -248,7 +248,7 @@ class Environment():
                     try:
                         # alpha=0.2 ensures the std dev shading is transparent
                         fig, _ = self.state.plot_SSA_transient_response(alpha=0.2)
-                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        # fig.tight_layout(rect=[0, 0, 1, 0.95])
                         fig.suptitle(f"CRN {ID} (SSA), Reward: {self.state.last_task_info['reward']}")
                         
                         if mode['format'] == 'figure':

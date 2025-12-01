@@ -20,13 +20,11 @@ def quick_measurement_SSA(crn, parameters, t_fin=100, n_trajectories=100,
     """
     
     # 1. Distribute parameters to GPUs
-    # (Assuming spread_parameter_sets_among_gpus is available in scope)
-    parameter_sets = spread_parameter_sets_among_gpus(parameters)
+    parameter_sets = spread_parameter_sets_among_gpus(parameters) # (in this case the parameters are input combinations)
     
     # print(f"Starting Simulation: {len(parameters)} configurations, {n_trajectories} trajectories each...")
     
     # 2. Run Raw Simulation
-    # (Assuming SSA is available in scope)
     raw_df = SSA(crn, parameter_sets, t_fin, n_trajectories, max_threads, t_step, t_control_step, max_value=max_value)
     
     # 3. Intelligent Column Detection
@@ -58,5 +56,12 @@ def quick_measurement_SSA(crn, parameters, t_fin=100, n_trajectories=100,
     # print("Summarizing data...")
     summary_df = raw_df.groupby(group_cols)[target_species].agg(['mean', 'std']).reset_index()
     
+    has_diverged = raw_df['has_diverged'].any()
+    
+    # if has_diverged:
+    #     print("Warning: Some simulations have diverged (rejecting CRN).")
+    # else:
+    #     print("Info: Simulations completed without divergence.")
+
     # print("Done.")
-    return summary_df
+    return summary_df, has_diverged

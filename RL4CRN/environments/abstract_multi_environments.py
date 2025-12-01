@@ -417,7 +417,7 @@ class AbstractMultiEnvironments:
                             # alpha=0.1 ensures the overlapping std dev shadings remain readable
                             fig, axes = self.envs[i].state.plot_SSA_transient_response(fig=fig, axes=axes, alpha=0.1)
                         
-                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        # fig.tight_layout(rect=[0, 0, 1, 0.95])
                         fig.suptitle(f'CRN Distribution {self.rendering_iteration} (SSA)')
                         
                         # Apply bounds if provided

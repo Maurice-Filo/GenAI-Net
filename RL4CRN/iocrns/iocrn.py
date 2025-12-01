@@ -361,7 +361,7 @@ class IOCRN:
             
             # Use the helper function we made (or call SSA directly)
             # We explicitly ask for ALL species to compute full state trajectories
-            summary_df = quick_measurement_SSA(
+            summary_df, has_diverged = quick_measurement_SSA(
                 ssa_crn, 
                 param_batch, 
                 t_fin=t_fin, 
@@ -390,10 +390,16 @@ class IOCRN:
                 # We need to map index of u_vec to column name. 
                 # self.input_labels should hold ['u_1', 'u_2'] sorted.
                 for k, val in enumerate(u_vec):
-                    col_name = self.input_labels[k]
-                    # Handle float matching tolerance if needed, or exact match
-                    mask &= (np.isclose(summary_df[col_name], val))
-                
+                    col_name_str = self.input_labels[k] # 'u_1'
+                    
+                    # Try to find the matching tuple column
+                    # We look for a column that starts with the label 'u_1'
+                    # This handles cases where the column might be ('u_1',) or ('u_1', '')
+
+                    matching_col = [c for c in summary_df.columns if c[0] == col_name_str][0]
+                    
+                    mask &= (np.isclose(summary_df[matching_col], val))
+
                 subset = summary_df[mask].sort_values('time')
                 
                 # Interpolate to match exact 'time_horizon' requested?
@@ -407,9 +413,15 @@ class IOCRN:
                     for s_idx, s_label in enumerate(self.species_labels):
                         # s_label might be complex in DF keys
                         # summary_df keys are often tuples (Label, 'mean')
+
                         if (s_label, stat_type) in subset.columns:
                             vals = subset[(s_label, stat_type)].values
                             t_sim = subset['time'].values
+                            # print 
+                            # print(f"s_label: {s_label}")
+                            # print(f"time_horizon: {time_horizon}")
+                            # print(f"t_sim: {t_sim}")
+                            # print(f"vals: {vals}")
                             traj[s_idx, :] = np.interp(time_horizon, t_sim, vals)
                     return traj
 
@@ -434,7 +446,8 @@ class IOCRN:
             'trajectories': x_mean_list,
             'trajectories_std': x_std_list,
             'outputs': y_mean_list,
-            'outputs_std': y_std_list
+            'outputs_std': y_std_list,
+            'has_diverged': has_diverged
         }
         
         return time_horizon, x_mean_list, y_mean_list, x_std_list, y_std_list, self.last_task_info
@@ -808,8 +821,8 @@ class IOCRN:
             if len(mean_data) <= 10:
                 ax.legend(fontsize='small')
 
-        if fig:
-            plt.tight_layout()
+        # if fig:
+        #     plt.tight_layout()
             
         return fig, axes
         
