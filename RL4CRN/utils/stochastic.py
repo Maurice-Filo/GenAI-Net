@@ -1,6 +1,6 @@
 from StochasticSimulationsNew.MultiGPUsupport import SSA, spread_parameter_sets_among_gpus
 
-def quick_measurement_SSA(crn, parameters, t_fin=100, n_trajectories=100, 
+def quick_measurement_SSA(crn, parameters, parameter_names, t_fin=100, n_trajectories=100, 
                           max_threads=10000, t_step=0.1, t_control_step=-1,
                           species_to_measure=None, max_value=1e6):
     """
@@ -21,11 +21,15 @@ def quick_measurement_SSA(crn, parameters, t_fin=100, n_trajectories=100,
     
     # 1. Distribute parameters to GPUs
     parameter_sets = spread_parameter_sets_among_gpus(parameters) # (in this case the parameters are input combinations)
+
+    # print(parameter_sets)
     
     # print(f"Starting Simulation: {len(parameters)} configurations, {n_trajectories} trajectories each...")
     
     # 2. Run Raw Simulation
-    raw_df = SSA(crn, parameter_sets, t_fin, n_trajectories, max_threads, t_step, t_control_step, max_value=max_value)
+    raw_df = SSA(crn, parameter_sets, parameter_names, t_fin, n_trajectories, t_step, t_control_step, max_value=max_value)
+
+    # print(raw_df.head())
     
     # 3. Intelligent Column Detection
     # We need to distinguish between:

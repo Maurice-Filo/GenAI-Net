@@ -223,7 +223,7 @@ class MassAction(Reaction):
 
         # Case 1: Zero-order input generation: 'emptyset -- u -> X:1'
         if not self.reactant_labels and inp is not None:
-             arrow = f"-- {inp} ->"
+            arrow = f"-- {k}*{inp} ->"
         # Case 2: Standard or Input-Modulated Mass Action
         else:
             if inp is not None:

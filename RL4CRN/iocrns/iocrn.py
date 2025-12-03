@@ -358,15 +358,16 @@ class IOCRN:
             # Prepare input parameters for this batch (just the inputs u)
             # The backend expects tuples of parameter values corresponding to 'input ...;' lines
             param_batch = [tuple(u) for u in u_list]
+
             
             # Use the helper function we made (or call SSA directly)
             # We explicitly ask for ALL species to compute full state trajectories
             summary_df, has_diverged = quick_measurement_SSA(
                 ssa_crn, 
                 param_batch, 
+                parameter_names=self.input_labels,
                 t_fin=t_fin, 
                 n_trajectories=n_trajectories, 
-                max_threads=max_threads,
                 t_step=t_step,
                 species_to_measure=self.species_labels, # Measure everything
                 max_value=max_value
@@ -381,6 +382,9 @@ class IOCRN:
             # Assuming `quick_measurement_SSA` handles the column mapping.
             
             # Iterate through the inputs in the *same order* as u_list to populate the output lists
+
+            # print(summary_df.head())
+
             for u_vec in u_list:
                 # Filter DF for this specific input combination
                 # logic to match u_vec to columns 'u_1', 'u_2' etc.

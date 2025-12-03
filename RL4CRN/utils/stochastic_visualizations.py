@@ -110,7 +110,11 @@ def plot_simulation_summary(df, species_cols=['X_1', 'X_2', 'X_3', 'OUT'], input
             std_vals = stats[species]['std']
             times = stats.index
             
-            c = colors.get(species, 'black')
+            if species in colors.keys():
+                c = colors.get(species, 'black')
+            else:
+                # pick a random color within matplotlib tab10
+                c = plt.get_cmap('tab10')(hash(species) % 10)
             
             ax.plot(times, mean_vals, label=f'{species}', color=c, linewidth=2)
             if not mean_only:

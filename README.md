@@ -22,3 +22,15 @@ Data Structures:
     - 'reaction index': The index (np.int64) of the sampled reaction (if mode is 'full').
     - 'rate constant': The sampled reaction rate (np.float32).
     - 'input influence index': The index (np.int64) of the input influence (if allow_input_influence is True).
+
+
+## Notes on pycuda installation
+
+To install pycuda in a venv, you have to export the following envirnomental varaibles:
+
+```{bash}
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+# install with
+python -m pip install --no-cache-dir --no-build-isolation pycuda
+```
