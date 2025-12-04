@@ -7,13 +7,6 @@ import copy
 from scipy.integrate import solve_ivp
 import pandas as pd
 
-from RL4CRN.utils.stochastic import quick_measurement_SSA
-
-try:
-    from StochasticSimulationsNew.ReactionNetworkLanguage import make_parser
-except ImportError:
-    print("Warning: StochasticSimulationsNew package not found. SSA functionality will be unavailable.")
-
 class IOCRN:
     """ A class representing a general Input-Output Chemical Reaction Network (IOCRN). """
 
@@ -297,7 +290,11 @@ class IOCRN:
         # We need to convert the current object state to the DSL format required by the SSA engine
         crn_text = self.to_reaction_file()
         
-        # Assuming make_parser() is available globally or imported
+        try:
+            from StochasticSimulationsNew.ReactionNetworkLanguage import make_parser
+        except ImportError:
+            raise ImportError("StochasticSimulationsNew package not found. SSA functionality will be unavailable.")    
+        
         parser, lexer = make_parser() 
         ssa_crn = parser.parse(crn_text)
 
@@ -362,6 +359,7 @@ class IOCRN:
             
             # Use the helper function we made (or call SSA directly)
             # We explicitly ask for ALL species to compute full state trajectories
+            from RL4CRN.utils.stochastic import quick_measurement_SSA # import on demand, only if needed (otherwise this creates a context for CUDA even if not used)
             summary_df, has_diverged = quick_measurement_SSA(
                 ssa_crn, 
                 param_batch, 
