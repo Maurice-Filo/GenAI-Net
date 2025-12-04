@@ -40,7 +40,7 @@ from RL4CRN.utils.ic import IC
 from RL4CRN.iocrns.reaction_library import construct_mass_action_library
 
 # Import Reward packages
-from RL4CRN.rewards.stochastic import dynamic_tracking_error_SSA
+from RL4CRN.rewards.stochastic import dynamic_tracking_error_SSA, robust_tracking_loss_SSA
 
 # %%
 # Set the logger to use Comet
@@ -56,7 +56,8 @@ logger = logger.experiment
 
 # %%
 # Construct the template CRN
-r1 = MassAction(reactant_labels=[], product_labels=['Z_1'], input_channels=['u_1'], params=[1.], params_controllability=[True])
+scale = 3.0
+r1 = MassAction(reactant_labels=[], product_labels=['Z_1'], input_channels=['u_1'], params=[scale], params_controllability=[True])
 r2 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_2'], params=[1.], params_controllability=[True])
 crn_template = IOCRN([r1, r2], output_labels=['X_1'])
 crn_template.compile()
@@ -94,16 +95,16 @@ file_name = f"{task_name}.xlsx"             # Filename for saving the Excel shee
 # %%
 # Hyperparameters
 max_added_reactions = 5                             # Maximum number of reactions
-N_CPUs = 16 #os.cpu_count()                             # Number of CPUs          
-N = 10*N_CPUs                                       # Number of samples (batch size)    
+N_CPUs = 4 # os.cpu_count()                             # Number of CPUs          
+N = 160                                       # Number of samples (batch size)    
 width = 1024                                        # Width of the neural networks  
 depth = 5                                           # Depth of the neural networks 
 deep_layer_size = 1024*10                           # Size of the deep layer encoding the CRNs
-allow_input_influence = False                      # Allow input influence in the policy
+allow_input_influence = False                       # Allow input influence in the policy
 learning_rate = 1e-4                                # Learning rate for the optimizer 
 hall_of_fame_size = 30                              # Size of the hall of fame  
 entropy_scheduler = {                               # Entropy scheduler parameters 
-    'entropy_weight': 1e-3, 
+    'entropy_weight': 5e-3, 
     'topk_entropy_weight' : 1.0,
     'remainder_entropy_weight' : 1.0,
     'entropy_update_coefficient': 1, 
@@ -125,7 +126,7 @@ render_mode = {                                     # Mode of the experiment
     'task': 'SSA_transients', 
     'format': 'image',
     'topology': True,
-    'bounds': [2.5]
+    'bounds': [25]
 }
 # Ordering specific parameters
 ordering_parameters = {
@@ -133,7 +134,7 @@ ordering_parameters = {
     'constraint_weight' : float('inf')
 }
 
-render_n_best = 10                                  # Number of best CRNs to plot responses for
+render_n_best = 10                                                     # Number of best CRNs to plot responses for
 render_disregard_percentage = risk_scheduler['risk']                  # Percentage of worst CRNs to disregard in the responses plotting
 
 # Parameter distribution for the reactions added by the agent
@@ -145,12 +146,15 @@ N_t = 100                                          # Number of time steps
 time_horizon = np.linspace(0, t_f, N_t, dtype=np.float32)
 
 # Construct the IOCRN inputs
-nums = [0.5, 1.0 , 1.5]
-disturbances = nums
-u_list = [np.array(u) for u in product(nums, repeat=p)] # list of input combinations, each input is a numpy array of shape (p,)
+nums = [1, 2, 3]
+disturbances = [0.5, 1, 1.5]
+u_list = [np.array(u) for u in product(nums, disturbances)] # list of input combinations, each input is a numpy array of shape (p,)
+
+print(u_list)
 
 # Construct the reference setpoints
-r_list = [np.array([u[0]]) for u in u_list]
+r_list = [np.array([u[0]])*scale for u in u_list]
+print(r_list)   
 
 # Construct the IOCRN initial conditions
 ic = IC(names=species_labels, values=[[0.0, 0.0, 0.0]])
@@ -158,13 +162,14 @@ ic = IC(names=species_labels, values=[[0.0, 0.0, 0.0]])
 # Construct the weights for the performance metric
 w = np.ones(N_t)
 w[(len(w)//5)*4:] = w[(len(w)//5)*4:]*2
-w[:(len(w)//5)] = w[:(len(w)//5)]*0.25
+w[:2*(len(w)//5)] = w[:2*(len(w)//5)]*0.
 w = w[np.newaxis, :]
 
 # Construct the compute reward routine
 def compute_reward(state):
     x0_list = ic.get_ic(state)
-    return dynamic_tracking_error_SSA(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e6, max_threads=1024, n_trajectories=1000)
+    # return dynamic_tracking_error_SSA(state, u_list, x0_list, time_horizon, r_list, w, norm=2, LARGE_NUMBER=1e6, max_threads=1024, n_trajectories=1024)
+    return dynamic_tracking_error_SSA(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e3, LARGE_PENALTY=100, max_threads=1024, n_trajectories=1024)
 
 # %%
 if save_sheet_flag:
@@ -296,6 +301,13 @@ if train_flag:
             actions = agent.act(observations, actuator)
             out = mult_env.step(actions, stepper)
         rewards = mult_env.get_reward(compute_reward)
+
+        # count how many environments were successful (i.e., did not diverge)
+        successful_count = sum(1 for env in mult_env.envs if not env.state.last_task_info.get('has_diverged', False))
+        # Log the number of successful environments
+        logger.log_metric("Successful Environments (%)", successful_count/N, step=i)
+        print(f"Info: in epoch {i}: successful simulation rate {successful_count/N} ({successful_count}/{N})")
+
         agent.update(rewards, step_iteration=i)
         if i % render_schedule == 0:
             mult_env.render(rewards, n_best=render_n_best, disregarded_percentage=render_disregard_percentage, mode=render_mode)
