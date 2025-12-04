@@ -13,7 +13,7 @@ class HoFItem:
         # We want to pop the WORST item (Highest Loss).
         # Smallest (-Loss) == Highest Loss.
         self.score = -loss  
-        self.signature = signature
+        self.signature = signature.tobytes()
         self.timestamp = timestamp
         self.environment = environement
 
@@ -48,20 +48,20 @@ class HallOfFame:
     def add(self, crn_env):
         try:
             loss = crn_env.state.last_task_info['reward']
-            signature = crn_env.state.get_bool_signature() 
+            unhashable_signature = crn_env.state.get_bool_signature() 
         except KeyError:
             # Depending on strictness, you might want to just return here instead of crashing
             raise ValueError("Environment state must have 'reward' in last_task_info.")
 
-        # NOTE: this is probably unnecessary overhead, but safer
-        env_snapshot = deepcopy(crn_env)
+        # NOTE: this is actually critical to avoid issues when resetting older environments
+        env_snapshot = crn_env.clone() 
         
         # New entry wrapper
-        entry = HoFItem(loss, signature, time.time(), env_snapshot)
+        entry = HoFItem(loss, unhashable_signature, time.time(), env_snapshot)
 
         # 1. Handle Duplicates
-        if signature in self.signature_map:
-            existing_entry = self.signature_map[signature]
+        if entry.signature in self.signature_map:
+            existing_entry = self.signature_map[entry.signature]
             
             # Compare scores explicitly for clarity
             if entry.score > existing_entry.score:
@@ -75,7 +75,7 @@ class HallOfFame:
         # 2. Add New Item
         if len(self.heap) < self.max_size:
             heapq.heappush(self.heap, entry)
-            self.signature_map[signature] = entry
+            self.signature_map[entry.signature] = entry
             self._cache_is_dirty = True
         else:
             # Check against the worst item (Root of min-heap)
@@ -88,7 +88,7 @@ class HallOfFame:
                 # Pop worst, push new
                 # Note: heappushpop is more efficient than pop then push
                 heapq.heappushpop(self.heap, entry)
-                self.signature_map[signature] = entry
+                self.signature_map[entry.signature] = entry
                 self._cache_is_dirty = True
 
     def add_all(self, crn_envs):

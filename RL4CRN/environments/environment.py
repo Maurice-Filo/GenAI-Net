@@ -25,6 +25,18 @@ class Environment():
         self.logger = logger
         self.logger_schedule = logger_schedule
 
+    def clone(self):
+        """ Create a deep copy of the environment. """
+        base = Environment(
+            crn_template=self.crn_template.clone(),
+            max_added_reactions=self.max_added_reactions,
+            logger=self.logger,
+            logger_schedule=self.logger_schedule
+        )
+        base.state = self.state.clone()
+        base.num_added_reactions = self.num_added_reactions
+        return base
+
     def reset(self):
         """ Reset the state of the environment to an initial state by copying the CRN template. """
         self.state = self.crn_template.clone()
@@ -67,43 +79,7 @@ class Environment():
         match mode:
             case {'style': 'human'}:
                 self.state.plot_transient_response()
-
-            # if logic task, plot truth table
-            case {'style': 'logger', 'task': 'logic'}:
-                logic_inputs = self.state.last_task_info.get('inputs')
-                logic_outputs = self.state.last_task_info.get('outputs') 
                 
-                if logic_inputs is not None and logic_outputs is not None:
-                    # Handle 3D time-series data (extract steady state)
-                    # e.g. shape (1000, 1, 16) or (16, 1000, 1) -> take last time point
-                    raw_out = np.array(logic_outputs)
-                    if raw_out.ndim == 3:
-                        # Heuristic: Time is likely the largest dimension
-                        time_dim = np.argmax(raw_out.shape)
-                        slicer = [slice(None)] * 3
-                        slicer[time_dim] = -1
-                        logic_outputs = raw_out[tuple(slicer)]
-
-                    fig_tt = plot_truth_table(
-                        logic_inputs, 
-                        logic_outputs, 
-                        title=f"{ID} Truth Table",
-                        silent=True
-                    )
-                    
-                    # Construct unique name for logger
-                    plot_name = f"{ID} Truth Table"
-
-                    if mode['format'] == 'figure':
-                        self.logger.log_figure(figure_name=plot_name, figure=fig_tt)
-                    elif mode['format'] == 'image':
-                        buf = BytesIO()
-                        fig_tt.savefig(buf, format='png')
-                        buf.seek(0)
-                        self.logger.log_image(buf, name=plot_name)
-                        buf.close()
-                    plt.close(fig_tt)
-
             case {'style': 'logger', 'task': 'transients'}:
                 if self.logger is not None:
                     self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
@@ -277,7 +253,40 @@ class Environment():
                     except ValueError:
                         pass
 
-                    # No need to plot Truth Table at the environment level.
+                    # 2. Plot Logic Truth Table
+                    logic_inputs = self.state.last_task_info.get('inputs')
+                    logic_outputs = self.state.last_task_info.get('outputs') 
+                    
+                    if logic_inputs is not None and logic_outputs is not None:
+                        # Handle 3D time-series data (extract steady state)
+                        # e.g. shape (1000, 1, 16) or (16, 1000, 1) -> take last time point
+                        raw_out = np.array(logic_outputs)
+                        if raw_out.ndim == 3:
+                            # Heuristic: Time is likely the largest dimension
+                            time_dim = np.argmax(raw_out.shape)
+                            slicer = [slice(None)] * 3
+                            slicer[time_dim] = -1
+                            logic_outputs = raw_out[tuple(slicer)]
+
+                        fig_tt = plot_truth_table(
+                            logic_inputs, 
+                            logic_outputs, 
+                            title=f"{ID} Truth Table",
+                            silent=True
+                        )
+                        
+                        # Construct unique name for logger
+                        plot_name = f"{ID} Truth Table"
+
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=plot_name, figure=fig_tt)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig_tt.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=plot_name)
+                            buf.close()
+                        plt.close(fig_tt)
 
             case {'style': 'logger', 'task': 'SSA_transients'}:
                 if self.logger is not None:
