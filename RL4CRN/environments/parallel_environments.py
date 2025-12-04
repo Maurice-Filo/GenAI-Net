@@ -16,7 +16,6 @@ class ParallelEnvironments(AbstractMultiEnvironments):
         """
         super().__init__(envs, hall_of_fame_size, logger=logger)
         self.N_CPUs = N_CPUs
-        # self.pool = Pool(N_CPUs)
     
     def get_reward(self, routine):
         """
@@ -41,36 +40,7 @@ class ParallelEnvironments(AbstractMultiEnvironments):
         if self.logger is not None:
             self.logger.log_metric('Timing: Rewards', toc_reward - tic_reward)
             
-        # Update the hall of fame
-        if self.hall_of_fame_empty:
-            combined_environments = self.envs
-            self.hall_of_fame_empty = False
-        else:
-            combined_environments = self.hall_of_fame + self.envs
-        sorted_environments = sorted(combined_environments, key=lambda x: x.state.last_task_info['reward'])
-        self.hall_of_fame[0].state = sorted_environments[0].state.clone()
-        num_updated_hall_of_fame = 1
-        for i in range(1, len(sorted_environments)):
-            for j in range(num_updated_hall_of_fame):
-                if sorted_environments[i].state.is_topologically_equal(self.hall_of_fame[j].state):
-                    found = True
-                    break
-            else:
-                found = False
-            if not found:
-                self.hall_of_fame[num_updated_hall_of_fame].state = sorted_environments[i].state.clone()
-                num_updated_hall_of_fame += 1
-            if num_updated_hall_of_fame >= self.hall_of_fame_size:
-                break   
-            
-        # for i in range(min(self.hall_of_fame_size, len(sorted_environments))):
-        #     self.hall_of_fame[i].state = sorted_environments[i].state.clone()
-        return rewards_list
+        # update hall of fame 
+        self.hall_of_fame.add_all(self.envs)
 
-    # def close(self):
-    #     """
-    #     Close the parallel processing pool.
-    #     This method should be called when the parallel environments are no longer needed to free up resources.
-    #     """
-    #     self.pool.close()
-    #     self.pool.join()   
+        return rewards_list

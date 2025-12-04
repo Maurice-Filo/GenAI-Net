@@ -6,6 +6,7 @@ import numpy as np
 from RL4CRN.environments.environment import Environment
 from RL4CRN.utils.visualizations import topology_graph
 from RL4CRN.utils.visualizations import plot_truth_table
+from RL4CRN.utils.hall_of_fame import HallOfFame
 
 class AbstractMultiEnvironments:
     """
@@ -22,9 +23,7 @@ class AbstractMultiEnvironments:
         self.envs = envs
         self.logger = logger
         self.rendering_iteration = 0
-        self.hall_of_fame_size = hall_of_fame_size
-        self.hall_of_fame = [Environment(envs[0].state.clone(), envs[0].max_added_reactions, logger=logger, logger_schedule=1) for _ in range(hall_of_fame_size)]
-        self.hall_of_fame_empty = True
+        self.hall_of_fame = HallOfFame(max_size=hall_of_fame_size)
 
     def reset(self):
         """ Reset all environments to their initial state.
@@ -82,48 +81,12 @@ class AbstractMultiEnvironments:
                 self.rendering_iteration += 1
 
                 # Render the n_best environments
-                for i in range(n_best):
+                for i in range(min(n_best, len(top_k))):
                     self.envs[top_k[i]].render(mode=mode, ID=f'{self.rendering_iteration}_{i}')
 
                 # Render the hall of fame
-                for i in range(self.hall_of_fame_size):
-                    self.hall_of_fame[i].render(mode=mode, ID = f'hof_{i}')
-
-                    # if logic task, plot truth table
-                    if mode.get('task') == 'logic':
-                        logic_inputs = self.hall_of_fame[i].state.last_task_info.get('inputs')
-                        logic_outputs = self.hall_of_fame[i].state.last_task_info.get('outputs') 
-                        
-                        if logic_inputs is not None and logic_outputs is not None:
-                            # Handle 3D time-series data (extract steady state)
-                            # e.g. shape (1000, 1, 16) or (16, 1000, 1) -> take last time point
-                            raw_out = np.array(logic_outputs)
-                            if raw_out.ndim == 3:
-                                # Heuristic: Time is likely the largest dimension
-                                time_dim = np.argmax(raw_out.shape)
-                                slicer = [slice(None)] * 3
-                                slicer[time_dim] = -1
-                                logic_outputs = raw_out[tuple(slicer)]
-
-                            fig_tt = plot_truth_table(
-                                logic_inputs, 
-                                logic_outputs, 
-                                title=f"Hall of Fame Logic Function {i+1}",
-                                silent=True
-                            )
-                            
-                            # Construct unique name for logger
-                            plot_name = f'Hall of Fame it {self.rendering_iteration} ({i+1})'
-
-                            if mode['format'] == 'figure':
-                                self.logger.log_figure(figure_name=plot_name, figure=fig_tt)
-                            elif mode['format'] == 'image':
-                                buf = BytesIO()
-                                fig_tt.savefig(buf, format='png')
-                                buf.seek(0)
-                                self.logger.log_image(buf, name=plot_name)
-                                buf.close()
-                            plt.close(fig_tt)
+                for i, env in enumerate(self.hall_of_fame):
+                    env.render(mode=mode, ID = f'hof_{i}')
 
                 # Render the IOCRN diversity graph
                 if mode.get('topology', True):

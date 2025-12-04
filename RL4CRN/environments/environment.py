@@ -1,6 +1,7 @@
 from io import BytesIO
 from matplotlib import pyplot as plt
 from RL4CRN.utils.visualizations import plot_truth_table
+import numpy as np
 
 class Environment():
     """
@@ -66,6 +67,42 @@ class Environment():
         match mode:
             case {'style': 'human'}:
                 self.state.plot_transient_response()
+
+            # if logic task, plot truth table
+            case {'style': 'logger', 'task': 'logic'}:
+                logic_inputs = self.state.last_task_info.get('inputs')
+                logic_outputs = self.state.last_task_info.get('outputs') 
+                
+                if logic_inputs is not None and logic_outputs is not None:
+                    # Handle 3D time-series data (extract steady state)
+                    # e.g. shape (1000, 1, 16) or (16, 1000, 1) -> take last time point
+                    raw_out = np.array(logic_outputs)
+                    if raw_out.ndim == 3:
+                        # Heuristic: Time is likely the largest dimension
+                        time_dim = np.argmax(raw_out.shape)
+                        slicer = [slice(None)] * 3
+                        slicer[time_dim] = -1
+                        logic_outputs = raw_out[tuple(slicer)]
+
+                    fig_tt = plot_truth_table(
+                        logic_inputs, 
+                        logic_outputs, 
+                        title=f"{ID} Truth Table",
+                        silent=True
+                    )
+                    
+                    # Construct unique name for logger
+                    plot_name = f"{ID} Truth Table"
+
+                    if mode['format'] == 'figure':
+                        self.logger.log_figure(figure_name=plot_name, figure=fig_tt)
+                    elif mode['format'] == 'image':
+                        buf = BytesIO()
+                        fig_tt.savefig(buf, format='png')
+                        buf.seek(0)
+                        self.logger.log_image(buf, name=plot_name)
+                        buf.close()
+                    plt.close(fig_tt)
 
             case {'style': 'logger', 'task': 'transients'}:
                 if self.logger is not None:
