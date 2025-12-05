@@ -106,8 +106,8 @@ learning_rate = 1e-4                                    # Learning rate for the 
 hall_of_fame_size = 30                                  # Size of the hall of fame  
 entropy_scheduler = {                                   # Entropy scheduler parameters 
     'entropy_weight': 1e-3 ,                            # Global entropy weight
-    'entropy_weight_structure_head': 1.0,               # Entropy weight for the structure head
-    'entropy_weight_continuous_head': 1.0,              # Entropy weight for the continuous parameters head
+    'entropy_weight_structure_head': 5.0,               # Entropy weight for the structure head
+    'entropy_weight_continuous_head': 0.5,              # Entropy weight for the continuous parameters head
     'topk_entropy_weight': 1.0,                         # Entropy weight for the top-k actions
     'remainder_entropy_weight': 1.0,                    # Entropy weight for the remainder actions
     'entropy_update_coefficient': 1,                    # Entropy update coefficient (multiplicative)
@@ -120,12 +120,12 @@ structure_head_temperature = {
     'rate': 0.0, 
     'current_temperature': 1.0}
 risk_scheduler = {                                      # Risk scheduler parameters
-    'risk': 0.9,                                        # Percentage of worst samples to disregard when computing the reward
+    'risk': 0.95,                                        # Percentage of worst samples to disregard when computing the reward
     'risk_update': 0.0,                                 # Risk update coefficient (additive)
     'max_risk': 1.0,                                    # Maximum risk
     'risk_schedule': 1000                               # Risk schedule (in epochs)
 }
-epoch_num = 300                                         # Number of epochs for training
+epoch_num = 700                                         # Number of epochs for training
 render_schedule = 10                                    # Render every # of epochs
 render_mode = {                                         # Mode of the experiment
     'style': 'logger',                                  
