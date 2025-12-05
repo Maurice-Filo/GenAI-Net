@@ -1035,3 +1035,107 @@ def plot_trajectory_ensemble(
 
     plt.suptitle(f"Top {len(losses)} Trajectories (Colored by Loss)", fontsize=16)
     plt.show()
+
+
+def plot_truth_table(u_list, r_list, title='Truth Table for Target Logic Function', figsize=(6, 4), silent=False):
+    """
+    Plots an improved heatmap of the truth table / logic function targets.
+
+    Args:
+        u_list: List of input combination vectors (e.g., [[0, 0], [0, 1], ...]).
+        r_list: List of output values (targets). Can be scalars or arrays.
+        title: Plot title.
+        figsize: Tuple for figure dimensions.
+    """
+    
+    # 1. Prepare Data
+    # Ensure inputs are formatted nicely for labels
+    # Converts numpy arrays e.g. [0. 1.] to string "(0, 1)" or just "0, 1"
+    xticklabels = []
+    for u in u_list:
+        if isinstance(u, (np.ndarray, list)):
+            # Flatten and format integers if possible, else floats
+            u_clean = np.array(u).flatten()
+            # convert to int
+            u_clean = [int(x) for x in u_clean]
+            label = str(tuple(u_clean))
+        else:
+            label = str(u)
+        xticklabels.append(label)
+
+    # Ensure outputs are in a (rows, cols) format for imshow
+    # r_list is typically shape (N_samples, N_outputs) or just (N_samples,)
+    outputs = np.array(r_list)
+    if outputs.ndim == 1:
+        # If 1D, reshape to (1, N) so it plots as a single horizontal strip
+        outputs = outputs.reshape(1, -1)
+    elif outputs.ndim == 2 and outputs.shape[1] == 1:
+        # If (N, 1), transpose to (1, N) for the standard horizontal "truth table row" look
+        outputs = outputs.T
+    else:
+        # If (N, M) where M > 1, we typically want inputs on X-axis (columns), outputs on Y-axis (rows)
+        # So we transpose it to be (M, N)
+        outputs = outputs.T
+
+    # 2. Setup Plot
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Use a clean colormap (e.g., 'Blues', 'viridis', or 'coolwarm')
+    # 'Blues' works well for 0->1 intensity.
+    im = ax.imshow(outputs, cmap='Blues', aspect='auto', vmin=np.min(outputs), vmax=np.max(outputs))
+
+    # 3. Annotate Cells with Values
+    # Loop over data dimensions and create text annotations.
+    rows, cols = outputs.shape
+    
+    # Determine threshold for switching text color (for readability)
+    threshold = (outputs.max() + outputs.min()) / 2.0
+
+    for i in range(rows):
+        for j in range(cols):
+            val = outputs[i, j]
+            text_color = "white" if val > threshold else "black"
+            # Format: if integer-like, no decimals, otherwise 2 decimals
+            if abs(val - round(val)) < 1e-5:
+                val_str = f"{int(round(val))}"
+            else:
+                val_str = f"{val:.2f}"
+                
+            ax.text(j, i, val_str, ha="center", va="center", 
+                    color=text_color, fontsize=10, fontweight='bold')
+
+    # 4. Formatting Ticks and Grid
+    # X-axis
+    ax.set_xticks(np.arange(cols))
+    ax.set_xticklabels(xticklabels, rotation=45, ha="right")
+    ax.set_xlabel('Input Combinations', fontsize=12, fontweight='bold')
+    
+    # Y-axis
+    ax.set_yticks(np.arange(rows))
+    if rows == 1:
+        ax.set_yticklabels(['Output'])
+    else:
+        ax.set_yticklabels([f'Out {i+1}' for i in range(rows)])
+
+    # Add minor grid lines to separate cells nicely
+    ax.set_xticks(np.arange(cols + 1) - 0.5, minor=True)
+    ax.set_yticks(np.arange(rows + 1) - 0.5, minor=True)
+    ax.grid(which="minor", color="w", linestyle='-', linewidth=3)
+    ax.tick_params(which="minor", bottom=False, left=False)
+    
+    # Remove major grid
+    ax.grid(which="major", visible=False)
+
+    # 5. Finishing Touches
+    ax.set_title(title, fontsize=14, pad=15)
+    
+    # Add colorbar but keep it aligned properly
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Output Value', rotation=270, labelpad=15)
+
+    plt.tight_layout()
+    if not silent:
+        plt.show()
+
+    # return the figure for further use if needed
+    return fig

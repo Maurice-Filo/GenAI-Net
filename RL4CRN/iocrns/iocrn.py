@@ -5,6 +5,7 @@ from scipy.optimize import fsolve
 import matplotlib.pyplot as plt
 import copy
 from scipy.integrate import solve_ivp
+import pandas as pd
 
 class IOCRN:
     """ A class representing a general Input-Output Chemical Reaction Network (IOCRN). """
@@ -65,6 +66,9 @@ class IOCRN:
         """ Retrieve and store the labels of the species present in the IOCRN and their corresponding indices in the IOCRN. """
         # Get labels of all the species involved in the IOCRN, and sort them alphanumerically
         self.species_labels = list(set(sum([reaction.get_involved_species() for reaction in self.reactions], []))) # list of strings of all species
+        for output_label in self.output_labels:
+            if output_label not in self.species_labels:
+                self.species_labels.append(output_label)
         self.species_labels.sort() 
 
         # Create a mapping from species labels to their indices
@@ -192,11 +196,56 @@ class IOCRN:
     def __str__(self):
         """ Return a string representation of the IOCRN, including inputs, species, output species, and reactions. When print is called, this method is invoked.
         """
+        try:
+            reaction_signatures = [r.ID for r in self.reactions]
+            # sort reactions by their signatures
+            ordered_reactions = [r for _, r in sorted(zip(reaction_signatures, self.reactions))]
+        except:
+            print("Warning: no reaction IDs found, printing reactions in original order.")
+            ordered_reactions = self.reactions
+
         out = f'Inputs: {self.input_labels} \n'
         out += f'Species: {self.species_labels} \n'
         out += f'Output Species: {self.output_labels} \n'
-        out += '\n'.join([str(r) for r in self.reactions])
+        out += '\n'.join([str(r) for r in ordered_reactions])
         return out
+    
+    def to_reaction_file(self):
+        """ 
+        Converts the current IOCRN into a string format compatible with the custom DSL. 
+        Returns:
+            str: The text content of the reaction file.
+        """
+        lines = []
+        
+        # 1. Inputs Section
+        if hasattr(self, 'input_labels') and self.input_labels:
+            lines.append("// --- Inputs (External Signals) ---")
+            for inp in self.input_labels:
+                lines.append(f"input {inp};")
+            lines.append("")
+
+        # 2. Species Section
+        lines.append("// --- Species Definition ---")
+        
+        # Ensure species list is populated
+        if not hasattr(self, 'species_labels') or self.species_labels is None:
+            self.retrieve_species()
+
+        # Exclude 'emptyset' or '∅' from definitions
+        real_species = [s for s in self.species_labels if s not in ['emptyset', '∅']]
+        if real_species:
+            lines.append(f"species {', '.join(real_species)} = 0;")
+        lines.append("")
+
+        # 3. Reactions Section
+        lines.append("// --- Reactions ---")
+        
+        for r in self.reactions:
+            # Delegate the formatting logic to the specific Reaction class
+            lines.append(r.to_reaction_format())
+
+        return "\n".join(lines)
     
     # ------------------------ Computation Methods ------------------------
     def propensity_function(self, x, u):
@@ -220,6 +269,190 @@ class IOCRN:
         - A numpy array of shape (n,) representing the rate of change of concentrations.
         """
         return np.matmul(self.S, self.propensity_function(x, u))
+    
+
+    def transient_response_SSA(self, u_list, x0_list, time_horizon, n_trajectories=100, max_threads=10000, max_value=1e6):
+        """ 
+        Computes the stochastic transient response of the IOCRN using SSA.
+        Equivalent to transient_response but returns Mean and Std Dev of stochastic trajectories.
+        
+        Arguments:
+        - u_list: List of input vectors (numpy arrays).
+        - x0_list: List of initial condition vectors (numpy arrays).
+        - time_horizon: Numpy array of time points.
+        - n_trajectories: Number of stochastic runs per configuration (to compute mean/std).
+        
+        Returns:
+            time_horizon, x_mean_list, y_mean_list, x_std_list, y_std_list, last_task_info
+        """
+        
+        # 1. Generate DSL and Parse CRN
+        # We need to convert the current object state to the DSL format required by the SSA engine
+        crn_text = self.to_reaction_file()
+        
+        try:
+            from StochasticSimulationsNew.ReactionNetworkLanguage import make_parser
+        except ImportError:
+            raise ImportError("StochasticSimulationsNew package not found. SSA functionality will be unavailable.")    
+        
+        parser, lexer = make_parser() 
+        ssa_crn = parser.parse(crn_text)
+
+        # 2. Setup Simulation Parameters
+        t_fin = time_horizon[-1]
+        
+        # We need to map the time_horizon steps to the SSA 't_step'
+        # The SSA engine usually takes a fixed step for recording. 
+        # We calculate the average step size from the horizon.
+        if len(time_horizon) > 1:
+            t_step = float(time_horizon[1] - time_horizon[0])
+        else:
+            t_step = t_fin / 100.0
+
+        # 3. Prepare Parameter Sets (Cartesian Product of u_list and x0_list)
+        # The SSA backend likely expects parameters as a flat list or dictionary.
+        # We need to check how your SSA backend handles initial conditions.
+        # If your SSA backend 'spread_parameter_sets_among_gpus' only handles reaction rates/inputs,
+        # we might need to handle x0 separately. 
+        
+        # However, typically SSA wrappers allow setting initial species counts.
+        # If your SSA implementation (which I don't fully see here) doesn't support 
+        # varying x0 per thread block easily, we iterate over x0_list in the outer loop 
+        # and batch u_list. But for efficiency, let's assume we can batch inputs.
+        
+        # Let's map u_list to the 'parameters' expected by the DSL (e.g. u_1, u_2...)
+        # Note: This assumes the DSL input order matches u_list indexing.
+        
+        configurations = list(product(u_list, x0_list))
+        
+        # We will store results here
+        x_mean_list = []
+        x_std_list = []
+        y_mean_list = []
+        y_std_list = []
+
+        # 4. Run Simulation
+        # Since the SSA backend might handle data differently, we call the helper 
+        # 'quick_measurement_SSA' we defined earlier, but we need to adapt it 
+        # because we are varying Initial Conditions (x0) as well.
+        
+        # If the SSA backend doesn't support varying x0 explicitly in the parameter list, 
+        # we might need to run separate batches for each x0. 
+        # Assuming 'quick_measurement_SSA' or 'SSA' takes (u1, u2...) but defaults x0 to 0.
+        
+        # Strategy: Run a loop for each unique Initial Condition set x0
+        # and run the batch of all Inputs u for that x0.
+        
+        # print(f"Running SSA for {len(x0_list)} initial conditions and {len(u_list)} input profiles...")
+
+        for x0_idx, x0 in enumerate(x0_list):
+            
+            # create species dictionary
+            ic_dict = {}
+            for s_idx, s_label in enumerate(self.species_labels):
+                ssa_crn.species[s_label].value = x0[s_idx]
+
+            # Prepare input parameters for this batch (just the inputs u)
+            # The backend expects tuples of parameter values corresponding to 'input ...;' lines
+            param_batch = [tuple(u) for u in u_list]
+
+            
+            # Use the helper function we made (or call SSA directly)
+            # We explicitly ask for ALL species to compute full state trajectories
+            from RL4CRN.utils.stochastic import quick_measurement_SSA # import on demand, only if needed (otherwise this creates a context for CUDA even if not used)
+            summary_df, has_diverged = quick_measurement_SSA(
+                ssa_crn, 
+                param_batch, 
+                parameter_names=self.input_labels,
+                t_fin=t_fin, 
+                n_trajectories=n_trajectories, 
+                t_step=t_step,
+                species_to_measure=self.species_labels, # Measure everything
+                max_value=max_value
+            )
+            
+            # 5. Extract and Reshape Data
+            # The summary_df has columns: [time, u_1, u_2, ..., (Species, mean), (Species, std)]
+            # We need to sort it to ensure we match the order of u_list
+            
+            input_names = [f"u_{k+1}" for k in range(len(u_list[0]))] # Guessing input naming convention from parser
+            # If the parser uses specific names, we should match them.
+            # Assuming `quick_measurement_SSA` handles the column mapping.
+            
+            # Iterate through the inputs in the *same order* as u_list to populate the output lists
+
+            # print(summary_df.head())
+
+            for u_vec in u_list:
+                # Filter DF for this specific input combination
+                # logic to match u_vec to columns 'u_1', 'u_2' etc.
+                mask = pd.Series(True, index=summary_df.index)
+                
+                # We assume the columns in DF are named based on input definitions.
+                # We need to map index of u_vec to column name. 
+                # self.input_labels should hold ['u_1', 'u_2'] sorted.
+                for k, val in enumerate(u_vec):
+                    col_name_str = self.input_labels[k] # 'u_1'
+                    
+                    # Try to find the matching tuple column
+                    # We look for a column that starts with the label 'u_1'
+                    # This handles cases where the column might be ('u_1',) or ('u_1', '')
+
+                    matching_col = [c for c in summary_df.columns if c[0] == col_name_str][0]
+                    
+                    mask &= (np.isclose(summary_df[matching_col], val))
+
+                subset = summary_df[mask].sort_values('time')
+                
+                # Interpolate to match exact 'time_horizon' requested?
+                # The SSA returns data at 't_step'. If 'time_horizon' doesn't match perfectly,
+                # we should interpolate.
+                
+                # Helper to interpolate a species column
+                def get_interp_traj(stat_type):
+                    # shape (n_species, n_time_points)
+                    traj = np.zeros((self.num_species, len(time_horizon)))
+                    for s_idx, s_label in enumerate(self.species_labels):
+                        # s_label might be complex in DF keys
+                        # summary_df keys are often tuples (Label, 'mean')
+
+                        if (s_label, stat_type) in subset.columns:
+                            vals = subset[(s_label, stat_type)].values
+                            t_sim = subset['time'].values
+                            # print 
+                            # print(f"s_label: {s_label}")
+                            # print(f"time_horizon: {time_horizon}")
+                            # print(f"t_sim: {t_sim}")
+                            # print(f"vals: {vals}")
+                            traj[s_idx, :] = np.interp(time_horizon, t_sim, vals)
+                    return traj
+
+                x_mean = get_interp_traj('mean')
+                x_std = get_interp_traj('std')
+                
+                # Extract outputs
+                y_mean = x_mean[self.output_idx, :]
+                y_std = x_std[self.output_idx, :]
+                
+                x_mean_list.append(x_mean)
+                x_std_list.append(x_std)
+                y_mean_list.append(y_mean)
+                y_std_list.append(y_std)
+
+        # 6. Store and Return Results
+        self.last_task_info = {
+            'type': 'transient response SSA',
+            'inputs': u_list,
+            'initial conditions': x0_list,
+            'time_horizon': time_horizon,
+            'trajectories': x_mean_list,
+            'trajectories_std': x_std_list,
+            'outputs': y_mean_list,
+            'outputs_std': y_std_list,
+            'has_diverged': has_diverged
+        }
+        
+        return time_horizon, x_mean_list, y_mean_list, x_std_list, y_std_list, self.last_task_info
     
     def transient_response(self, u_list, x0_list, time_horizon, LARGE_NUMBER=1e4):
         """ Computes the transient response of the IOCRN given a list of inputs, a list of initial conditions, and a time horizon. 
@@ -516,6 +749,88 @@ class IOCRN:
 
         plt.tight_layout()
         return fig, axes
+    
+    # ------------------------ stochastic simulation methods ------------------------
+
+    def plot_SSA_transient_response(self, fig=None, axes=None, alpha=0.2):
+        """ 
+        Plots the stochastic transient response (Mean ± Std) of the IOCRN for each output species.
+        
+        Arguments:
+        - fig: matplotlib figure object. If None, a new figure is created.
+        - axes: matplotlib axes object. If None, a new set of axes is created.
+        - alpha: float, transparency level for the standard deviation shading.
+        
+        Returns:
+        - fig, axes
+        """
+
+        # 1. Validation
+        if self.last_task_info.get('type') != 'transient response SSA':
+            raise ValueError("No stochastic transient response data available. Run transient_response_SSA() first.")
+        
+        # 2. Setup Figure/Axes
+        if fig is None and axes is None:
+            fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
+            # Ensure axes is iterable even if there's only one output
+            if not isinstance(axes, (list, np.ndarray)):
+                axes = [axes]
+        elif not isinstance(axes, (list, np.ndarray)):
+             axes = [axes]
+        
+        # 3. Retrieve Data
+        time = self.last_task_info['time_horizon']
+        mean_data = self.last_task_info['outputs']      # List of (n_outputs, n_time)
+        std_data = self.last_task_info['outputs_std']   # List of (n_outputs, n_time)
+        inputs = self.last_task_info.get('inputs', [])
+
+        # 4. Plotting Loop
+        for i in range(self.num_outputs):
+            ax = axes[i]
+            species_idx = self.output_idx[i]
+            species_name = self.species_labels[species_idx]
+
+            # Iterate through each input/initial condition scenario
+            for j in range(len(mean_data)):
+                
+                # Extract mean and std for the i-th output species in the j-th scenario
+                y_mean = mean_data[j][i, :]
+                y_std = std_data[j][i, :]
+                
+                # Create label based on input if available
+                label = f"Scenario {j}"
+                if inputs and j < len(inputs):
+                    # concise string representation of input
+                    label = f"u={np.array2string(np.array(inputs[j]), precision=2, separator=',')}"
+
+                # Plot Mean Line
+                line, = ax.plot(time, y_mean, label=label, linewidth=2)
+                
+                # Plot Standard Deviation Shading
+                # We use the color of the line to match the shading
+                ax.fill_between(time, 
+                                y_mean - y_std, 
+                                y_mean + y_std, 
+                                color=line.get_color(), 
+                                alpha=alpha)
+
+            ax.set_title(f"Stochastic Response: {species_name} (Mean $\pm$ Std)")
+            ax.set_xlabel("Time")
+            ax.set_ylabel("Count / Concentration")
+            ax.grid(True, alpha=0.3)
+            
+            # Only add legend if there aren't too many scenarios to avoid clutter
+            if len(mean_data) <= 10:
+                ax.legend(fontsize='small')
+
+        # if fig:
+        #     plt.tight_layout()
+            
+        return fig, axes
+        
+
+    
+    # ------------------------ CVODE Solver Method ------------------------
     
     def solve_with_cvode(self, x0, time_horizon, u, nonneg_idx, stop_fn):
         t0 = float(time_horizon[0])

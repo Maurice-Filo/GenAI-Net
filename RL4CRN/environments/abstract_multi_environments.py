@@ -5,6 +5,8 @@ from io import BytesIO
 import numpy as np
 from RL4CRN.environments.environment import Environment
 from RL4CRN.utils.visualizations import topology_graph
+from RL4CRN.utils.visualizations import plot_truth_table
+from RL4CRN.utils.hall_of_fame import HallOfFame
 
 class AbstractMultiEnvironments:
     """
@@ -21,9 +23,10 @@ class AbstractMultiEnvironments:
         self.envs = envs
         self.logger = logger
         self.rendering_iteration = 0
-        self.hall_of_fame_size = hall_of_fame_size
-        self.hall_of_fame = [Environment(envs[0].state.clone(), envs[0].max_added_reactions, logger=logger, logger_schedule=1) for _ in range(hall_of_fame_size)]
-        self.hall_of_fame_empty = True
+        if hall_of_fame_size > 0:
+            self.hall_of_fame = HallOfFame(max_size=hall_of_fame_size)
+        else:
+            self.hall_of_fame = None
 
     def reset(self):
         """ Reset all environments to their initial state.
@@ -40,7 +43,7 @@ class AbstractMultiEnvironments:
         """
         return [env.state for env in self.envs]
     
-    def step(self, actions, stepper):
+    def step(self, actions, stepper, raw_actions=None):
         """
         Step through all environments with the provided actions.
         Args:
@@ -50,7 +53,10 @@ class AbstractMultiEnvironments:
             list: A list of tuples containing the new state and done flag for each environment.
         """
         tic_step = time.time()
-        output = [env.step(action, stepper) for env,action in zip(self.envs, actions)]
+        if raw_actions is None:
+            output = [env.step(action, stepper) for env,action in zip(self.envs, actions)]
+        else:
+            output = [env.step(action, stepper, raw_action=raw_action) for env,action,raw_action in zip(self.envs, actions, raw_actions)]
         toc_step = time.time()
         if self.logger is not None:
             self.logger.log_metric('Timing: Step', toc_step - tic_step)
@@ -81,12 +87,13 @@ class AbstractMultiEnvironments:
                 self.rendering_iteration += 1
 
                 # Render the n_best environments
-                for i in range(n_best):
+                for i in range(min(n_best, len(top_k))):
                     self.envs[top_k[i]].render(mode=mode, ID=f'{self.rendering_iteration}_{i}')
 
                 # Render the hall of fame
-                for i in range(self.hall_of_fame_size):
-                    self.hall_of_fame[i].render(mode=mode, ID = f'hof_{i}')
+                if self.hall_of_fame is not None:
+                    for i, env in enumerate(self.hall_of_fame):
+                        env.render(mode=mode, ID = f'hof_{i}')
 
                 # Render the IOCRN diversity graph
                 if mode.get('topology', True):
@@ -287,8 +294,120 @@ class AbstractMultiEnvironments:
                             raise ValueError(f"Unknown mode: {mode[1]}. Use 'figure' or 'image'.")
                         plt.close(fig1)
 
-                    case _:
-                        raise ValueError(f"Unknown mode: {mode}. Check the spelling!")
+                    
+                    
+                    case {'style': 'logger', 'task': 'transients + logic'}:
+                        # --- 1. Transients Ensemble (Overlayed) ---
+                        # Initialize figure
+                        fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
+                        if not isinstance(axes, (list, np.ndarray)):
+                            axes = [axes]
+                        
+                        # Loop through top_k and overlay plots
+                        for i in top_k:
+                            # Assuming plot_transient_response can take existing fig/axes arguments 
+                            # and plot with alpha (transparency)
+                            fig, axes = self.envs[i].state.plot_transient_response(fig=fig, axes=axes, alpha=0.2)
+                        
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f'CRN Distribution {self.rendering_iteration} (Top {(1.-disregarded_percentage)*100}%)')
+                        
+                        # Apply bounds if provided
+                        bounds = mode.get('bounds')
+                        if bounds is not None:
+                            for a, b in zip(axes, bounds):
+                                if b is not None: a.set_ylim([0, b])
+
+                        # Log Transients
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} Transients', figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration} Transients')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+
+                        # --- 2. Truth Tables (All Top-K) ---
+                        try:
+
+                            # Iterate through ALL top performing CRNs to show their logic
+                            for rank, env_idx in enumerate(top_k):
+                                current_state = self.envs[env_idx].state
+                                reward_val = current_state.last_task_info['reward']
+                                
+                                logic_inputs = current_state.last_task_info.get('inputs')
+                                logic_outputs = current_state.last_task_info.get('outputs') 
+                                
+                                if logic_inputs is not None and logic_outputs is not None:
+                                    # Handle 3D time-series data (extract steady state)
+                                    # e.g. shape (1000, 1, 16) or (16, 1000, 1) -> take last time point
+                                    raw_out = np.array(logic_outputs)
+                                    if raw_out.ndim == 3:
+                                        # Heuristic: Time is likely the largest dimension
+                                        time_dim = np.argmax(raw_out.shape)
+                                        slicer = [slice(None)] * 3
+                                        slicer[time_dim] = -1
+                                        logic_outputs = raw_out[tuple(slicer)]
+
+                                    # Plot individual truth table
+                                    fig_tt = plot_truth_table(
+                                        logic_inputs, 
+                                        logic_outputs, 
+                                        title=f"Logic Function Rank {rank+1} (Reward: {reward_val:.4f})",
+                                        silent=True
+                                    )
+                                    
+                                    # Construct unique name for logger
+                                    plot_name = f'it {self.rendering_iteration} (Rank {rank+1})'
+
+                                    if mode['format'] == 'figure':
+                                        self.logger.log_figure(figure_name=plot_name, figure=fig_tt)
+                                    elif mode['format'] == 'image':
+                                        buf = BytesIO()
+                                        fig_tt.savefig(buf, format='png')
+                                        buf.seek(0)
+                                        self.logger.log_image(buf, name=plot_name)
+                                        buf.close()
+                                    plt.close(fig_tt)
+                        except Exception as e:
+                            print(f"Could not plot truth tables: {e}")
+                            pass
+
+                    case {'style': 'logger', 'task': 'SSA_transients'}:
+                        fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
+                        if not isinstance(axes, (list, np.ndarray)):
+                            axes = [axes]
+                        
+                        # Overlay the SSA responses of the top k environments
+                        for i in top_k:
+                            # alpha=0.1 ensures the overlapping std dev shadings remain readable
+                            fig, axes = self.envs[i].state.plot_SSA_transient_response(fig=fig, axes=axes, alpha=0.1)
+                        
+                        # fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f'CRN Distribution {self.rendering_iteration} (SSA)')
+                        
+                        # Apply bounds if provided
+                        bounds = mode.get('bounds')
+                        if bounds is not None:  
+                            for a, b in zip(axes, bounds):
+                                a.set_ylim([0, b])
+
+                        # Logging
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} SSA (Top {(1.-disregarded_percentage)*100}%)', figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration} SSA')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
                     
         toc_step = time.time()
         if self.logger is not None:

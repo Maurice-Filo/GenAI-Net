@@ -117,7 +117,7 @@ class PPOAgent(AbstractAgent):
         actions = [actuator.actuate(a) for a in actions]        
         return actions
     
-    def update(self, losses, step_iteration=None):
+    def update(self, losses, step_iteration=None, hof=None):
         """ Update the agent's policy based on the rewards received.
         Args:
             losses (list): A list of losses, at the final step, received for each sample in the batch.

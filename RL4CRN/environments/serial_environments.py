@@ -29,18 +29,7 @@ class SerialEnvironments(AbstractMultiEnvironments):
             self.logger.log_metric('Reward Time', toc_reward - tic_reward)
 
         # Update the hall of fame
-        if self.hall_of_fame_empty:
-            combined_environments = self.envs
-            self.hall_of_fame_empty = False
-        else:
-            combined_environments = self.hall_of_fame + self.envs
-
-        try:
-            sorted_environments = sorted(combined_environments, key=lambda x: x.state.last_task_info['reward'])
-            for i in range(min(self.hall_of_fame_size, len(sorted_environments))):
-                self.hall_of_fame[i].state = sorted_environments[i].state.clone()
-        except KeyError:
-            pass
-            # print("Warning: Some environments do not have 'reward' in last_task_info. Skipping hall of fame update.")
+        if self.hall_of_fame is not None:
+            self.hall_of_fame.add_all(self.envs)
         
         return rewards_list

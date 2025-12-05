@@ -56,3 +56,40 @@ def oscillation_error(crn, u_list, x0_list, time_horizon, f_list=None, mean_list
     crn.last_task_info['frequency'] = f_list
     crn.last_task_info['reward type'] = 'oscillation_error'
     return performance, crn.last_task_info
+
+def logic_circuit_reward(crn, u_list, x0_list, time_horizon, r_list, w, norm=1, relative=False, LARGE_NUMBER=1e4):
+    """ Computes the steady-state logic circuit reward for an IOCRN given a list of control inputs, initial states, and reference signals.
+    Args:
+        crn: An IOCRN object with a transient_response method.
+        u_list: A list of control inputs, each of shape (p,).
+        x0_list: A list of initial states, each of shape (n,).
+        time_horizon: The time horizon for the transient response.
+        r_list: A list of reference signals, each of shape (q,).
+        w: A numpy array of weights, shape (q, time_steps).
+        norm: An integer indicating the norm to use for the metric calculation (1 or 2).
+        relative: A boolean indicating whether to compute relative error.
+        LARGE_NUMBER: A large number to handle cases where the CRN does not converge.
+    Returns:
+        performance: A float representing the computed performance metric.
+        last_task_info: A dictionary containing the last task information, including the reward and setpoint. """
+
+    t, x_list, y_list, last_task_info = crn.transient_response(u_list, x0_list, time_horizon, LARGE_NUMBER=LARGE_NUMBER)
+    # use binary cross-entropy as performance metric
+    scores = []
+    for i in range(len(r_list)):
+        r = r_list[i]
+        y = y_list[i]
+        # take the last time point as steady-state output
+        y_ss = y[-1,:]
+        # clip values to avoid log(0)
+        y_ss = np.clip(y_ss, 1e-6, 1-1e-6)
+        # compute binary cross-entropy
+        bce = - (r * np.log(y_ss) + (1 - r) * np.log(1 - y_ss))
+        scores.append(bce)
+    performance = np.array(scores)
+    performance = np.mean(performance)
+    crn.last_task_info['reward'] = performance
+    crn.last_task_info['setpoint'] = r_list
+    crn.last_task_info['initial_conditions'] = x0_list
+    crn.last_task_info['reward type'] = 'dynamic_tracking_error'
+    return performance, crn.last_task_info
