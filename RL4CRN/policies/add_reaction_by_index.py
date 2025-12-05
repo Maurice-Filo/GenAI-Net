@@ -131,7 +131,7 @@ class AddReactionByIndex(torch.nn.Module):
         # Record entropy weights per head
         self.entropy_weights_per_head = entropy_weights_per_head if entropy_weights_per_head is not None else {'structure': 1, 'continuous': 1, 'discrete': 1, 'input_influence': 1}
                   
-    def forward(self, state, mode='full', action=None, structure_temp=None):
+    def forward(self, state, mode='full', action=None, structure_temp=None): 
         """ Generates an action (reaction structure, parameters and input influence) given the observation of the state received from the observer.
         Args:
         - state (torch.Tensor): The observation (state) of the IOCRN. Shape: (N, M + (p+1)*K)), where N is the batch size, M is the number of reactions in the library, p is the number of inputs in the IOCRN, and K is the total number of parameters in the IOCRN. 

@@ -9,7 +9,7 @@ class AbstractAgent:
         """
         pass
     
-    def update(self, rewards):
+    def update(self, rewards, hof=None):
         """
         Update the agent with the rewards received from the environment by doing the backward pass.
         NOTE: This function does not return anything. It is meant to update the agent's internal state.

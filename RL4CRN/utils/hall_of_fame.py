@@ -7,7 +7,7 @@ class HoFItem:
     """
     Helper class to store items in the Hall of Fame with ordering.
     """
-    def __init__(self, loss, signature, timestamp, environement):
+    def __init__(self, loss, signature, timestamp, env):
         # We invert loss because we want to keep LOW loss items.
         # heapq pops the smallest value.
         # We want to pop the WORST item (Highest Loss).
@@ -15,7 +15,7 @@ class HoFItem:
         self.score = -loss  
         self.signature = signature.tobytes()
         self.timestamp = timestamp
-        self.environment = environement
+        self.env = env
 
     def __lt__(self, other):
         # Standard min-heap comparison
@@ -26,7 +26,7 @@ class HoFItem:
     def assign(self, other):
         self.score = other.score
         self.timestamp = other.timestamp
-        self.environement = other.environement
+        self.env = other.env
 
 class HallOfFame:
     def __init__(self, max_size):
@@ -95,6 +95,9 @@ class HallOfFame:
         for env in crn_envs:
             self.add(env)
 
+    def __len__(self):
+        return len(self.heap)
+
     def sample(self, batch_size):
         """
         Samples a batch of environments. No sorting needed, so it stays fast.
@@ -104,7 +107,7 @@ class HallOfFame:
         
         k = min(len(self.heap), batch_size)
         samples = random.sample(self.heap, k)
-        return [s.environment for s in samples]
+        return [s.env for s in samples]
 
     def __iter__(self):
         """
@@ -112,14 +115,14 @@ class HallOfFame:
         """
         self._ensure_sorted()
         for item in self._sorted_cache:
-            yield item.environment
+            yield item.env
     
     def __getitem__(self, index):
         """
         Get item by rank (0 is Best).
         """
         self._ensure_sorted()
-        return self._sorted_cache[index].environment
+        return self._sorted_cache[index].env
 
     def __len__(self):
         return len(self.heap)

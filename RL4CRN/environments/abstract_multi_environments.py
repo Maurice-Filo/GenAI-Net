@@ -23,7 +23,10 @@ class AbstractMultiEnvironments:
         self.envs = envs
         self.logger = logger
         self.rendering_iteration = 0
-        self.hall_of_fame = HallOfFame(max_size=hall_of_fame_size)
+        if hall_of_fame_size > 0:
+            self.hall_of_fame = HallOfFame(max_size=hall_of_fame_size)
+        else:
+            self.hall_of_fame = None
 
     def reset(self):
         """ Reset all environments to their initial state.
@@ -40,7 +43,7 @@ class AbstractMultiEnvironments:
         """
         return [env.state for env in self.envs]
     
-    def step(self, actions, stepper):
+    def step(self, actions, stepper, raw_actions=None):
         """
         Step through all environments with the provided actions.
         Args:
@@ -50,7 +53,10 @@ class AbstractMultiEnvironments:
             list: A list of tuples containing the new state and done flag for each environment.
         """
         tic_step = time.time()
-        output = [env.step(action, stepper) for env,action in zip(self.envs, actions)]
+        if raw_actions is None:
+            output = [env.step(action, stepper) for env,action in zip(self.envs, actions)]
+        else:
+            output = [env.step(action, stepper, raw_action=raw_action) for env,action,raw_action in zip(self.envs, actions, raw_actions)]
         toc_step = time.time()
         if self.logger is not None:
             self.logger.log_metric('Timing: Step', toc_step - tic_step)
@@ -85,8 +91,9 @@ class AbstractMultiEnvironments:
                     self.envs[top_k[i]].render(mode=mode, ID=f'{self.rendering_iteration}_{i}')
 
                 # Render the hall of fame
-                for i, env in enumerate(self.hall_of_fame):
-                    env.render(mode=mode, ID = f'hof_{i}')
+                if self.hall_of_fame is not None:
+                    for i, env in enumerate(self.hall_of_fame):
+                        env.render(mode=mode, ID = f'hof_{i}')
 
                 # Render the IOCRN diversity graph
                 if mode.get('topology', True):

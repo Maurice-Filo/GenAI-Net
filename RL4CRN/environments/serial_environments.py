@@ -29,6 +29,7 @@ class SerialEnvironments(AbstractMultiEnvironments):
             self.logger.log_metric('Reward Time', toc_reward - tic_reward)
 
         # Update the hall of fame
-        self.hall_of_fame.add_all(self.envs)
+        if self.hall_of_fame is not None:
+            self.hall_of_fame.add_all(self.envs)
         
         return rewards_list

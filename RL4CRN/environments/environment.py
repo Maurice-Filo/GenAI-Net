@@ -2,6 +2,7 @@ from io import BytesIO
 from matplotlib import pyplot as plt
 from RL4CRN.utils.visualizations import plot_truth_table
 import numpy as np
+from copy import deepcopy
 
 class Environment():
     """
@@ -24,6 +25,8 @@ class Environment():
         self.max_added_reactions = max_added_reactions
         self.logger = logger
         self.logger_schedule = logger_schedule
+        self.actions_taken = []
+        self.raw_actions_taken = []
 
     def clone(self):
         """ Create a deep copy of the environment. """
@@ -35,15 +38,20 @@ class Environment():
         )
         base.state = self.state.clone()
         base.num_added_reactions = self.num_added_reactions
+        base.actions_taken = deepcopy(self.actions_taken)
+        base.raw_actions_taken = deepcopy(self.raw_actions_taken)
         return base
 
     def reset(self):
         """ Reset the state of the environment to an initial state by copying the CRN template. """
         self.state = self.crn_template.clone()
         self.num_added_reactions = 0
+        self.actions_taken = []
+        self.raw_actions_taken = []
         return self.state
 
-    def step(self, action, stepper):
+    def step(self, action, stepper, raw_action=None):
+
         stepper.step(self.state, action)
         self.num_added_reactions += 1  
 
@@ -52,7 +60,34 @@ class Environment():
             done = False 
         else:
             done = True  
+
+        # Store the action for algorithms that may need it
+        
+        self.actions_taken.append(action)
+        if raw_action is not None:
+            self.raw_actions_taken.append(raw_action)
+
         return self.state, done
+    
+    def get_action(self, index):
+        """
+        Get the action taken at a specific index.
+        Args:
+            index (int): The index of the action to retrieve.
+        Returns:
+            action: The action taken at the specified index.
+        """
+        return self.actions_taken[index]
+    
+    def get_raw_action(self, index):
+        """
+        Get the raw action taken at a specific index.
+        Args:
+            index (int): The index of the raw action to retrieve.
+        Returns:
+            raw_action: The raw action taken at the specified index.
+        """
+        return self.raw_actions_taken[index]
     
     def get_reward(self, routine):
         """
