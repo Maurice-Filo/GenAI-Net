@@ -58,6 +58,10 @@ class REINFORCEAgent(AbstractAgent):
         if not sil_settings:
             sil_settings = {'sil_loss_weight': 1.0}
         self.sil_settings = sil_settings
+
+        self.use_adaptive_baseline = sil_settings.get('use_adaptive_baseline', False)
+        self.baseline_annealing_rate = sil_settings.get('baseline_annealing_rate', 0.95)
+        self.adaptive_baseline = None
         
     def act(self, states, actuator, mode='full'):
         """ Select actions based on the current policy and the observed states.
@@ -173,10 +177,19 @@ class REINFORCEAgent(AbstractAgent):
         top_k = torch.topk(final_loss_for_each_sample, k, largest=False).indices # shape (int(N * (1. - self.risk_scheduler['risk'])),)
 
         # Compute the gradients with baseline (important: baseline = worst loss in top k, so that the weights are non-negative)
-        if top_k.numel() == 0:
-            baseline = final_loss_for_each_sample.max()
+        if not self.use_adaptive_baseline:
+            if top_k.numel() == 0:
+                baseline = final_loss_for_each_sample.max()
+            else:
+                baseline = final_loss_for_each_sample[top_k[-1]]
         else:
-            baseline = final_loss_for_each_sample[top_k[-1]]
+            if self.adaptive_baseline is None:
+                self.adaptive_baseline = final_loss_for_each_sample[top_k[-1]] if top_k.numel() > 0 else final_loss_for_each_sample.max().item()
+            else:
+                current_best = final_loss_for_each_sample[top_k[0]] if top_k.numel() > 0 else final_loss_for_each_sample.min().item()
+                self.adaptive_baseline = self.baseline_annealing_rate * self.adaptive_baseline + (1 - self.baseline_annealing_rate) * current_best
+            baseline = self.adaptive_baseline
+
         # baseline = torch.mean(final_loss_for_each_sample[top_k]).detach()  # shape (1,)
         # advantages = final_loss_for_each_sample[top_k] - baseline  # shape (N,)
         # advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)  # Normalize advantage
