@@ -50,7 +50,6 @@ class ReactionLibrary:
         """ Registers a reaction in the library, assigning it a unique ID.
         Arguments:
         - reaction: an instance of Reaction. """
-        
         self.reactions.append(reaction)
         reaction.set_ID(self.last_ID)
         self.last_ID += 1

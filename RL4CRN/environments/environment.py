@@ -134,6 +134,7 @@ class Environment():
                             raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
                         plt.close(fig)
                     except ValueError:
+                        print("Warning: Could not plot transient response.")
                         pass
 
             case {'style': 'logger', 'task': 'phase_plot'}:
