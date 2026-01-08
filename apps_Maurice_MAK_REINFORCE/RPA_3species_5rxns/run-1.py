@@ -7,6 +7,7 @@ sys.path.append(parent_dir)
 print('Working directory set to:', parent_dir)
 
 # %%
+# Import packages
 # Import general packages
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
@@ -23,7 +24,6 @@ from RL4CRN.environments.environment import Environment
 from RL4CRN.environments.parallel_environments import ParallelEnvironments
 from RL4CRN.environments.serial_environments import SerialEnvironments
 from RL4CRN.agents.reinforce_agent import REINFORCEAgent
-from RL4CRN.policies.add_reaction_by_ordered_index import AddReactionByOrderedIndex
 from RL4CRN.policies.add_reaction_by_ordered_index import AddReactionByOrderedIndex
 from RL4CRN.policies.add_reaction_by_index import AddReactionByIndex
 
@@ -93,49 +93,54 @@ file_name = "RPA_3species_5rxns_MAK_REINFORCE.xlsx"             # Filename for s
 
 # %%
 # Hyperparameters
-max_added_reactions = 5                             # Maximum number of reactions
-N_CPUs = os.cpu_count()                             # Number of CPUs          
-N = 10*N_CPUs                                       # Number of samples (batch size)    
-width = 1024                                        # Width of the neural networks  
-depth = 5                                           # Depth of the neural networks 
-deep_layer_size = 1024*10                           # Size of the deep layer encoding the CRNs
-allow_input_influence = False                      # Allow input influence in the policy
-learning_rate = 1e-4                                # Learning rate for the optimizer 
-hall_of_fame_size = 30                              # Size of the hall of fame  
-entropy_scheduler = {                               # Entropy scheduler parameters 
-    'entropy_weight': 1e-3 , 
-    'topk_entropy_weight' : 1.0,
-    'remainder_entropy_weight' : 1.0,
-    'entropy_update_coefficient': 1, 
-    'entropy_schedule': 1000, 
-    'minimum_entropy_weight': 0.0
+max_added_reactions = 5                                 # Maximum number of reactions
+N_CPUs = os.cpu_count()                                 # Number of CPUs          
+N = 10*N_CPUs                                           # Number of samples (batch size)    
+width = 1024                                            # Width of the neural networks  
+depth = 5                                               # Depth of the neural networks 
+deep_layer_size = 1024*10                               # Size of the deep layer encoding the CRNs
+allow_input_influence = False                           # Allow input influence in the policy
+learning_rate = 1e-4                                    # Learning rate for the optimizer 
+hall_of_fame_size = 30                                  # Size of the hall of fame  
+entropy_scheduler = {                                   # Entropy scheduler parameters 
+    'entropy_weight': 1e-3 ,                            # Global entropy weight
+    'entropy_weight_structure_head': 2.0,               # Entropy weight for the structure head
+    'entropy_weight_continuous_head': 1.0,              # Entropy weight for the continuous parameters head
+    'topk_entropy_weight': 1.0,                         # Entropy weight for the top-k actions
+    'remainder_entropy_weight': 1.0,                    # Entropy weight for the remainder actions
+    'entropy_update_coefficient': 1,                    # Entropy update coefficient (multiplicative)
+    'entropy_schedule': 1000,                           # Entropy schedule (in epochs) 
+    'minimum_entropy_weight': 0.0                       # Minimum entropy weight
 }
-entropy_weights_per_head = {'structure': 2.0, 'continuous': 1.0, 'discrete': 0.0, 'input_influence': 0.0} 
-structure_head_temperature = {"target_entropy_ratio_to_max": np.log(5)/np.log(M), "initial_temperature": 1.0, "rate": 0.0, "current_temperature": 1.0}
-risk_scheduler = {                                  # Risk scheduler parameters
-    'risk': 0.9, 
-    'risk_update': 0.0, 
-    'max_risk': 1.0, 
-    'risk_schedule': 1000
+structure_head_temperature = {
+    'target_entropy_ratio_to_max': np.log(5)/np.log(M), 
+    'initial_temperature': 1.0, 
+    'rate': 0.0, 
+    'current_temperature': 1.0}
+risk_scheduler = {                                      # Risk scheduler parameters
+    'risk': 0.9,                                        # Percentage of worst samples to disregard when computing the reward
+    'risk_update': 0.0,                                 # Risk update coefficient (additive)
+    'max_risk': 1.0,                                    # Maximum risk
+    'risk_schedule': 1000                               # Risk schedule (in epochs)
 }
-epoch_num = 300                                     # Number of epochs for training
-render_schedule = 10                                 # Render every # of epochs
-render_mode = {                                     # Mode of the experiment
-    'style': 'logger', 
+epoch_num = 300                                         # Number of epochs for training
+render_schedule = 10                                    # Render every # of epochs
+render_mode = {                                         # Mode of the experiment
+    'style': 'logger',                                  
     'task': 'transients', 
     'format': 'image',
     'topology': True,
     'bounds': [2.5]
 }
-render_n_best = 10                                  # Number of best CRNs to plot responses for
-render_disregard_percentage = risk_scheduler['risk']                  # Percentage of worst CRNs to disregard in the responses plotting
+render_n_best = 10                                      # Number of best CRNs to plot responses for
+render_disregard_percentage = risk_scheduler['risk']    # Percentage of worst CRNs to disregard in the responses plotting
 
 # Parameter distribution for the reactions added by the agent
-continuous_distribution = {"type": 'lognormal_1D'}
+continuous_distribution = {"type": 'lognormal_1D'}        
 
 # Time horizon for the simulation
-t_f = 100                                           # Final time for the simulation
-N_t = 1000                                          # Number of time steps
+t_f = 100                                               # Final time for the simulation
+N_t = 1000                                              # Number of time steps in the simulation
 time_horizon = np.linspace(0, t_f, N_t, dtype=np.float32)
 
 # Construct the IOCRN inputs
@@ -146,7 +151,7 @@ u_list = [np.array(u) for u in product(nums, repeat=p)] # list of input combinat
 r_list = [np.array([u[0]]) for u in u_list]
 
 # Construct the IOCRN initial conditions
-ic = IC(names=species_labels, values=[[0.0, 0.0, 0.0]])
+ic = IC(names=species_labels, values=[[0.01, 0.01, 0.01]])
 
 # Construct the weights for the performance metric
 w = np.ones(N_t)
@@ -160,34 +165,73 @@ def compute_reward(state):
     return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4)
 
 # %%
+# Log the code and hyperparameters
+# Log the code of the current file
+current_file_path = os.path.abspath(__file__)
+logger.log_code(file_name=os.path.basename(current_file_path))
+
+# Log the hyperparameters
+hyperparameters = {
+    'species_labels': str(species_labels),
+    'crn_template': str(crn_template),
+    'library': str(library),
+    'max_added_reactions': max_added_reactions,
+    'N_CPUs': N_CPUs,
+    'N': N,
+    'width': width,
+    'depth': depth,
+    'deep_layer_size': deep_layer_size,
+    'allow_input_influence': allow_input_influence,
+    'learning_rate': learning_rate,
+    'hall_of_fame_size': hall_of_fame_size,
+    'entropy_scheduler': entropy_scheduler,
+    'structure_head_temperature': structure_head_temperature,
+    'risk_scheduler': risk_scheduler,
+    'epoch_num': epoch_num,
+    'render_schedule': render_schedule,
+    'render_mode': render_mode,
+    'render_n_best': render_n_best,
+    'render_disregard_percentage': render_disregard_percentage,
+    'continuous_distribution': continuous_distribution,
+    'tf': t_f,
+    'N_t': N_t,
+    'u_list': [ u.tolist() for u in u_list ],
+    'r_list': r_list,
+    'ic': str(ic),
+    'w': w.tolist()
+}
+logger.log_parameters(hyperparameters)
+
+# %%
+# Save the experiment configuration to an Excel sheet
 if save_sheet_flag:
     sheet_name = "Data"
     headers = [
         "Timestamp", "URL",
-        "Epochs Completed", "Successful", "Saved", "Comments",
+        "Successful", "Epochs Completed", "Saved", "Comments",
+        "Entropy Scheduler",
         "Learning Rate", "Epochs #",
         "(m, n, p, N)",
         "NN Depth", "NN Width", "Deep Layer Size", "CPUs #",
-        "Entropy Scheduler",
         "Risk Scheduler",
         "Render Schedule", "HoF Size",
         "Simulation Time", "Time Steps #",
         "Initial Conditions #", "Input Scenarios#",
-        "Continuous Distribution", "Entropy Weights per Head",
+        "Continuous Distribution", 
         "Structure Head Temperature"
     ]
 
     data_row = [
         timestamp, logger.url,
         None, None, None, None,
-        learning_rate, epoch_num,
+        str(entropy_scheduler),
+        str(learning_rate), epoch_num,
         str((max_added_reactions, len(species_labels), p, N)),
         depth, width, deep_layer_size, N_CPUs,
-        str(entropy_scheduler),
         str(risk_scheduler),
         render_schedule, hall_of_fame_size,
         t_f, N_t, len(ic.values), len(u_list),
-        str(continuous_distribution), str(entropy_weights_per_head),
+        str(continuous_distribution), 
         str(structure_head_temperature)
     ]
 
@@ -235,7 +279,7 @@ if save_sheet_flag:
                     max_length = length
 
         # Some padding so text isn't touching the cell border
-        adjusted_width = max_length + 2 if max_length > 0 else 10
+        adjusted_width = max_length + 1 if max_length > 0 else 10
         col_letter = get_column_letter(col)
         ws.column_dimensions[col_letter].width = adjusted_width
 
@@ -255,11 +299,11 @@ structure_head_attributes = {"hidden_size": width, "num_layers": depth}
 rate_head_attributes = {"hidden_size": width, "num_layers": depth}
 input_influence_head_attributes = {"hidden_size": width, "num_layers": depth}
 masks = {"continuous": library.get_parameter_mask(mode="continuous"), "discrete": library.get_parameter_mask(mode="discrete"), "logit": library.get_logit_mask()}
-# policy = AddReactionByOrderedIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, target_set_size=crn_template.num_reactions+max_added_reactions, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head, combinatorial_bias_enabled=True)
-policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
+entropy_weights_per_head = {'structure': entropy_scheduler['entropy_weight_structure_head'], 'continuous': entropy_scheduler['entropy_weight_continuous_head'], 'discrete': 0.0, 'input_influence': 0.0} 
+policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=allow_input_influence, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
 
 # Construct the agent
-agent = REINFORCEAgent(policy, allow_input_influence=False, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device)
+agent = REINFORCEAgent(policy, allow_input_influence=allow_input_influence, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device)
 if load_flag:
     agent.policy.load_state_dict(torch.load(load_filename+'.pth', map_location=device))
 
@@ -313,6 +357,7 @@ for i in range(n_plot):
     print(sorted_crns_rewards[i][0])
 
 # %%
+# Save the agent and the hall of fame CRNs
 hall_of_fame_crns = [env.state for env in mult_env.hall_of_fame]
 if save_flag:
     if not os.path.exists('models'):

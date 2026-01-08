@@ -94,26 +94,34 @@ class AbstractMultiEnvironments:
                 if self.hall_of_fame is not None:
                     for i, env in enumerate(self.hall_of_fame):
                         env.render(mode=mode, ID = f'hof_{i}')
+                    
+                    hof_iocrn_list = [env.state for env in self.hall_of_fame]
+                    fig_graph = topology_graph(hof_iocrn_list, t=5, figsize = (10,10))
+                    buf = BytesIO()
+                    fig_graph.savefig(buf, format='png')
+                    buf.seek(0)
+                    self.logger.log_image(buf, name=f'HOF Diversity Graph {self.rendering_iteration}')
+                    buf.close()
 
                 # Render the IOCRN diversity graph
                 if mode.get('topology', True):
                     iocrn_list = []
                     for idx in top_k:
                         iocrn_list.append(self.envs[idx].state)
-                    fig_graph = topology_graph(iocrn_list, t=10, figsize = (10,10))
-                    fig_graph1 = topology_graph(iocrn_list, t=3, figsize = (10,10))
+                    fig_graph = topology_graph(iocrn_list, t=5, figsize = (10,10))
+                    # fig_graph1 = topology_graph(iocrn_list, t=3, figsize = (10,10))
                     buf = BytesIO()
                     fig_graph.savefig(buf, format='png')
                     buf.seek(0)
                     self.logger.log_image(buf, name=f'CRN Diversity Graph {self.rendering_iteration}')
                     buf.close()
-                    buf = BytesIO()
-                    fig_graph1.savefig(buf, format='png')
-                    buf.seek(0)
-                    self.logger.log_image(buf, name=f'CRN Diversity Graph (Clusters) {self.rendering_iteration}')
-                    buf.close()
-                    plt.close(fig_graph)
-                    plt.close(fig_graph1)
+                    # buf = BytesIO()
+                    # fig_graph1.savefig(buf, format='png')
+                    # buf.seek(0)
+                    # self.logger.log_image(buf, name=f'CRN Diversity Graph (Clusters) {self.rendering_iteration}')
+                    # buf.close()
+                    # plt.close(fig_graph)
+                    # plt.close(fig_graph1)
                 
                 # Render the top_k environments based on the specified mode
                 match mode:
