@@ -108,7 +108,7 @@ class REINFORCEAgent(AbstractAgent):
         if sil_batch_size is None:
             sil_batch_size = len(hof)
 
-        current_batch_best_loss = final_loss_for_each_sample[top_k_indices[0]] # TODO think how to get the actions or store them, also if this is the best way to implement this things...
+        current_batch_best_loss = final_loss_for_each_sample[top_k_indices[0]] 
 
         samples = hof.sample(sil_batch_size)
 
@@ -265,7 +265,10 @@ class REINFORCEAgent(AbstractAgent):
             self.logger.log_metric('Timing: Backward', toc_backward - tic_backward, step=step_iteration)
 
             if sil_loss is not None:
-                self.logger.log_metric('Loss: SIL', sil_loss.item(), step=step_iteration)
+                if isinstance(sil_loss, torch.Tensor):
+                    self.logger.log_metric('Loss: SIL', sil_loss.item(), step=step_iteration)
+                else:
+                    self.logger.log_metric('Loss: SIL', sil_loss, step=step_iteration)
 
         # Clear the lists of logPs and entropies
         self.logPs_sequence.clear()

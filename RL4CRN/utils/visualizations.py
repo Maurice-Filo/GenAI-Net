@@ -4,11 +4,7 @@ import matplotlib.pyplot as plt
 from sklearn.neighbors import NearestNeighbors  
 from itertools import combinations_with_replacement
 from matplotlib.patches import Rectangle
-
-import numpy as np
-import matplotlib.pyplot as plt
-from itertools import combinations_with_replacement
-from matplotlib.patches import Rectangle
+import matplotlib.ticker as mticker
 
 def plot_reactant_product_heatmap(
     iocrns,
@@ -181,8 +177,8 @@ def plot_reactant_product_heatmap(
     ax.set_xticklabels([axis_labels_latex[i] for i in tick_idx], rotation=90)
     ax.set_yticklabels([axis_labels_latex[i] for i in tick_idx])
 
-    ax.set_xlabel("Products")
-    ax.set_ylabel("Reactants")
+    ax.set_xlabel("products")
+    ax.set_ylabel("reactants")
     ax.set_title(title)
 
     # gridlines
@@ -211,6 +207,8 @@ def plot_reactant_product_scatter(
     figsize=(8, 7),
     jitter_scale=0.3,
     use_plotly=False,
+    plot_dic=None,
+    marker_size=8,
 ):
     """
     Plots a scatter map of reactants vs products indices.
@@ -255,7 +253,7 @@ def plot_reactant_product_scatter(
     def format_complex(c, is_html=False):
         if len(c) == 0:
             return "Ø" if is_html else r'\varnothing'
-        separator = " + "
+        separator = "+" if is_html else "\!+\!"
         return separator.join(format_species(s, is_html) for s in c)
 
     # Generate the correct labels for the chosen backend
@@ -382,7 +380,7 @@ def plot_reactant_product_scatter(
             title=title,
             shapes=shapes,
             xaxis=dict(
-                title="Products",
+                title="products",
                 range=[-0.5, K - 0.5],
                 tickmode='array',
                 tickvals=tick_idx,
@@ -391,7 +389,7 @@ def plot_reactant_product_scatter(
                 showgrid=False,  # Disable default grid (which cuts through 0, 1, 2)
             ),
             yaxis=dict(
-                title="Reactants",
+                title="reactants",
                 range=[-0.5, K - 0.5],
                 tickmode='array',
                 tickvals=tick_idx,
@@ -411,6 +409,8 @@ def plot_reactant_product_scatter(
     # ---------------------------------------------------------
     # MATPLOTLIB IMPLEMENTATION (Original)
     # ---------------------------------------------------------
+    if plot_dic is not None:
+        plt.rcParams.update(plot_dic)
     fig, ax = plt.subplots(figsize=figsize)
 
     ax.set_xlim(-0.5, K - 0.5)
@@ -423,6 +423,9 @@ def plot_reactant_product_scatter(
     # Minor ticks (Grid lines at half-integers -0.5, 0.5...)
     ax.set_xticks(np.arange(-0.5, K, 1), minor=True)
     ax.set_yticks(np.arange(-0.5, K, 1), minor=True)
+    ax.xaxis.tick_top()                 
+    ax.xaxis.set_label_position('top')  
+
     
     # Grid settings: Turn Major OFF, Turn Minor ON
     ax.grid(which="major", visible=False)
@@ -435,12 +438,28 @@ def plot_reactant_product_scatter(
         xs, ys,
         c=cs,
         cmap=cmap_name,
-        s=10,
+        s=marker_size,
         alpha=0.8,
         edgecolors="none",
     )
+
+    class OneDecimalScalarFormatter(mticker.ScalarFormatter):
+        def _set_format(self):
+            # Force tick labels to one decimal in mantissa (e.g., 1.2) while keeping ×10^n on top
+            self.format = r'$\mathdefault{%1.1f}$' if self._useMathText else '%1.1f'
+
     cbar = fig.colorbar(sc, ax=ax)
-    cbar.set_label("Performance")
+
+    fmt = OneDecimalScalarFormatter(useMathText=True)
+    fmt.set_powerlimits((0, 0))   # always show scientific notation (×10^n)
+    cbar.formatter = fmt
+    cbar.update_ticks()
+
+    # Exponent placement (vertical colorbar)
+    cbar.ax.yaxis.set_offset_position('left')  # optional
+    cbar.ax.yaxis.get_offset_text().set_va('bottom')
+
+    cbar.set_label("performance")
 
     for (ri, pi) in special_cells:
         rect = Rectangle(
@@ -448,8 +467,8 @@ def plot_reactant_product_scatter(
             1, 1,
             fill=True,
             facecolor="none",
-            hatch="///",
-            linewidth=1.0,
+            hatch="//////",
+            linewidth=0.5,
             edgecolor="black",
             linestyle='--'
         )
@@ -458,12 +477,13 @@ def plot_reactant_product_scatter(
     ax.set_xticklabels(tick_labels, rotation=90)
     ax.set_yticklabels(tick_labels)
 
-    ax.set_xlabel("Products")
-    ax.set_ylabel("Reactants")
+    ax.set_xlabel("products")
+    ax.set_ylabel("reactants")
     ax.set_title(title)
 
     fig.tight_layout()
     plt.show()
+    return fig
 
 def hamming_radius_graph(X_bool: np.ndarray, t: int):
     """ Build a sparse graph of pairs with Hamming distance <= t.
@@ -615,7 +635,9 @@ def plot_topology_graph(G_counts_csr, counts,
                         figsize=(10, 10), 
                         seed=42,
                         title="CRN Topology",
-                        label_percentile=90):
+                        label_percentile=90, 
+                        unique=False, 
+                        crn_ids=None):
     """
     Enhanced plotting function.
     - color_by: 'community', 'degree', 'count', 'value', or 'dual' (Value + Community Edge).
@@ -765,10 +787,15 @@ def plot_topology_graph(G_counts_csr, counts,
         cbar.set_label(label)
 
     # Labels for top nodes
-    if counts is not None:
-        threshold = np.percentile(counts, label_percentile) if len(counts) > 20 else 0
-        labels = {n: str(counts[n]) for n in G.nodes() if counts[n] >= threshold}
-        nx.draw_networkx_labels(G, pos, labels=labels, font_size=8, font_color='black', font_weight='bold', ax=ax)
+    if unique is False:
+        if counts is not None:
+            threshold = np.percentile(counts, label_percentile) if len(counts) > 20 else 0
+            labels = {n: str(counts[n]) for n in G.nodes() if counts[n] >= threshold}
+            nx.draw_networkx_labels(G, pos, labels=labels, font_size=8, font_color='black', font_weight='bold', ax=ax)
+    else:
+        if crn_ids is not None:
+            labels = {n: str(crn_ids[n]) for n in G.nodes()}
+            nx.draw_networkx_labels(G, pos, labels=labels, font_size=8, font_color='black', font_weight='bold', ax=ax)
 
     ax.set_axis_off()
     ax.set_title(f"{title}\n({len(G.nodes)} Unique Topologies)", fontsize=14)
@@ -777,7 +804,7 @@ def plot_topology_graph(G_counts_csr, counts,
 
 def visualize_crn_diversity(crn_list, perf=None, k=5, t=None, 
                             layout_method="spring", label_percentile=90, 
-                            alpha=0.0): # <--- NEW: Alpha parameter
+                            alpha=0.0, unique=False): # <--- NEW: Alpha parameter
     """ 
     Wrapper to process CRN list and plot. 
     Args:
@@ -796,34 +823,38 @@ def visualize_crn_diversity(crn_list, perf=None, k=5, t=None,
         print("Error: Objects in crn_list must implement .get_bool_signature()")
         return
 
-    # 2. Deduplicate and Aggregate Performance
-    unique_sigs, inverse_indices, counts = np.unique(crn_topologies, axis=0, return_inverse=True, return_counts=True)
-    
-    print(f"Found {len(unique_sigs)} unique topologies from {len(crn_list)} samples.")
-
-    max_perf_per_node = None
-    color_mode = "community" # Default
-
-    if perf is not None:
-        perf = np.asarray(perf)
-        if len(perf) != len(crn_list):
-            print("Warning: perf length does not match crn_list length. Ignoring performance coloring.")
-        else:
-            max_perf_per_node = np.full(len(unique_sigs), np.inf)
-            np.minimum.at(max_perf_per_node, inverse_indices, perf)
-            color_mode = "dual" 
-            print("Performance data aggregated (Min Loss per topology).")
-
     # 3. Build Graph (Passing alpha and aggregated performance)
-    G_matrix = build_hamming_graph(unique_sigs, perf=max_perf_per_node, alpha=alpha, t=t, k=k)
+    max_perf_per_node = None
+    color_mode = "dual" # Default
+    if unique is False:
+        # 2. Deduplicate and Aggregate Performance
+        unique_sigs, inverse_indices, counts = np.unique(crn_topologies, axis=0, return_inverse=True, return_counts=True)
+        
+        print(f"Found {len(unique_sigs)} unique topologies from {len(crn_list)} samples.")
+
+        if perf is not None:
+            perf = np.asarray(perf)
+            if len(perf) != len(crn_list):
+                print("Warning: perf length does not match crn_list length. Ignoring performance coloring.")
+            else:
+                max_perf_per_node = np.full(len(unique_sigs), np.inf)
+                np.minimum.at(max_perf_per_node, inverse_indices, perf)
+                color_mode = "dual" 
+                print("Performance data aggregated (Min Loss per topology).")
+        G_matrix = build_hamming_graph(unique_sigs, perf=max_perf_per_node, alpha=alpha, t=t, k=k)
+    else:
+        G_matrix = build_hamming_graph(crn_topologies, perf=perf, alpha=alpha, t=t, k=k)
     
     # 4. Plot
+    counts = [1] * len(crn_list) if unique else counts
     fig = plot_topology_graph(G_matrix, counts, 
-                              node_values=max_perf_per_node, 
+                              node_values=max_perf_per_node if not unique else perf, 
                               color_by=color_mode, 
                               layout_method=layout_method,
                               title="CRN Topological Diversity",
-                              label_percentile=label_percentile)
+                              label_percentile=label_percentile, 
+                              unique=unique, 
+                              crn_ids=list(range(len(crn_list))) if unique else None)
     plt.show()
 
 

@@ -5,6 +5,7 @@ import os
 parent_dir = os.path.abspath(os.path.join(os.getcwd(), '..', '..'))
 sys.path.append(parent_dir)
 print('Working directory set to:', parent_dir)
+task_name = 'stochastic_s3_r5_REINFORCE'
 
 # %%
 # Import general packages
@@ -24,7 +25,6 @@ from RL4CRN.environments.parallel_environments import ParallelEnvironments
 from RL4CRN.environments.serial_environments import SerialEnvironments
 from RL4CRN.agents.reinforce_agent import REINFORCEAgent
 from RL4CRN.policies.add_reaction_by_ordered_index import AddReactionByOrderedIndex
-from RL4CRN.policies.add_reaction_by_ordered_index import AddReactionByOrderedIndex
 from RL4CRN.policies.add_reaction_by_index import AddReactionByIndex
 
 # Import Interface packages
@@ -40,23 +40,24 @@ from RL4CRN.utils.ic import IC
 from RL4CRN.iocrns.reaction_library import construct_mass_action_library
 
 # Import Reward packages
-from RL4CRN.rewards.deterministic import dynamic_tracking_error
+from RL4CRN.rewards.stochastic import dynamic_tracking_error_SSA, robust_tracking_loss_SSA
 
 # %%
 # Set the logger to use Comet
 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-api_key = "o77J6VCMDamustkfJuMXZ2jdV"
+api_key = "vhIR3uyqsKyU4L7SA8fLCfTSC"
 logger = CometLogger(
     api_key=api_key,
-    project="RPA_3species_5rxns_MAK_REINFORCE",        
-    workspace="maurice-filo", 
-    name=f'RPA_3species_5rxns_MAK_REINFORCE_{timestamp}',
+    project=task_name,        
+    workspace="redsnic", 
+    name=f'{task_name}_{timestamp}',
 )
 logger = logger.experiment
 
 # %%
 # Construct the template CRN
-r1 = MassAction(reactant_labels=[], product_labels=['Z_1'], input_channels=['u_1'], params=[1.], params_controllability=[True])
+scale = 3.0
+r1 = MassAction(reactant_labels=[], product_labels=['Z_1'], input_channels=['u_1'], params=[scale], params_controllability=[True])
 r2 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_2'], params=[1.], params_controllability=[True])
 crn_template = IOCRN([r1, r2], output_labels=['X_1'])
 crn_template.compile()
@@ -89,31 +90,31 @@ save_sheet_flag = True                                          # Save the confi
 
 save_filename = timestamp + '.pth'                              # Filename for saving the agent checkpoint
 load_filename = ''                                              # Filename for loading the agent checkpoint
-file_name = "RPA_3species_5rxns_MAK_REINFORCE.xlsx"             # Filename for saving the Excel sheet
+file_name = f"{task_name}.xlsx"             # Filename for saving the Excel sheet
 
 # %%
 # Hyperparameters
 max_added_reactions = 5                             # Maximum number of reactions
-N_CPUs = os.cpu_count()                             # Number of CPUs          
-N = 10*N_CPUs                                       # Number of samples (batch size)    
+N_CPUs = 4 # os.cpu_count()                             # Number of CPUs          
+N = 160                                       # Number of samples (batch size)    
 width = 1024                                        # Width of the neural networks  
 depth = 5                                           # Depth of the neural networks 
 deep_layer_size = 1024*10                           # Size of the deep layer encoding the CRNs
-allow_input_influence = False                      # Allow input influence in the policy
+allow_input_influence = False                       # Allow input influence in the policy
 learning_rate = 1e-4                                # Learning rate for the optimizer 
 hall_of_fame_size = 30                              # Size of the hall of fame  
 entropy_scheduler = {                               # Entropy scheduler parameters 
-    'entropy_weight': 1e-3 , 
+    'entropy_weight': 5e-3, 
     'topk_entropy_weight' : 1.0,
     'remainder_entropy_weight' : 1.0,
     'entropy_update_coefficient': 1, 
     'entropy_schedule': 1000, 
     'minimum_entropy_weight': 0.0
 }
-entropy_weights_per_head = {'structure': 2.0, 'continuous': 1.0, 'discrete': 0.0, 'input_influence': 0.0} 
+entropy_weights_per_head = {'structure': 3.0, 'continuous': 1.0, 'discrete': 0.0, 'input_influence': 0.0} 
 structure_head_temperature = {"target_entropy_ratio_to_max": np.log(5)/np.log(M), "initial_temperature": 1.0, "rate": 0.0, "current_temperature": 1.0}
 risk_scheduler = {                                  # Risk scheduler parameters
-    'risk': 0.9, 
+    'risk': 0.90, 
     'risk_update': 0.0, 
     'max_risk': 1.0, 
     'risk_schedule': 1000
@@ -122,12 +123,24 @@ epoch_num = 300                                     # Number of epochs for train
 render_schedule = 10                                 # Render every # of epochs
 render_mode = {                                     # Mode of the experiment
     'style': 'logger', 
-    'task': 'transients', 
+    'task': 'SSA_transients', 
     'format': 'image',
     'topology': True,
-    'bounds': [2.5]
+    'bounds': [25]
 }
-render_n_best = 10                                  # Number of best CRNs to plot responses for
+# Ordering specific parameters
+ordering_parameters = {
+    'enforce_ordering': False,
+    'constraint_weight' : float('inf')
+}
+# SIL settings
+sil_settings = {
+    'sil_loss_weight': 1.0,
+    'sil_use_adaptive_baseline': False,
+    'sil_baseline_annealing_rate': 0.95
+}
+
+render_n_best = 10                                                     # Number of best CRNs to plot responses for
 render_disregard_percentage = risk_scheduler['risk']                  # Percentage of worst CRNs to disregard in the responses plotting
 
 # Parameter distribution for the reactions added by the agent
@@ -135,15 +148,19 @@ continuous_distribution = {"type": 'lognormal_1D'}
 
 # Time horizon for the simulation
 t_f = 100                                           # Final time for the simulation
-N_t = 1000                                          # Number of time steps
+N_t = 100                                          # Number of time steps
 time_horizon = np.linspace(0, t_f, N_t, dtype=np.float32)
 
 # Construct the IOCRN inputs
-nums = [0.5, 1.0, 1.5]
-u_list = [np.array(u) for u in product(nums, repeat=p)] # list of input combinations, each input is a numpy array of shape (p,)
+nums = [1, 2, 3]
+disturbances = [0.5, 1, 1.5]
+u_list = [np.array(u) for u in product(nums, disturbances)] # list of input combinations, each input is a numpy array of shape (p,)
+
+print(u_list)
 
 # Construct the reference setpoints
-r_list = [np.array([u[0]]) for u in u_list]
+r_list = [np.array([u[0]])*scale for u in u_list]
+print(r_list)   
 
 # Construct the IOCRN initial conditions
 ic = IC(names=species_labels, values=[[0.0, 0.0, 0.0]])
@@ -151,13 +168,14 @@ ic = IC(names=species_labels, values=[[0.0, 0.0, 0.0]])
 # Construct the weights for the performance metric
 w = np.ones(N_t)
 w[(len(w)//5)*4:] = w[(len(w)//5)*4:]*2
-w[:(len(w)//5)] = w[:(len(w)//5)]*0.25
+w[:2*(len(w)//5)] = w[:2*(len(w)//5)]*0.
 w = w[np.newaxis, :]
 
 # Construct the compute reward routine
 def compute_reward(state):
     x0_list = ic.get_ic(state)
-    return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4)
+    # return dynamic_tracking_error_SSA(state, u_list, x0_list, time_horizon, r_list, w, norm=2, LARGE_NUMBER=1e6, max_threads=1024, n_trajectories=1024)
+    return dynamic_tracking_error_SSA(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e3, LARGE_PENALTY=100, max_threads=1024, n_trajectories=1024)
 
 # %%
 if save_sheet_flag:
@@ -174,7 +192,9 @@ if save_sheet_flag:
         "Simulation Time", "Time Steps #",
         "Initial Conditions #", "Input Scenarios#",
         "Continuous Distribution", "Entropy Weights per Head",
-        "Structure Head Temperature"
+        "Structure Head Temperature",
+        "Ordering Enforced",
+        "SIL Settings"
     ]
 
     data_row = [
@@ -188,7 +208,9 @@ if save_sheet_flag:
         render_schedule, hall_of_fame_size,
         t_f, N_t, len(ic.values), len(u_list),
         str(continuous_distribution), str(entropy_weights_per_head),
-        str(structure_head_temperature)
+        str(structure_head_temperature),
+        f"Yes: {ordering_parameters['constraint_weight']}" if ordering_parameters['enforce_ordering'] else "No",
+        str(sil_settings)
     ]
 
     if os.path.exists(file_name):
@@ -255,11 +277,17 @@ structure_head_attributes = {"hidden_size": width, "num_layers": depth}
 rate_head_attributes = {"hidden_size": width, "num_layers": depth}
 input_influence_head_attributes = {"hidden_size": width, "num_layers": depth}
 masks = {"continuous": library.get_parameter_mask(mode="continuous"), "discrete": library.get_parameter_mask(mode="discrete"), "logit": library.get_logit_mask()}
-# policy = AddReactionByOrderedIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, target_set_size=crn_template.num_reactions+max_added_reactions, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head, combinatorial_bias_enabled=True)
-policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
+policy = AddReactionByOrderedIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, target_set_size=crn_template.num_reactions+max_added_reactions, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head,
+                                    combinatorial_bias_enabled=ordering_parameters["enforce_ordering"], constraint_strength=ordering_parameters["constraint_weight"])
+
+if ordering_parameters["enforce_ordering"]:
+    policy = AddReactionByOrderedIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, target_set_size=crn_template.num_reactions+max_added_reactions, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head,
+                                        combinatorial_bias_enabled=ordering_parameters["enforce_ordering"], constraint_strength=ordering_parameters["constraint_weight"])
+else:
+    policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=False, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
 
 # Construct the agent
-agent = REINFORCEAgent(policy, allow_input_influence=False, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device)
+agent = REINFORCEAgent(policy, allow_input_influence=False, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, sil_settings=sil_settings, device=device)
 if load_flag:
     agent.policy.load_state_dict(torch.load(load_filename+'.pth', map_location=device))
 
@@ -278,39 +306,19 @@ if train_flag:
         mult_env.reset()
         for j in range(max_added_reactions):
             observations = mult_env.observe(observer, tensorizer)
-            actions = agent.act(observations, actuator)
-            out = mult_env.step(actions, stepper)
+            actions, raw_actions = agent.act(observations, actuator)
+            out = mult_env.step(actions, stepper, raw_actions=raw_actions)
         rewards = mult_env.get_reward(compute_reward)
-        agent.update(rewards, step_iteration=i)
+
+        # count how many environments were successful (i.e., did not diverge)
+        successful_count = sum(1 for env in mult_env.envs if not env.state.last_task_info.get('has_diverged', False))
+        # Log the number of successful environments
+        logger.log_metric("Successful Environments (%)", successful_count/N, step=i)
+        print(f"Info: in epoch {i}: successful simulation rate {successful_count/N} ({successful_count}/{N})")
+
+        agent.update(rewards, step_iteration=i, hof=mult_env.hall_of_fame, observer=observer, tensorizer=tensorizer, stepper=stepper, use_sil=True, sil_weighting_scheme='uniform', sil_batch_size=None)
         if i % render_schedule == 0:
             mult_env.render(rewards, n_best=render_n_best, disregarded_percentage=render_disregard_percentage, mode=render_mode)
-
-# %%
-# Test the model
-agent.policy.eval()
-mult_env.reset()
-for j in range(max_added_reactions):
-    observations = mult_env.observe(observer, tensorizer)
-    actions = agent.act(observations, actuator)
-    out = mult_env.step(actions, stepper)
-rewards = mult_env.get_reward(compute_reward)
-
-# Gather the CRNs from the environments
-crns = mult_env.gather()
-
-# Sort the CRNs by rewards
-sorted_crns_rewards = sorted(zip(crns, rewards), key=lambda x: x[1])
-
-# %%
-# Plot the results
-n_plot = 100
-ax = None
-for i in range(n_plot):
-    x0_list = ic.get_ic(sorted_crns_rewards[i][0])
-    time_horizon, x_list, y_list, last_task_info = sorted_crns_rewards[i][0].transient_response(u_list, x0_list, time_horizon)
-    fig, ax = sorted_crns_rewards[i][0].plot_transient_response(axes=ax)
-    print(f"IOCRN {i}, Reward: {sorted_crns_rewards[i][1]}")
-    print(sorted_crns_rewards[i][0])
 
 # %%
 hall_of_fame_crns = [env.state for env in mult_env.hall_of_fame]
