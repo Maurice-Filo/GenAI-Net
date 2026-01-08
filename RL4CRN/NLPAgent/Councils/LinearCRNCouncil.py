@@ -17,17 +17,18 @@ class LinearCRNCouncil(CRNDebate):
         self.narrator = NLPAgent("Narrator", 
             role_prompt="You are the NARRATOR. Summarize the Hall of Fame objectively. Do NOT suggest solutions."
                         " Remember that the reactions in the template do not count towards the max reactions allowed and they will be there no matter what. This means you need to pick N additional reactions from the library to add to the template."
-                        " You cannot use any input (like u_1) in the reaction rates you select.",
+                        " You cannot use any input (like u_1) in the reaction rates you select."
+                        " The scores you will see later are LOSS values: lower is better! And remember to describe again the task! Look also for the literature for known motifs.",
             model_name="gemini-3-pro-preview", temperature=0.3)
         
         self.opportunist = NLPAgent("Opportunist", 
-            role_prompt="You are the OPPORTUNIST. Propose 5 conservative modifications. 'Copy smart, don't reinvent.'"
+            role_prompt="You are the OPPORTUNIST. Propose five conservative modifications (full CRNs). 'Copy smart, don't reinvent.'"
                         " Remember that the reactions in the template do not count towards the max reactions allowed and they will be there no matter what. This means you need to pick N additional reactions from the library to add to the template."
                         " You cannot use any input (like u_1) in the reaction rates you select.",
             model_name="gemini-2.5-flash", temperature=0.5)
         
         self.contrarian = NLPAgent("Contrarian", 
-            role_prompt="You are the CONTRARIAN. Propose 5 radical alternatives ignoring safety. However, be still effective, remember your goal!"
+            role_prompt="You are the CONTRARIAN. Propose five radical alternatives ignoring safety (full CRNs). However, be still effective, remember your goal!"
                         " Remember that the reactions in the template do not count towards the max reactions allowed and they will be there no matter what. This means you need to pick N additional reactions from the library to add to the template."
                         " You cannot use any input (like u_1) in the reaction rates you select.",
             model_name="gemini-2.5-flash", temperature=0.9)
@@ -39,11 +40,11 @@ class LinearCRNCouncil(CRNDebate):
             model_name="gemini-2.5-flash", temperature=0.2)
         
         self.player = NLPAgent("Player", 
-            role_prompt="You are the PLAYER. Listen to all the others and synthesize their inputs. Select the best ideas and compile them into 10 candidate CRNs. You can also provide reasoning for your choices and describe how to pick parameters correctly."
+            role_prompt="You are the PLAYER. Listen to all the others and synthesize their inputs. Select the best ideas and compile them into ten candidate CRNs. You can also provide reasoning for your choices and describe how to pick parameters correctly."
                         " Remember that the reactions in the template do not count towards the max reactions allowed and they will be there no matter what. This means you need to pick N additional reactions from the library to add to the template."
                         " You cannot use any input (like u_1) in the reaction rates you select."
                         " You need to specify how to select the rates (the parameter values) for each reaction you choose, and say why. Be precise and use Control Theory concepts."
-                        " You must not select again reactions already present in the template as they will be there no matter what.",
+                        " You must not select again reactions already present in the template as they will be there no matter what. Answer in natural language.",
             model_name="gemini-3-pro-preview", temperature=0.7, response_mime_type="application/json")
         
         self.writer = NLPAgent("Writer", 
@@ -51,6 +52,8 @@ class LinearCRNCouncil(CRNDebate):
                         " Remember that the reactions in the template do not count towards the max reactions allowed and they will be there no matter what. This means you need to pick N additional reactions from the library to add to the template."
                         " You cannot use any input (like u_1) in the reaction rates you select."
                         " You must not select again reactions already present in the template."
+                        " Propose many chemical reaction networks (CRNs) as candidates, each with a set of reaction IDs and parameter values."
+                        # " For fairness, your highest rate must not exceed 10. If you suggest a rate higher than 10, normalize all rates so that the highest is exactly 10."
             ,
             model_name="gemini-2.5-flash", temperature=0.7, response_mime_type="application/json")
 

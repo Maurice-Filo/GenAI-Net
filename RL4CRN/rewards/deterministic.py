@@ -119,3 +119,56 @@ def logic_circuit_reward(crn, u_list, x0_list, time_horizon, r_list, w, norm=1, 
     crn.last_task_info['initial_conditions'] = x0_list
     crn.last_task_info['reward type'] = 'dynamic_tracking_error'
     return performance, crn.last_task_info
+
+
+
+# For latch:
+
+def dynamic_tracking_error_piecewise_logic(crn, u_nested_list, x0_list, nested_time_horizon, r_list, w, norm=1, relative=False, LARGE_NUMBER=1e4):
+    """ Computes the dynamic tracking error for an IOCRN given a list of control inputs, initial states, and reference signals.
+    Args:
+        crn: An IOCRN object with a transient_response method.
+        u_list: A list of control inputs, each of shape (p,).
+        x0_list: A list of initial states, each of shape (n,).
+        time_horizon: The time horizon for the transient response.
+        r_list: A list of reference signals, each of shape (q,).
+        w: A numpy array of weights, shape (q, time_steps).
+        norm: An integer indicating the norm to use for the metric calculation (1 or 2).
+        relative: A boolean indicating whether to compute relative error.
+        LARGE_NUMBER: A large number to handle cases where the CRN does not converge.
+    Returns:
+        performance: A float representing the computed performance metric.
+        last_task_info: A dictionary containing the last task information, including the reward and setpoint. """
+
+    t, x_list, y_list, last_task_info = crn.transient_response_piecewise(u_nested_list, x0_list, nested_time_horizon, LARGE_NUMBER=LARGE_NUMBER)
+    performance = performance_metric_logic(r_list, y_list)
+    crn.last_task_info['reward'] = performance
+    crn.last_task_info['setpoint'] = r_list
+    crn.last_task_info['initial_conditions'] = x0_list
+    crn.last_task_info['reward type'] = 'dynamic_tracking_error'
+    return performance, crn.last_task_info
+
+
+def performance_metric_logic(r_list, y_list):
+    """ Computes the performance metric based on the difference between reference signal r and output y.
+    Args:
+        r_list: A list of reference signals, each of shape (q,).
+        y_list: A list of outputs, each of shape (q, time_steps).
+        relative: A boolean indicating whether to compute relative error.
+    Returns:
+        float: Computed performance metric. """
+    
+    # Check if dimensions match
+    if len(r_list) != len(y_list):
+        raise ValueError(f"Length of reference and output lists must match. Got {len(r_list)} and {len(y_list)}.")
+    if r_list[0].shape[0] != y_list[0].shape[0]:
+        raise ValueError("Reference signal and output must have the same number of dimensions (q).")
+    
+    # Convert lists to numpy arrays
+    r_array = np.stack(r_list)   # shape (list_length, q)
+    y_array = np.stack(y_list)   # shape (list_length, q, time_steps)
+
+    # Compute logic error using 0.5 threshold
+    error = np.abs((r_array[:, :, None] > 0.5).astype(float) - (y_array > 0.5).astype(float))
+    
+    return error.mean()
