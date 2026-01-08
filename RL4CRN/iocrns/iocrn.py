@@ -557,6 +557,166 @@ class IOCRN:
         self.last_task_info['outputs'] = y_list
         return time_horizon, x_list, y_list, self.last_task_info
 
+
+    def transient_response_piecewise(self, u_nested_list, x0_list, nested_time_horizon, LARGE_NUMBER=1e4):
+        """ 
+        Computes the transient response of the IOCRN.
+        
+        The combination of input sequences and initial conditions are taken as the 
+        cartesian product of u_list and x0_list (preserving original logic).
+        
+        However, each 'u' in u_list is now treated as a SEQUENCE of inputs applied 
+        consecutively over the segments defined in time_horizon.
+
+        Arguments:
+        - u_list: A list of LISTS. Each element is a sequence of numpy arrays [u_1, u_2, ... u_k] 
+                representing the inputs for specific time intervals. 
+                Length of the inner list must match len(time_horizon).
+        - x0_list: A list of numpy arrays, each of shape (n,) representing initial conditions.
+        - time_horizon: A list of numpy arrays [t_1, t_2, ... t_k]. 
+                        Each array represents the time points for that specific interval. 
+                        (e.g. [np.linspace(0,10,100), np.linspace(10,20,100)])
+        
+        Returns:
+        - full_time_horizon: numpy array (concatenated time points of all intervals).
+        - x_list: A list of numpy arrays of shape (n, Total_T) representing full state trajectories.
+        - y_list: A list of numpy arrays of shape (q, Total_T) representing output trajectories.
+        - last_task_info: A dictionary containing cached info.
+        """
+
+        # 2. Calculate durations using the correctly identified sequence
+        durations = [t[-1] for t in nested_time_horizon]
+
+        # 3. Calculate cumulative offsets
+        offsets = np.cumsum([0] + durations[:-1])
+
+        # 4. Apply offsets and concatenate
+        shifted_horizons = [t_chunk + offset for t_chunk, offset in zip(nested_time_horizon, offsets)]
+        full_time_horizon = np.concatenate(shifted_horizons)
+
+        # 2. Check Cache (Simplified for brevity, assumes inputs match if lengths match)
+        if (self.last_task_info.get('type') == 'transient response' and 
+            len(self.last_task_info.get('trajectories', [])) == len(u_nested_list) * len(x0_list)):
+            return self.last_task_info['time_horizon'], self.last_task_info['trajectories'], self.last_task_info['outputs'], self.last_task_info
+        
+        if self.num_unknown_params > 0:
+            raise ValueError("The IOCRN has unknown rate constants.")
+
+        # Event function
+        def stop_if_unstable(t, x):
+            max_val = np.max(np.abs(x))
+            if not np.isfinite(max_val): return 0 
+            return LARGE_NUMBER - max_val 
+        stop_if_unstable.terminal = True
+        stop_if_unstable.direction = 0
+
+        x_list = []
+        y_list = []
+
+        # 3. Cartesian Product Loop (Preserving your original structure)
+        for u_sequence, x0_start in product(u_nested_list, x0_list):
+            
+            # Validation: The input sequence length must match the time horizon segments
+            if len(u_sequence) != len(nested_time_horizon):
+                raise ValueError(f"Mismatch: Input sequence has {len(u_sequence)} steps, time_horizon has {len(nested_time_horizon)} segments.")
+
+            current_x0 = x0_start
+            
+            # Temporary lists to hold the pieces of this specific scenario
+            scenario_x_parts = []
+            
+            simulation_failed = False
+            
+            # 4. Sequential Loop: Iterate through the steps of this specific scenario
+            for u_step, t_segment in zip(u_sequence, nested_time_horizon):
+                
+                n_steps = len(t_segment)
+                
+                # If a previous step failed, just fill remaining steps with LARGE_NUMBER
+                if simulation_failed:
+                    x_part = np.full((self.num_species, n_steps), LARGE_NUMBER)
+                    scenario_x_parts.append(x_part)
+                    continue
+
+                if self.solver == 'LSODA':
+                    # Note: t_eval is relative to the segment, assume t_segment contains absolute times or correct relative times
+                    solution = solve_ivp(
+                        lambda t, x: self.rate_function(t, x, u_step), 
+                        (t_segment[0], t_segment[-1]), 
+                        current_x0, 
+                        t_eval=t_segment, 
+                        method="LSODA", 
+                        events=stop_if_unstable, 
+                        atol=self.atol, 
+                        rtol=self.rtol
+                    )
+                    
+                    if solution.status == -1: 
+                        x_part = np.full((self.num_species, n_steps), LARGE_NUMBER)
+                        simulation_failed = True
+                    else:
+                        x_part = solution.y
+                        if solution.status == 1: # Unstable event
+                            simulation_failed = True
+                            current_len = x_part.shape[1]
+                            pad = n_steps - current_len
+                            if pad > 0:
+                                x_part = np.concatenate([x_part, np.full((self.num_species, pad), LARGE_NUMBER)], axis=1)
+                
+                elif self.solver == 'CVODE':
+                    solution = self.solve_with_cvode(
+                        current_x0, t_segment, u_step,
+                        nonneg_idx=np.arange(len(current_x0)), stop_fn=stop_if_unstable
+                    )
+                    
+                    if solution.status < 0 or not solution.raw.success:
+                        x_part = np.full((self.num_species, n_steps), LARGE_NUMBER)
+                        simulation_failed = True
+                    else:
+                        # Interpolate CVODE results to t_segment grid
+                        t_sol = np.asarray(solution.t, dtype=float)
+                        y_sol = np.asarray(solution.y, dtype=float)
+                        x_part = np.empty((self.num_species, n_steps), dtype=float)
+                        
+                        t_last = t_sol[-1]
+                        mask = t_segment <= t_last
+                        mask_rest = ~mask
+                        
+                        for i in range(self.num_species):
+                            x_part[i, mask] = np.interp(t_segment[mask], t_sol, y_sol[i, :])
+                            x_part[i, mask_rest] = LARGE_NUMBER
+                        
+                        if np.any(mask_rest): simulation_failed = True
+
+                else:
+                    raise ValueError(f"Unknown solver '{self.solver}'")
+
+                # Append the result of this step
+                scenario_x_parts.append(x_part)
+                
+                # Update initial condition for the NEXT step (end of this step)
+                if not simulation_failed:
+                    current_x0 = x_part[:, -1]
+
+            # 5. Stitch the scenario together
+            # Concatenate along time axis (axis 1)
+            full_x_scenario = np.concatenate(scenario_x_parts, axis=1)
+            full_y_scenario = full_x_scenario[self.output_idx, :]
+
+            x_list.append(full_x_scenario)
+            y_list.append(full_y_scenario)
+
+        # Store info
+        self.last_task_info = {}
+        self.last_task_info['type'] = 'transient response'
+        self.last_task_info['inputs'] = u_nested_list
+        self.last_task_info['initial conditions'] = x0_list
+        self.last_task_info['time_horizon'] = full_time_horizon
+        self.last_task_info['trajectories'] = x_list
+        self.last_task_info['outputs'] = y_list
+        
+        return full_time_horizon, x_list, y_list, self.last_task_info
+
     # ------------------------ Plotting Methods ------------------------
     def plot_transient_response(self, fig=None, axes=None, alpha=0.1):
         """ Plots the transient response of the IOCRN for each output species.

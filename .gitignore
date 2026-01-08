@@ -3,6 +3,7 @@
 *.png
 *.gif
 *.json
+debate_trainscript*.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -17,8 +17,8 @@ class ExplicitObserver(AbstractObserver):
         - A multi-hot encoding of the inputs controlling the reactions.
         """
         self.iocrn = iocrn
-        reaction_multihot = self.reactions_to_multihot()               # shape (M,)
-        params_cross_multihot = self.params_cross_multihot()          # shape (P,)
+        reaction_multihot = self.reactions_to_multihot()                  # shape (M,)
+        params_cross_multihot = self.params_cross_multihot()              # shape (P,)
         if self.allow_input_observation:
             inputs_multihot = self.inputs_to_multihot()                   # shape (p, C)
             explicit_state = (reaction_multihot, params_cross_multihot, inputs_multihot)

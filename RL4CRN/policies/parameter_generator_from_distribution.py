@@ -122,7 +122,11 @@ class ParameterGeneratorFromDistribution(torch.nn.Module):
                 # Sample from the indpendent distributions and compute log-probabilities of the samples
                 if samples is None:
                     samples = dist.sample()                             # shape: (N, D)
-                log_probs = dist.log_prob(samples.squeeze(-1))          # shape: (N,D)
+
+                eps = 1e-6
+                safe_samples = torch.clamp(samples.clone(), min=eps)
+
+                log_probs = dist.log_prob(safe_samples.squeeze(-1))          # shape: (N,D)
 
                 # Sum the log-probabilities and entropies across dimensions
                 log_probs = log_probs.sum(dim=-1)                       # shape: (N,)
