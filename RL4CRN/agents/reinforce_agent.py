@@ -265,7 +265,10 @@ class REINFORCEAgent(AbstractAgent):
             self.logger.log_metric('Timing: Backward', toc_backward - tic_backward, step=step_iteration)
 
             if sil_loss is not None:
-                self.logger.log_metric('Loss: SIL', sil_loss.item(), step=step_iteration)
+                if isinstance(sil_loss, torch.Tensor):
+                    self.logger.log_metric('Loss: SIL', sil_loss.item(), step=step_iteration)
+                else:
+                    self.logger.log_metric('Loss: SIL', sil_loss, step=step_iteration)
 
         # Clear the lists of logPs and entropies
         self.logPs_sequence.clear()

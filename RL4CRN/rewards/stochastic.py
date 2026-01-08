@@ -63,7 +63,9 @@ def robust_tracking_loss_SSA(crn, u_list, x0_list, time_horizon, r_list, w,
                              n_trajectories=100, max_threads=10000, 
                              norm=2, relative=False, 
                              LARGE_NUMBER=1e4, LARGE_PENALTY=1e4,
-                             lambda_std=0.5):
+                             lambda_std=0.5,
+                             rpa_weight=1.0,
+                             cv_weight=1.0):
 
     # 1. Run Stochastic Simulation
     (t_steps_out, x_mean_list, y_mean_list, 
@@ -113,7 +115,7 @@ def robust_tracking_loss_SSA(crn, u_list, x0_list, time_horizon, r_list, w,
         
         L_precision = lambda_std * mean_cv
 
-    performance = base_error + L_precision
+    performance = rpa_weight * base_error + cv_weight * L_precision
 
     # 3. Update Metadata
     crn.last_task_info['reward'] = performance
