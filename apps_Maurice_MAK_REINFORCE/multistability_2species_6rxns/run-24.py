@@ -48,26 +48,24 @@ timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 api_key = "o77J6VCMDamustkfJuMXZ2jdV"
 logger = CometLogger(
     api_key=api_key,
-    project="RPA_6species_8rxns_MAK_REINFORCE",        
+    project="multistability_2species_6rxns_MAK_REINFORCE",        
     workspace="maurice-filo", 
-    name=f'RPA_6species_8rxns_MAK_REINFORCE_{timestamp}',
+    name=f'multistability_2species_6rxns_MAK_REINFORCE_{timestamp}',
 )
 logger = logger.experiment
 
 # %%
 # Construct the template CRN
-r1 = MassAction(reactant_labels=[], product_labels=['Z_1'], input_channels=['u_1'], params=[1.], params_controllability=[True])
-r2 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_2'], params=[1.], params_controllability=[True])
-r3 = MassAction(reactant_labels=['X_1'], product_labels=['X_1', 'X_2'], input_channels=[None], params=[1.], params_controllability=[True])
-r4 = MassAction(reactant_labels=['X_2'], product_labels=[], input_channels=['u_3'], params=[1.], params_controllability=[True])
-crn_template = IOCRN([r1, r2, r3, r4], output_labels=['X_2'])
+r1 = MassAction(reactant_labels=['X_1'], product_labels=[], input_channels=['u_1'], params=[1.0], params_controllability=[True])
+r2 = MassAction(reactant_labels=['X_2'], product_labels=[], input_channels=[None], params=[1.0], params_controllability=[True])
+crn_template = IOCRN([r1, r2], output_labels=['X_1', 'X_2'])
 crn_template.compile()
 p = crn_template.num_inputs # Number of inputs of the IOCRNs
 print("Template CRN:")
 print(crn_template)
 
 # Construct the library of possible reactions
-species_labels = ['X_1', 'X_2', 'Z_1', 'Z_2', 'Z_3', 'Z_4']
+species_labels = ['X_1', 'X_2']
 library = construct_mass_action_library(species_labels=species_labels, order=2)
 crn_template.set_library_context(library)
 M = len(library.reactions) # Number of possible reactions
@@ -91,13 +89,13 @@ save_sheet_flag = True                                          # Save the confi
 
 save_filename = timestamp + '.pth'                              # Filename for saving the agent checkpoint
 load_filename = ''                                              # Filename for loading the agent checkpoint
-file_name = "RPA_6species_8rxns_MAK_REINFORCE.xlsx"             # Filename for saving the Excel sheet
+file_name = "multistability_2species_6rxns_MAK_REINFORCE.xlsx"             # Filename for saving the Excel sheet
 
 # %%
 # Hyperparameters
-max_added_reactions = 8                                 # Maximum number of reactions
+max_added_reactions = 6                                 # Maximum number of reactions
 N_CPUs = os.cpu_count()                                 # Number of CPUs          
-N = 10*N_CPUs                                            # Number of samples (batch size)    
+N = 10*N_CPUs                                           # Number of samples (batch size)    
 width = 1024                                            # Width of the neural networks  
 depth = 5                                               # Depth of the neural networks 
 deep_layer_size = 1024*10                               # Size of the deep layer encoding the CRNs
@@ -106,8 +104,8 @@ learning_rate = 1e-4                                    # Learning rate for the 
 hall_of_fame_size = 30                                  # Size of the hall of fame  
 entropy_scheduler = {                                   # Entropy scheduler parameters 
     'entropy_weight': 1e-3 ,                            # Global entropy weight
-    'entropy_weight_structure_head': 1.0,               # Entropy weight for the structure head
-    'entropy_weight_continuous_head': 0.5,              # Entropy weight for the continuous parameters head
+    'entropy_weight_structure_head': 30.0,              # Entropy weight for the structure head
+    'entropy_weight_continuous_head': 0.3,              # Entropy weight for the continuous parameters head
     'topk_entropy_weight': 1.0,                         # Entropy weight for the top-k actions
     'remainder_entropy_weight': 1.0,                    # Entropy weight for the remainder actions
     'entropy_update_coefficient': 1,                    # Entropy update coefficient (multiplicative)
@@ -125,17 +123,20 @@ risk_scheduler = {                                      # Risk scheduler paramet
     'max_risk': 1.0,                                    # Maximum risk
     'risk_schedule': 1000                               # Risk schedule (in epochs)
 }
-epoch_num = 300                                         # Number of epochs for training
+epoch_num = 800                                         # Number of epochs for training
 render_schedule = 10                                    # Render every # of epochs
 render_mode = {                                         # Mode of the experiment
     'style': 'logger',                                  
-    'task': 'transients', 
+    'task': 'phase_plot', 
     'format': 'image',
     'topology': True,
-    'bounds': [2.5]
+    'bounds': [1.2, 1.2]
 }
-render_n_best = 3                                       # Number of best CRNs to plot responses for
+render_n_best = 10                                      # Number of best CRNs to plot responses for
 render_disregard_percentage = risk_scheduler['risk']    # Percentage of worst CRNs to disregard in the responses plotting
+sil_settings = {
+    'sil_loss_weight': 1.0
+}
 
 # Parameter distribution for the reactions added by the agent
 continuous_distribution = {"type": 'lognormal_1D'}        
@@ -146,14 +147,24 @@ N_t = 1000                                              # Number of time steps i
 time_horizon = np.linspace(0, t_f, N_t, dtype=np.float32)
 
 # Construct the IOCRN inputs
-nums = [0.5, 1.0, 1.5]
-u_list = [np.array(u) for u in product(nums, repeat=p)] # list of input combinations, each input is a numpy array of shape (p,)
-
-# Construct the reference setpoints
-r_list = [np.array([u[0]]) for u in u_list]
+u_list = [np.array([1.0])]
 
 # Construct the IOCRN initial conditions
-ic = IC(names=species_labels, values=[[0.01, 0.01, 0.01, 0.01, 0.01, 0.01]])
+epsilon = 1e-3
+ic_values_diagonal_1 = [[x/10, x/10 - 0.3] for x in range(3, 13)]
+ic_values_diagonal_2 = [[x/10, x/10 + 0.3] for x in range(0, 10)]
+ic_values_cluster_1 = [ [.9, epsilon], [1, epsilon], [1.1, epsilon], 
+                        [.9, .1], [1, .1], [1.1, .1]]
+ic_values_cluster_2 = [ [epsilon, .9], [epsilon, 1], [epsilon, 1.1], 
+                        [.1, .9], [.1, 1], [.1, 1.1]]
+ic_values = ic_values_diagonal_1 + ic_values_diagonal_2 + ic_values_cluster_1 + ic_values_cluster_2
+ic = IC(names=species_labels, values=ic_values)
+
+# Construct the desired fixed points
+r_list = [np.array([1, 0])] * len(ic_values_diagonal_1) + \
+         [np.array([0, 1])] * len(ic_values_diagonal_2) + \
+         [np.array([1, 0])] * len(ic_values_cluster_1) + \
+         [np.array([0, 1])] * len(ic_values_cluster_2)
 
 # Construct the weights for the performance metric
 w = np.ones(N_t)
@@ -164,13 +175,33 @@ w = w[np.newaxis, :]
 # Construct the compute reward routine
 def compute_reward(state):
     x0_list = ic.get_ic(state)
-    return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4)
+    return dynamic_tracking_error(state, u_list, x0_list, time_horizon, r_list, w, norm=1, relative=False, LARGE_NUMBER=1e4)
+
+# %%
+# Visualize the initial conditions colored by their target class
+ic_crn_template = ic.get_ic(crn_template)
+
+plt.figure(figsize=(6,6))
+for i in range(len(ic_crn_template)):
+    if (r_list[i] == np.array([1, 0])).all():
+        plt.scatter(ic_crn_template[i][0], ic_crn_template[i][1], color='blue', label='Class [1, 0]' if i==0 else "")
+    else:
+        plt.scatter(ic_crn_template[i][0], ic_crn_template[i][1], color='red', label='Class [0, 1]' if i==len(ic_crn_template)//2 else "")
+plt.xlabel('Concentration of X1')
+plt.ylabel('Concentration of X2')
+plt.title('Initial Conditions Colored by Target Fixed Points')
+plt.legend()
+plt.grid()
+plt.show()
 
 # %%
 # Log the code and hyperparameters
 # Log the code of the current file
-current_file_path = os.path.abspath(__file__)
-logger.log_code(file_name=os.path.basename(current_file_path))
+if '__file__' in globals():
+    current_file_path = os.path.abspath(__file__)
+    logger.log_code(file_name=os.path.basename(current_file_path))
+else:
+    print("No __file__ defined; skipping logger.log_code for current file.")
 
 # Log the hyperparameters
 hyperparameters = {
@@ -220,7 +251,7 @@ if save_sheet_flag:
         "Simulation Time", "Time Steps #",
         "Initial Conditions #", "Input Scenarios#",
         "Continuous Distribution", 
-        "Structure Head Temperature"
+        "Structure Head Temperature",
     ]
 
     data_row = [
@@ -234,7 +265,7 @@ if save_sheet_flag:
         render_schedule, hall_of_fame_size,
         t_f, N_t, len(ic.values), len(u_list),
         str(continuous_distribution), 
-        str(structure_head_temperature)
+        str(structure_head_temperature),
     ]
 
     if os.path.exists(file_name):
@@ -305,7 +336,7 @@ entropy_weights_per_head = {'structure': entropy_scheduler['entropy_weight_struc
 policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=allow_input_influence, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
 
 # Construct the agent
-agent = REINFORCEAgent(policy, allow_input_influence=allow_input_influence, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device)
+agent = REINFORCEAgent(policy, allow_input_influence=allow_input_influence, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device, sil_settings=sil_settings)
 if load_flag:
     agent.policy.load_state_dict(torch.load(load_filename+'.pth', map_location=device))
 
@@ -324,10 +355,10 @@ if train_flag:
         mult_env.reset()
         for j in range(max_added_reactions):
             observations = mult_env.observe(observer, tensorizer)
-            actions = agent.act(observations, actuator)
-            out = mult_env.step(actions, stepper)
+            actions, raw_actions = agent.act(observations, actuator)
+            out = mult_env.step(actions, stepper, raw_actions=raw_actions)
         rewards = mult_env.get_reward(compute_reward)
-        agent.update(rewards, step_iteration=i)
+        agent.update(rewards, step_iteration=i, hof=mult_env.hall_of_fame, observer=observer, tensorizer=tensorizer, stepper=stepper, use_sil=True, sil_weighting_scheme='uniform', sil_batch_size=None)
         if i % render_schedule == 0:
             mult_env.render(rewards, n_best=render_n_best, disregarded_percentage=render_disregard_percentage, mode=render_mode)
 
@@ -337,8 +368,8 @@ agent.policy.eval()
 mult_env.reset()
 for j in range(max_added_reactions):
     observations = mult_env.observe(observer, tensorizer)
-    actions = agent.act(observations, actuator)
-    out = mult_env.step(actions, stepper)
+    actions, raw_actions = agent.act(observations, actuator)
+    out = mult_env.step(actions, stepper, raw_actions=raw_actions)
 rewards = mult_env.get_reward(compute_reward)
 
 # Gather the CRNs from the environments

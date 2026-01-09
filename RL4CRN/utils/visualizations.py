@@ -637,12 +637,24 @@ def plot_topology_graph(G_counts_csr, counts,
                         title="CRN Topology",
                         label_percentile=90, 
                         unique=False, 
-                        crn_ids=None):
+                        crn_ids=None, 
+                        plot_dic=None, 
+                        graph_dic=None):
     """
     Enhanced plotting function.
     - color_by: 'community', 'degree', 'count', 'value', or 'dual' (Value + Community Edge).
     """
-    
+    if graph_dic is None:
+        graph_dic = {"fontsize": 8, 
+                     "edgewidth": 0.8,
+                     "nodesize_multiplier": 300,
+                     "nodesize_offset": 50,
+                     "show_colorbar": True,
+                     "innersize_ratio": 0.8,
+                     "inner_node_linewidth": 1.5,
+                     "outer_node_linewidth": 3.0
+                     }
+
     G = nx.from_scipy_sparse_array(G_counts_csr)
     
     # 1. Layout Calculation
@@ -682,7 +694,7 @@ def plot_topology_graph(G_counts_csr, counts,
     show_colorbar = False
     node_colors = "#4285F4"
     node_edge_colors = "white" # Default border
-    node_linewidths = 0.5
+    node_linewidths = graph_dic["inner_node_linewidth"]
     is_dual_mode = False
 
     # 4. Apply Coloring Mode
@@ -692,8 +704,8 @@ def plot_topology_graph(G_counts_csr, counts,
         
         # Use Greyscale for Performance to avoid clashing with Cluster Hue
         # Greys_r: Low Value (Good) = Dark, High Value (Bad) = Light
-        cmap = plt.cm.viridis_r 
-        show_colorbar = True
+        cmap = plt.cm.viridis 
+        show_colorbar = graph_dic["show_colorbar"]
         is_dual_mode = True
         
         partition = get_partition(G)
@@ -706,7 +718,7 @@ def plot_topology_graph(G_counts_csr, counts,
             
             # Map IDs to colors
             node_edge_colors = [edge_cmap(i / num_comms) for i in comm_ids]
-            node_linewidths = 3.0 # Thicker borders for the cluster identity
+            node_linewidths = graph_dic["outer_node_linewidth"] # Thicker borders for the cluster identity
             print("Dual Coloring: Face=Loss (Greyscale), Edge=Cluster (Rainbow) with Black Separator")
         else:
             print("Warning: Could not detect communities for dual coloring.")
@@ -729,6 +741,8 @@ def plot_topology_graph(G_counts_csr, counts,
         show_colorbar = True
 
     # 5. Draw Setup
+    if plot_dic is not None:
+        plt.rcParams.update(plot_dic)
     fig, ax = plt.subplots(figsize=figsize)
     
     # Edge Visualization
@@ -744,10 +758,10 @@ def plot_topology_graph(G_counts_csr, counts,
         else:
             alphas = np.full(len(edges), 0.2)
         edge_colors = [(0, 0, 0, a) for a in alphas]
-        nx.draw_networkx_edges(G, pos, edge_color=edge_colors, width=0.8, ax=ax)
+        nx.draw_networkx_edges(G, pos, edge_color=edge_colors, width=graph_dic["edgewidth"], ax=ax)
     
     # Node Visualization (Size scaling)
-    node_sizes = np.log1p(counts) * 300 + 50
+    node_sizes = np.log1p(counts) * graph_dic["nodesize_multiplier"] + graph_dic["nodesize_offset"]
     
     if is_dual_mode:
         # --- Dual Mode: Two-step drawing for black separator ---
@@ -757,18 +771,18 @@ def plot_topology_graph(G_counts_csr, counts,
                                 node_size=node_sizes,
                                 node_color="none", # Transparent face
                                 edgecolors=node_edge_colors, 
-                                linewidths=node_linewidths, # Thick cluster border
+                                linewidths=graph_dic["outer_node_linewidth"], # Thick cluster border
                                 ax=ax)
         
         # 2. Draw inner face (Performance) with thin black border
         # Scale down size slightly to fit inside the outer border
-        inner_sizes = node_sizes * 0.8
+        inner_sizes = node_sizes * graph_dic["innersize_ratio"]
         sc = nx.draw_networkx_nodes(G, pos, 
                                     node_size=inner_sizes,
                                     node_color=node_colors, 
                                     cmap=cmap, 
                                     edgecolors="black", # The black separator line
-                                    linewidths=0.5,     # Thin separator
+                                    linewidths=graph_dic["inner_node_linewidth"],     # Thin separator
                                     ax=ax)
     else:
         # --- Standard Mode: Single draw ---
@@ -777,7 +791,7 @@ def plot_topology_graph(G_counts_csr, counts,
                                     node_color=node_colors, 
                                     cmap=cmap, 
                                     edgecolors=node_edge_colors, 
-                                    linewidths=node_linewidths,
+                                    linewidths=graph_dic["inner_node_linewidth"],
                                     ax=ax)
     
     if show_colorbar and cmap is not None:
@@ -791,20 +805,20 @@ def plot_topology_graph(G_counts_csr, counts,
         if counts is not None:
             threshold = np.percentile(counts, label_percentile) if len(counts) > 20 else 0
             labels = {n: str(counts[n]) for n in G.nodes() if counts[n] >= threshold}
-            nx.draw_networkx_labels(G, pos, labels=labels, font_size=8, font_color='black', font_weight='bold', ax=ax)
+            nx.draw_networkx_labels(G, pos, labels=labels, font_size=8, font_color='black', ax=ax)
     else:
         if crn_ids is not None:
             labels = {n: str(crn_ids[n]) for n in G.nodes()}
-            nx.draw_networkx_labels(G, pos, labels=labels, font_size=8, font_color='black', font_weight='bold', ax=ax)
+            nx.draw_networkx_labels(G, pos, labels=labels, font_size=graph_dic["fontsize"], font_color='black', ax=ax)
 
     ax.set_axis_off()
-    ax.set_title(f"{title}\n({len(G.nodes)} Unique Topologies)", fontsize=14)
+    # ax.set_title(f"{title}\n({len(G.nodes)} Unique Topologies)", fontsize=14)
     
     return fig
 
 def visualize_crn_diversity(crn_list, perf=None, k=5, t=None, 
                             layout_method="spring", label_percentile=90, 
-                            alpha=0.0, unique=False): # <--- NEW: Alpha parameter
+                            alpha=0.0, unique=False, plot_dic=None, graph_dic=None, figsize=(10,10)): # <--- NEW: Alpha parameter
     """ 
     Wrapper to process CRN list and plot. 
     Args:
@@ -854,8 +868,12 @@ def visualize_crn_diversity(crn_list, perf=None, k=5, t=None,
                               title="CRN Topological Diversity",
                               label_percentile=label_percentile, 
                               unique=unique, 
-                              crn_ids=list(range(len(crn_list))) if unique else None)
+                              crn_ids=list(range(len(crn_list))) if unique else None, 
+                              plot_dic=plot_dic,
+                              graph_dic=graph_dic, 
+                              figsize=figsize)
     plt.show()
+    return fig
 
 
 ### --- Multi IC trainsient response plot --- ###
