@@ -188,6 +188,63 @@ class ReactionLibrary:
 
         self.add_reactions(other_library.reactions)
         self.prepare_lookup_tables()
+
+    def find_ID(self, reactions):
+        """ Finds the IDs of one or more reactions in the library.
+        Arguments:
+        - reactions: a Reaction instance, or a list of Reaction instances.
+        Returns:
+        - A list of IDs corresponding to the provided reactions. If a reaction is not found, its ID is set to None. """
+        
+        if isinstance(reactions, Reaction):
+            reactions = [reactions]
+        
+        ids = []
+        for reaction in reactions:
+            found_id = None
+            for r in self.reactions:
+                if r == reaction:
+                    found_id = r.ID
+                    break
+            ids.append(found_id)
+        return ids
+
+    def remove_reactions(self, reactions, remove_by='ID'):
+        """ Removes one or more reactions from the library.
+        Arguments:
+        - reactions: a Reaction instance, a list of Reaction instances, or a list of reaction IDs to remove.
+        - remove_by:    'ID' to remove by reaction ID, 
+                        'instance' to remove by Reaction instance, 
+                        'reactant' to remove by reactant labels, TODO: Not implemented yet
+                        'product' to remove by product labels. TODO: Not implemented yet """
+        
+        # Normalize input to a list of IDs, Reaction instances, or list of reactant/product labels
+        if isinstance(reactions, Reaction):
+            reactions = [reactions]
+        
+        # Determine the set of IDs to remove based on the specified method
+        match remove_by:
+            case 'ID':
+                ids_to_remove = set(reactions)
+            case 'instance':
+                ids_to_remove = set(self.find_ID(reactions))
+            case 'reactant':
+                raise NotImplementedError("Removal by reactant labels is not implemented yet.")
+            case 'product':
+                raise NotImplementedError("Removal by product labels is not implemented yet.")
+            case _:
+                raise ValueError(f"Unknown remove_by option: {remove_by}. Supported options are 'ID', 'instance', 'reactant', 'product'.")
+
+        # Remove reactions with the specified IDs   
+        self.reactions = [reaction for reaction in self.reactions if reaction.ID not in ids_to_remove]
+
+        # Reset IDs
+        for new_id, reaction in enumerate(self.reactions):
+            reaction.set_ID(new_id)
+        self.last_ID = len(self.reactions)
+
+        # Prepare lookup tables for efficient parameter access
+        self.prepare_lookup_tables()
     
      
 # def construct_mass_action_library(species_labels, order=2):
