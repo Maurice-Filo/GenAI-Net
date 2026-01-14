@@ -860,7 +860,7 @@ def visualize_crn_diversity(crn_list, perf=None, k=5, t=None,
         G_matrix = build_hamming_graph(crn_topologies, perf=perf, alpha=alpha, t=t, k=k)
     
     # 4. Plot
-    print_labels = plot_dic.get("print_labels", False) if plot_dic else False
+    print_labels = graph_dic.get("print_labels", False) if graph_dic else False
     crn_ids = list(range(len(crn_list))) if unique else None
     counts = [1] * len(crn_list) if unique else counts
     fig = plot_topology_graph(G_matrix, counts, 
