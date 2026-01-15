@@ -69,6 +69,22 @@ print(crn_template)
 # Construct the library of possible reactions
 species_labels = ['X_1', 'X_2', 'Z_1', 'Z_2', 'Z_3', 'Z_4']
 library = construct_mass_action_library(species_labels=species_labels, order=2)
+
+# Remove specific reactions from the library
+ids_to_remove = [2, 8, 13, 14, 15, 16, 17, 29, 30, 31, 32, 33, 34, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 
+51, 52, 53, 54, 56, 61, 63, 64, 65, 66, 67, 84, 89, 94, 95, 96, 97, 98, 111, 116, 121, 122, 123, 124, 125, 138, 
+143, 148, 149, 150, 151, 152, 165, 170, 175, 176, 177, 178, 179, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 
+200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 218, 220, 221, 222, 223, 224, 
+225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 245, 246, 252, 256, 
+257, 258, 259, 260, 273, 279, 283, 284, 285, 286, 287, 300, 306, 307, 308, 309, 310, 311, 312, 313, 314, 326, 327, 
+333, 334, 335, 336, 337, 338, 339, 340, 341, 352, 353, 354, 361, 362, 363, 364, 392, 410, 419, 438, 446, 466, 473, 
+489, 495, 500, 501, 502, 503, 504, 516, 522, 527, 528, 529, 530, 531, 543, 549, 554, 555, 556, 557, 558, 570, 576, 
+581, 582, 583, 584, 585, 597, 603, 608, 609, 610, 611, 612, 624, 630, 635, 636, 637, 638, 639, 651, 657, 662, 663, 
+664, 665, 666, 678, 684, 689, 690, 691, 692, 693, 705, 711, 716, 717, 718, 719, 720, 732, 738, 743, 744, 745, 746, 747]
+library.remove_reactions(ids_to_remove, remove_by='ID')
+print(f"Removed {len(ids_to_remove)} reactions by ID.")
+
+# Set the library context of the template CRN
 crn_template.set_library_context(library)
 M = len(library.reactions) # Number of possible reactions
 K = library.get_num_parameters() # Total number of parameters in all the reactions of the library
@@ -136,6 +152,9 @@ render_mode = {                                         # Mode of the experiment
 }
 render_n_best = 3                                       # Number of best CRNs to plot responses for
 render_disregard_percentage = risk_scheduler['risk']    # Percentage of worst CRNs to disregard in the responses plotting
+sil_settings = {
+    'sil_loss_weight': 1.0
+}
 
 # Parameter distribution for the reactions added by the agent
 continuous_distribution = {"type": 'lognormal_1D'}        
@@ -305,7 +324,7 @@ entropy_weights_per_head = {'structure': entropy_scheduler['entropy_weight_struc
 policy = AddReactionByIndex(M, K, p, encoder_attributes, deep_layer_size, structure_head_attributes, rate_head_attributes, input_influence_head_attributes, allow_input_influence=allow_input_influence, masks=masks, device=device, continuous_distribution=continuous_distribution, entropy_weights_per_head=entropy_weights_per_head)
 
 # Construct the agent
-agent = REINFORCEAgent(policy, allow_input_influence=allow_input_influence, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device)
+agent = REINFORCEAgent(policy, allow_input_influence=allow_input_influence, logger=logger, learning_rate=learning_rate, entropy_scheduler=entropy_scheduler, risk_scheduler=risk_scheduler, device=device, sil_settings=sil_settings)
 if load_flag:
     agent.policy.load_state_dict(torch.load(load_filename+'.pth', map_location=device))
 
@@ -324,10 +343,10 @@ if train_flag:
         mult_env.reset()
         for j in range(max_added_reactions):
             observations = mult_env.observe(observer, tensorizer)
-            actions = agent.act(observations, actuator)
-            out = mult_env.step(actions, stepper)
+            actions, raw_actions = agent.act(observations, actuator)
+            out = mult_env.step(actions, stepper, raw_actions=raw_actions)
         rewards = mult_env.get_reward(compute_reward)
-        agent.update(rewards, step_iteration=i)
+        agent.update(rewards, step_iteration=i, hof=mult_env.hall_of_fame, observer=observer, tensorizer=tensorizer, stepper=stepper, use_sil=True, sil_weighting_scheme='uniform', sil_batch_size=None)
         if i % render_schedule == 0:
             mult_env.render(rewards, n_best=render_n_best, disregarded_percentage=render_disregard_percentage, mode=render_mode)
 
@@ -337,8 +356,8 @@ agent.policy.eval()
 mult_env.reset()
 for j in range(max_added_reactions):
     observations = mult_env.observe(observer, tensorizer)
-    actions = agent.act(observations, actuator)
-    out = mult_env.step(actions, stepper)
+    actions, raw_actions = agent.act(observations, actuator)
+    out = mult_env.step(actions, stepper, raw_actions=raw_actions)
 rewards = mult_env.get_reward(compute_reward)
 
 # Gather the CRNs from the environments
