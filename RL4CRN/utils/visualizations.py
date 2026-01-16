@@ -330,7 +330,7 @@ def plot_reactant_product_scatter(
                 color=cs,
                 colorscale=cmap_name,
                 showscale=True,
-                colorbar=dict(title="Performance"),
+                colorbar=dict(title="loss"),
                 opacity=0.8
             ),
             text=hover_texts,
@@ -459,7 +459,7 @@ def plot_reactant_product_scatter(
     cbar.ax.yaxis.set_offset_position('left')  # optional
     cbar.ax.yaxis.get_offset_text().set_va('bottom')
 
-    cbar.set_label("performance")
+    cbar.set_label("loss")
 
     for (ri, pi) in special_cells:
         rect = Rectangle(
