@@ -238,3 +238,49 @@ def oscillation_metrics(y_list, t, t0, f_list=None, mean_list=None):
 
     r1 = np.mean(r1_list) if len(r1_list) else 0.0
     return frequency_error, mean_error, damping, r1, peaks_flag
+
+def compute_frequency(y_list, t, t0):
+    """ Computes the fundamental frequencies of oscillations in the output signals.
+    Args:
+    - y_list: A list of outputs, each of shape (1, time_steps).
+    - t: A 1D numpy array representing the time vector.
+    - t0: A float representing the time after which to start considering peaks.
+    Returns:
+    - estimated_frequencies: A numpy array of estimated frequencies, shape (list_length, 1)."""
+    
+    # Check if dimensions match
+    if 1 != y_list[0].shape[0]:
+            raise ValueError("Reference signal and output must have the same number of dimensions.")
+    
+    # Focus on the time after t0
+    time_mask = t >= t0
+    t = t[time_mask]
+    y_list = [y[:, time_mask] for y in y_list]
+
+    # Compute the peaks of the output signals and the temporal means
+    peaks_indices_list = []
+    y_mean_list = []
+    for y in y_list:
+        yy = np.squeeze(y)
+        dyn = float(np.max(yy) - np.min(yy)) if yy.size else 0.0
+        prom = max(0.01, 0.05 * dyn)  # 5% of dynamic range (with epsilon floor)
+        peaks_indices_list.append(find_peaks(yy, prominence=prom)[0])
+        y_mean_list.append(np.mean(yy))
+
+    # Compute the frequencies from the peaks
+    estimated_frequencies = []
+    damping_metrics = []
+    peaks_flag = True
+    for peaks_indices, y in zip(peaks_indices_list, y_list):
+        if len(peaks_indices) < 2:
+            estimated_frequencies.append(0.0)
+            damping_metrics.append(0.0)
+            peaks_flag = False
+        else:
+            peak_times = t[peaks_indices]
+            periods = np.diff(peak_times)
+            avg_period = np.mean(periods)
+            estimated_frequencies.append(1.0 / avg_period if avg_period > 0 else 0.0)
+
+    estimated_frequencies = np.array(estimated_frequencies).reshape(-1, 1)  # shape (list_length, 1)
+    return estimated_frequencies
