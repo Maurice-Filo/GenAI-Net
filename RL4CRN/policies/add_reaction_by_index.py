@@ -1,3 +1,43 @@
+r"""
+Neural-network policies for adding reactions to an IOCRN.
+
+This module contains policy networks that map a *tensorized IOCRN observation* to a
+distribution over **actions** that extend the CRN by adding one reaction.
+
+In the default “add reaction by index” formulation, an action is a dictionary:
+
+
+- `reaction index` (int):, which library reaction to add next
+- `continuous parameters` (list[float]): sampled continuous parameters (masked per reaction)
+- `discrete parameters` (list[int]): | None,
+- `parameters` (array-like): concatenation of continuous+discrete (if any)
+
+    
+The policy factorizes the joint action distribution into a *structure* term and
+(optional) *parameter* terms:
+
+$$\pi(a | s) = \pi_{struct}(r | s) \cdot \pi_{cont}(\theta_c | s, r) \cdot \pi_{disc}(\theta_d | s, r, \theta_c)$$
+
+Log-probabilities and entropies returned by the policy correspond to this factorization:
+
+$$\log \pi(a|s) = \log \pi_{struct}(r|s) + \log \pi_{cont}(\theta_c|s,r) + \log \pi_{disc}(\theta_d|s,r,\theta_c)$$
+
+$$H(\pi)       = w_s H(\pi_{struct}) + w_c H(\pi_{cont}) + w_d H(\pi_{disc}) \quad  \text{(weighted per head)}$$
+
+Masking is used to:
+- forbid selecting reactions already present in the IOCRN (structure logits masked to -∞),
+- forbid sampling parameters that do not exist for the chosen reaction (dimension masks),
+- forbid invalid discrete-category combinations when using a flattened logit space (logit masks).
+
+Temperature scaling can be applied to the structure logits to control exploration:
+
+$$
+    \pi_{struct}(r|s) = \text{softmax}\left(\frac{z_r(s)}{T}\right)
+$$
+
+where T may be adapted online to target a desired entropy ratio.
+"""
+
 import torch
 from RL4CRN.utils.ffnn import FFNN
 from torch.distributions import Categorical, LogNormal
@@ -6,13 +46,43 @@ from RL4CRN.policies.parameter_generator_from_distribution import ParameterGener
 import numpy as np
 
 class AddReactionByIndex(torch.nn.Module):
-    """ A policy that generates a reaction by its index to an IOCRN in batch mode.
-        The policy consists of a neural network with multiple heads that outputs the reaction structure, 
-        the reaction parameters (continuous and discrete, if applicable), and the input influence (if 
-        applicable). The reaction structure is represented as a categorical distribution over the reactions 
-        in the indexed set, from which a reaction is sampled. The reaction parameters are generated from 
-        specified distributions (e.g., log-normal for continuous parameters and categorical for discrete 
-        parameters) using separate heads. #TODO The input influence generation is not implemented yet. """
+    r"""
+    Policy network that samples *one reaction addition* for each element of a batch of IOCRNs.
+
+    The policy has an encoder + multiple “heads”:
+
+    - **Encoder**: maps the observation vector `state` to a learned embedding `h`.
+    - **Structure head**: produces logits over `M` library reactions, then samples a reaction index.
+    - **Continuous parameter generator** (optional): samples continuous parameters for the chosen reaction.
+    - **Discrete parameter generator** (optional): samples discrete parameters for the chosen reaction.
+
+    The action distribution factorizes as:
+
+    $$\pi(a|s) = \pi_{struct}(r|s) \cdot \pi_{cont}(\theta_c|s,r) \cdot \pi_{disc}(\theta_d|s,r,\theta_c)$$
+
+    where:
+
+    - $r$ is the reaction index (0..M-1),
+    - $\theta_c$ are continuous parameters (e.g. LogNormal),
+    - $\theta_d$ are discrete parameters (e.g. Categorical).
+
+    Notes:
+    *State layout* (no input-influence observation):
+        state ∈ R^{N×(M+K)}
+
+    - state[:, :M]  : multi-hot “reactions present” indicator
+    - state[:, M:]  : flattened parameter vector (0 where not present)
+
+    If `allow_input_influence=True`, the expected state layout is larger
+    (includes additional per-input parameter influence features). This path is
+    partially scaffolded but not implemented end-to-end in the current code.
+
+    Returns from `forward`:
+
+    - sampled action dictionaries (unless `action` is provided),
+    - log-probabilities (per batch element),
+    - entropies (per batch element, weighted per head).
+    """
     def __init__(self, num_reactions, num_parameters, num_inputs, 
                  encoder_attributes, deep_layer_size, structure_head_attributes, parameter_head_attributes, 
                  input_influence_head_attributes, masks=None,
@@ -21,26 +91,61 @@ class AddReactionByIndex(torch.nn.Module):
                  entropy_weights_per_head=None,
                  structure_head_temperature={"target_entropy_ratio_to_max": 1.0, "initial_temperature": 1.0, "rate": 0.0, "current_temperature": 1.0},
                  allow_input_influence=False, device=None):
-        """ Initializes the AddReactionByIndex policy.
-        Arguments:
-        - num_reactions: total number of reactions to select from (assumed to be the same for all IOCRNs in the batch).
-        - num_parameters: total number of parameters (continuous + discrete) across all possible reactions.
-        - num_inputs: number of inputs in the IOCRN (assumed to be the same for all IOCRNs in the batch).
-        - encoder_attributes: a dictionary containing the attributes of the encoder neural network (hidden_size, num_layers).
-        - deep_layer_size: size of the deep layer representation of the IOCRN.
-        - structure_head_attributes: a dictionary containing the attributes of the reaction structure head neural network (hidden_size, num_layers).
-        - parameter_head_attributes: a dictionary containing the attributes of the reaction parameter head neural network (hidden_size, num_layers).
-        - input_influence_head_attributes: a dictionary containing the attributes of the input influence head neural network (hidden_size, num_layers).
-        - masks: a dictionary containing the masks for the continuous parameters, discrete parameters, and logits (default is None, which means no masks are applied). The keys are:
-            - 'continuous': a binary numpy array of shape (num_reactions, max_num_continuous_parameters) indicating the presence of continuous parameters for each reaction.
-            - 'discrete': a binary numpy array of shape (num_reactions, max_num_discrete_parameters) indicating the presence of discrete parameters for each reaction.
-            - 'logit': a binary numpy array of shape (num_reactions, total_num_categories_for_all_discrete_parameters) indicating the valid logits for the discrete parameters for each reaction.   
-        - continuous_distribution: a dictionary specifying the type of the continuous parameter distribution (default is log-normal).
-        - discrete_distribution: a dictionary specifying the type and categories of the discrete parameter distribution (default is categorical).
-        - entropy_weights_per_head: a dictionary specifying the entropy weight for each head (structure, continuous, discrete, input_influence). If None, default weights of 1 are used for all heads.
-        - structure_head_temperature: a dictionary specifying the temperature schedule for the structure head logits (target_entropy_ratio_to_max, initial_temperature, rate, current_temperature).
-        - allow_input_influence: if True, the policy will include an input influence head (default is False).
-        - device: device to run the policy on (default is None, which uses CPU). """
+        """
+        Initialize the AddReactionByIndex policy.
+
+        Args:
+            num_reactions : int
+                Number of candidate reactions in the library (denoted M).
+            num_parameters : int
+                Size of the flattened global parameter vector across the library (denoted K).
+                This corresponds to the “explicit” parameterization used by observers/tensorizers.
+            num_inputs : int
+                Number of IO inputs (denoted p). Only relevant when using input-influence features.
+            encoder_attributes : dict
+                Configuration for the encoder MLP (`hidden_size`, `num_layers`).
+            deep_layer_size : int
+                Dimensionality of the encoder output embedding h(s).
+            structure_head_attributes : dict
+                Configuration for the structure head MLP (`hidden_size`, `num_layers`).
+            parameter_head_attributes : dict
+                Configuration for parameter generator backbones (`hidden_size`, `num_layers`).
+            input_influence_head_attributes : dict
+                Reserved for a future input-influence head (currently not implemented).
+            masks : dict or None
+                Optional masks derived from the reaction library:
+                - 'continuous': float mask of shape (M, max_num_continuous_params)
+                - 'discrete'  : float mask of shape (M, max_num_discrete_params)
+                - 'logit'     : bool mask of shape (M, total_num_discrete_combinations)
+                These masks are used to ensure only existing parameters/logits are used for each reaction.
+            continuous_distribution : dict
+                Continuous parameter distribution spec passed to ParameterGeneratorFromDistribution
+                (e.g. {"type": "lognormal", ...}). The policy sets `dim` automatically from masks.
+            discrete_distribution : dict
+                Discrete parameter distribution spec (e.g. {"type": "categorical", "categories": ...}).
+                The policy sets `dim` automatically from masks. Current implementation assumes
+                the same categories for each discrete dimension.
+            entropy_weights_per_head : dict or None
+                Entropy weights for each head. Keys: {'structure','continuous','discrete','input_influence'}.
+                Used to form a weighted entropy signal:
+                    H_total = Σ_i w_i H_i
+            structure_head_temperature : dict
+                Temperature schedule state for the structure head. Expected keys:
+                - target_entropy_ratio_to_max
+                - initial_temperature
+                - rate
+                - current_temperature
+                The logits are scaled as z/T before constructing the Categorical distribution.
+            allow_input_influence : bool
+                If True, the observation and architecture include additional features/heads for
+                input influence. (Currently not implemented.)
+            device : torch.device or None
+                Device where parameters and tensors should live.
+
+        Raises:
+            NotImplementedError
+                If `allow_input_influence=True` (input-influence head is not implemented).
+        """
 
         super().__init__()
 
@@ -132,27 +237,66 @@ class AddReactionByIndex(torch.nn.Module):
         self.entropy_weights_per_head = entropy_weights_per_head if entropy_weights_per_head is not None else {'structure': 1, 'continuous': 1, 'discrete': 1, 'input_influence': 1}
                   
     def forward(self, state, mode='full', action=None, structure_temp=None): 
-        """ Generates an action (reaction structure, parameters and input influence) given the observation of the state received from the observer.
+        """
+        Sample actions (or score provided actions) for a batch of IOCRN observations.
+
         Args:
-        - state (torch.Tensor): The observation (state) of the IOCRN. Shape: (N, M + (p+1)*K)), where N is the batch size, M is the number of reactions in the library, p is the number of inputs in the IOCRN, and K is the total number of parameters in the IOCRN. 
-        The first M entries correspond to the multi-hot encoding of the reactions in the IOCRN, the next K entries correspond to the reaction parameters (0 if the reaction is not present), and the last K*p entries correspond to the multi-hot encoding of the parameters influenced by each input.
-        - mode (str): The mode of the policy. Can be 'full' or 'partial'. Default is 'full'.
-        The 'full' mode considers both the reaction structure and the reaction parameters.
-        The 'partial' mode considers only the reaction parameters, assuming the reaction structure is given.
-        - action (list): A list of dictionaries containing the actions in the batch. Each dictionary contains:
-            - 'reaction index': The index of the reaction to be added (if mode is 'full').
-            - 'parameters': A list of the reaction parameters (continuous and discrete, if applicable).
-            - 'continuous parameters': A list of the continuous parameters (if applicable).
-            - 'discrete parameters': A list of the discrete parameters (if applicable).
-            If action is provided, the policy will compute only the log probabilities of the provided actions (used for computing the probability of an external action). Default is None.
+            state : torch.Tensor
+                Batched observation tensor of shape (N, D).
+                For `allow_input_influence=False`, D = M + K and the layout is:
+
+                - `state[:, :M]` : multi-hot indicator of reactions already present
+                - `state[:, M:]` : flattened parameters (0 for absent reactions)
+                The method asserts that the input contains no NaNs.
+            mode : {"full", "partial"}
+
+                - `full`: sample reaction structure and parameters.
+                - `partial`: intended for parameter-only decisions given a fixed structure
+                (not implemented in current code).
+            action : list[dict] or None
+                If provided, the policy **does not sample**; it computes log π(action|state)
+                for the given batch of actions (used e.g. in SIL replay / scoring).
+                Each dict must include at least:
+
+                - `reaction index`
+                - `continuous parameters` (if continuous generator exists)
+                - `discrete parameters` (if discrete generator exists)
+            structure_temp : float or None
+                If provided, overrides the structure-head temperature `T` used for this call.
+
         Returns:
-        - actions (list): A list of dictionaries containing the actions in the batch. Each dictionary contains:
-            - 'reaction index': The index of the sampled reaction (if mode is 'full').
-            - 'parameters': A list of the sampled reaction parameters (continuous and discrete, if applicable).
-            - 'continuous parameters': A list of the sampled continuous parameters (if applicable).
-            - 'discrete parameters': A list of the sampled discrete parameters (if applicable).
-        - log_probabilities (torch.Tensor): The log probability of the actions in the batch. Shape: (N,).
-        - entropies (torch.Tensor): The weighted entropy of the actions in the batch. Shape: (N,). """
+        - If `action is None`:
+            - `actions` : list[dict]
+                Sampled actions, one per batch element.
+            - `log_probabilities` : torch.Tensor
+                Log-probabilities per batch element, shape (N,).
+                Computed as the sum of head log-probabilities:
+                    log π(a|s) = log π_struct + log π_cont + log π_disc (+ log π_input_influence)
+            - `entropies` : torch.Tensor
+                Weighted entropy per batch element, shape (N,):
+                    H = w_s H_struct + w_c H_cont + w_d H_disc
+        - If `action is not None`:
+            - `log_probabilities` : torch.Tensor
+                Log-probabilities of the provided actions, shape (N,).
+
+        Implementation details:
+            **Structure sampling with masking**
+            Let z(s) be the structure logits (N×M). Reactions already present are masked:
+                z_masked = z(s) with z_masked[r_present] = -∞
+            Then temperature scaling is applied:
+                z_T = z_masked / T
+            and a Categorical distribution is formed:
+                r ~ Categorical(logits=z_T)
+
+            **Adaptive temperature (training only)**
+                When sampling (action is None) in training mode, the current temperature is nudged
+                based on the observed mean structure entropy relative to the maximum entropy log(M).
+
+            **Parameter generation**
+                Continuous and discrete parameters are generated conditionally using
+                `ParameterGeneratorFromDistribution`, and are masked so that nonexistent parameters
+                are zeroed out and/or omitted from the returned per-sample lists.
+        """
 
         # Validate the input has no NaNs
         assert state.isnan().sum() == 0, "Input contains NaN values."

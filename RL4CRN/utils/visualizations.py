@@ -1,3 +1,17 @@
+"""
+Plotting and topology-analysis utilities for IOCRN / RL4CRN experiments.
+
+This module provides visualization helpers for:
+
+- reaction-pattern usage across many networks (reactant→product heatmaps and scatters),
+- topology/diversity graphs built from boolean CRN signatures (Hamming-distance graphs),
+- ensemble trajectory plots for top-performing networks, and
+- compact visualization of logic targets (truth tables).
+
+Several functions support both publication-style matplotlib output and optional
+interactive Plotly rendering for exploratory analysis.
+"""
+
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -17,50 +31,56 @@ def plot_reactant_product_heatmap(
     figsize=(8, 7),
 ):
     """
-    Build and plot a reactant→product complex heatmap directly from a list of iocrns.
+    Build and plot a reactant→product complex heatmap from a list of IOCRNs.
 
-    Parameters
-    ----------
-    iocrns : list
-        List of reaction network objects. Each must have an attribute
-        `reactions`, which is an ordered list. Each reaction must have:
-          - reaction.reactant_labels : list[str]
-          - reaction.product_labels  : list[str]
-        where these lists represent a complex (with repetition, order aligned
-        with `species_labels`).
+    The heatmap counts how often each *reactant complex* maps to each *product complex*
+    across the provided networks, ignoring the first `num_reactions_template` reactions
+    in each IOCRN (treated as fixed/template). Template reactant→product cells are
+    highlighted with a hatched outline.
 
-    species_labels : list of str
-        Species names (e.g. ['X_1', 'Z_1', 'Z_2']). Complexes are built from
-        these species.
+    A *complex* is represented by a multiset of species labels (with repetition allowed),
+    e.g. ['X_1', 'X_1', 'Z_1'] corresponds to X_1:2 + Z_1:1. All complexes of size
+    0..`max_order` over `species_labels` are generated (including the empty complex).
 
-    max_order : int
-        Maximum complex size. All complexes (multisets) of sizes 0..max_order
-        over `species_labels` are generated, including the empty complex [].
+    Args:
+        iocrns : list
+            List of reaction network objects. Each must have an attribute `reactions`
+            (ordered list). Each reaction must have:
+            - reaction.reactant_labels : list[str]
+            - reaction.product_labels  : list[str]
+            The labels should be sorted consistently with `species_labels` and allow
+            repetition to encode stoichiometry.
 
-    num_reactions_template : int, optional
-        Number of initial reactions in each iocrn to treat as template reactions.
-        They are NOT counted in the heatmap, but their cells are highlighted
-        with a hatched box.
+        species_labels : list[str]
+            Species names used to enumerate all possible complexes.
 
-    title : str, optional
-        Title of the plot.
+        max_order : int
+            Maximum complex size. Complexes of sizes 0..max_order are included.
 
-    cmap_name : str, optional
-        Name of a matplotlib sequential colormap ('YlGnBu', 'Blues', 'Greys', ...).
+        num_reactions_template : int, optional
+            Number of initial reactions in each IOCRN that are treated as template
+            reactions (not counted). Their cells are marked with hatching.
 
-    max_ticks : int, optional
-        Maximum number of tick labels shown on each axis. Ticks are thinned
-        uniformly if the number of complexes exceeds this.
+        title : str, optional
+            Plot title.
 
-    figsize : tuple, optional
-        Figure size (width, height) for matplotlib.
+        cmap_name : str, optional
+            Name of a matplotlib sequential colormap.
 
-    Behavior
-    --------
-    - Zero cells (no non-template reactions with that pattern) are rendered white.
-    - Nonzero cells are colored with `cmap_name` and annotated with their count.
-    - Cells corresponding to template reactions are outlined with a hatched box.
-    - x-axis: product complexes; y-axis: reactant complexes.
+        max_ticks : int, optional
+            Max tick labels shown on each axis. Labels are uniformly thinned if needed.
+
+        figsize : tuple, optional
+            Matplotlib figure size.
+
+    Returns:
+        None, The function displays the plot via matplotlib and does not return a value.
+
+    Raises:
+        ValueError
+            If any reaction's reactant or product complex is not found among the
+            generated complexes (usually indicates a mismatch in `species_labels`
+            or `max_order`).
     """
 
     # --- generate complexes (multisets up to max_order) ---
@@ -211,8 +231,75 @@ def plot_reactant_product_scatter(
     marker_size=8,
 ):
     """
-    Plots a scatter map of reactants vs products indices.
-    If use_plotly=True, generates an interactive plot where hovering shows the CRN.
+    Plot a reactant→product scatter map where each non-template reaction is a point.
+
+    Each reaction contributes one point at integer coordinates:
+      - x = index(product_complex)
+      - y = index(reactant_complex)
+    Complexes are enumerated as all multisets of sizes 0..`max_order` over
+    `species_labels` (including the empty complex). Points are jittered by
+    `jitter_scale` to reduce overplotting. Points are colored by per-network
+    performance values (`perf`), so all reactions from the same IOCRN share the
+    same color.
+
+    Template reactions (first `num_reactions_template` reactions in each IOCRN)
+    are not plotted; their cells are instead marked (matplotlib: hatched boxes,
+    Plotly: dashed rectangles).
+
+    Args:
+        iocrns : list
+            List of IOCRN-like objects with `.reactions`. Each reaction must provide:
+            - reaction.reactant_labels : list[str]
+            - reaction.product_labels  : list[str]
+
+        perf : array-like
+            Performance value per IOCRN (same length as `iocrns`). Lower/higher is not
+            interpreted here; it is used directly for coloring.
+
+        species_labels : list[str]
+            Species names used to enumerate complexes.
+
+        max_order : int
+            Maximum complex size used to build the complex index.
+
+        num_reactions_template : int, optional
+            Number of initial reactions treated as templates (excluded from scatter).
+
+        title : str, optional
+            Plot title.
+
+        cmap_name : str, optional
+            Colormap name for point coloring (matplotlib or Plotly colorscale).
+
+        max_ticks : int, optional
+            Max tick labels shown on each axis (labels are uniformly thinned).
+
+        figsize : tuple, optional
+            Figure size. If Plotly is used, this is interpreted in "matplotlib inches"
+            and converted approximately to pixels.
+
+        jitter_scale : float, optional
+            Uniform jitter range added to both x and y coordinates.
+
+        use_plotly : bool, optional
+            If True, use Plotly for an interactive scatter plot with rich hover text.
+            If False, use matplotlib.
+
+        plot_dic : dict, optional
+            Matplotlib rcParams override dictionary (used only when `use_plotly=False`).
+
+        marker_size : float, optional
+            Scatter marker size (matplotlib points^2 or Plotly marker size).
+
+    Returns:
+        matplotlib.figure.Figure or None
+            If `use_plotly=False`, returns the matplotlib Figure. If `use_plotly=True`,
+            renders the Plotly figure and returns None.
+
+    Raises:
+        ValueError
+            If `perf` length does not match `iocrns`, or if complexes are not found
+            in the generated complex list (mismatch in `species_labels` / `max_order`).
     """
     # --- checks ---
     perf = np.asarray(perf, dtype=float)
@@ -486,8 +573,29 @@ def plot_reactant_product_scatter(
     return fig
 
 def hamming_radius_graph(X_bool: np.ndarray, t: int):
-    """ Build a sparse graph of pairs with Hamming distance <= t.
-    Returns a scipy.sparse CSR with weights = Hamming counts (integers). """
+    """
+    Build a sparse graph connecting all pairs within a Hamming distance threshold.
+
+    This function constructs a sparse neighbor graph where an undirected edge
+    exists between two boolean signatures if their Hamming distance is <= `t`.
+
+    Internally it uses scikit-learn's radius neighbor graph with the normalized
+    Hamming distance in [0, 1], then rescales back to Hamming counts.
+
+    Args:
+        X_bool (np.ndarray): 
+            Boolean or {0,1} array of shape (n_samples, n_bits). Each row is a topology
+            signature.
+
+        t (int): 
+            Hamming distance threshold in *bit counts* (0..n_bits).
+
+    Returns:
+        scipy.sparse.csr_matrix
+            CSR sparse matrix of shape (n_samples, n_samples) with nonzero entries
+            for edges where distance <= t. Values are Hamming distances in counts
+            (stored as float for downstream NetworkX compatibility).
+    """
 
     X_bool = np.asarray(X_bool, dtype=np.uint8)  # {0,1}
     n, d = X_bool.shape
@@ -501,10 +609,38 @@ def hamming_radius_graph(X_bool: np.ndarray, t: int):
 
 def plot_sparse_distance_graph(G_counts_csr, counts, title="Topological Diversity Graph of IOCRNs",
                                figsize=(7,7), with_edge_labels=False, seed=42):
-    """ Plot a sparse distance graph.
-    - G_counts_csr: CSR matrix, weight = Hamming count (<= t)
-    - counts: per-node sizes (e.g., frequency)
-    Returns: matplotlib Figure. """
+    """
+    Plot a sparse distance graph (typically from Hamming thresholds).
+
+    Nodes represent unique topologies. Edge weights are interpreted as distances.
+    For the spring layout, distances are inverted to act as attraction strengths.
+
+    Args:
+        G_counts_csr : scipy.sparse.csr_matrix
+            Sparse adjacency with edge weights representing distances (e.g. Hamming
+            counts). Zero entries indicate no edge.
+
+        counts : array-like
+            Node sizes/labels, typically frequency counts per unique topology. Must
+            have length equal to number of nodes.
+
+        title : str, optional
+            Plot title.
+
+        figsize : tuple, optional
+            Matplotlib figure size.
+
+        with_edge_labels : bool, optional
+            If True, draw edge labels showing integer distances. This can be slow for
+            large graphs.
+
+        seed : int, optional
+            Random seed for layout reproducibility.
+
+    Returns:
+        matplotlib.figure.Figure
+            The created matplotlib figure.
+    """
     
     G = nx.from_scipy_sparse_array(G_counts_csr)  # weight = distance (Hamming count)
 
@@ -544,9 +680,37 @@ def plot_sparse_distance_graph(G_counts_csr, counts, title="Topological Diversit
     return fig
 
 def topology_graph(crn_list, t=10, figsize=(7,7), with_edge_labels=False):
-    """ Build unique boolean signatures from crn_list, make a sparse Hamming-≤t graph, and plot it.
-    Assumes each `crn` has a .get_bool_signature() -> 1D boolean/0-1 array.
-    Returns: matplotlib Figure """
+    """
+    Build and plot a topology diversity graph from a list of CRNs.
+
+    Each CRN is expected to implement:
+
+      - crn.get_bool_signature() -> 1D boolean/{0,1} array
+
+    The function:
+
+    1. extracts signatures,
+    2. collapses duplicates and counts frequencies,
+    3. builds a sparse graph connecting signatures within Hamming distance <= t,
+    4. plots the resulting graph.
+
+    Args:
+        crn_list : list
+            List of CRN/IOCRN objects with `.get_bool_signature()`.
+
+        t : int, optional
+            Hamming distance threshold (bit counts) for edge inclusion.
+
+        figsize : tuple, optional
+            Matplotlib figure size.
+
+        with_edge_labels : bool, optional
+            Whether to draw distance labels on edges (may be slow).
+
+    Returns:
+        matplotlib.figure.Figure
+            The created matplotlib figure.
+    """
     
     # Stack signatures; get uniques and their counts (which set node sizes/labels)
     crn_topologies = np.stack([crn.get_bool_signature() for crn in crn_list]).astype(bool)
@@ -572,12 +736,37 @@ from sklearn.manifold import MDS
 import community.community_louvain as community_louvain # pip install python-louvain (optional)
 
 def build_hamming_graph(X_bool: np.ndarray, perf=None, alpha=0.0, t: int = None, k: int = 5):
-    """ 
-    Builds a graph from boolean signatures.
-    If perf and alpha > 0 are provided, edge weights (distances) are penalized 
-    by the difference in performance.
-    
-    Distance_new(u,v) = Hamming(u,v) * (1 + alpha * |Perf(u) - Perf(v)|)
+    """
+    Build a sparse distance graph from boolean signatures using Hamming distance.
+
+    Two modes are supported:
+
+    - k-NN graph (if `k` is provided): connect each node to its k nearest neighbors.
+    - radius graph (if `t` is provided): connect all nodes within Hamming distance <= t.
+
+    Optionally, edge distances can be *stretched* by performance gaps:
+        dist_new(u,v) = dist_hamming(u,v) * (1 + alpha * |perf[u] - perf[v]|)
+    This can make high/low performing regions separate more clearly in layouts.
+
+    Args:
+        X_bool : np.ndarray
+            Boolean or {0,1} array of shape (n_samples, n_bits).
+
+        perf : array-like or None, optional
+            Per-node performance values aligned with rows of `X_bool`.
+
+        alpha : float, optional
+            Strength of performance-based stretching. If 0.0, no stretching is applied.
+
+        t : int or None, optional
+            Hamming radius threshold in counts. Used if `k` is None.
+
+        k : int or None, optional
+            Number of neighbors for k-NN graph. If provided, takes precedence over `t`.
+
+    Returns:
+        scipy.sparse.csr_matrix
+            Sparse matrix with edge weights representing (possibly stretched) distances.
     """
     X_bool = np.asarray(X_bool, dtype=np.uint8)
     n, d = X_bool.shape
@@ -641,8 +830,66 @@ def plot_topology_graph(G_counts_csr, counts,
                         plot_dic=None, 
                         graph_dic=None):
     """
-    Enhanced plotting function.
-    - color_by: 'community', 'degree', 'count', 'value', or 'dual' (Value + Community Edge).
+    Plot a topology graph with flexible coloring and layout options.
+
+    The input sparse matrix is interpreted as a distance graph. Layout uses
+    inverse-distance attraction for spring-style layouts (or falls back as needed).
+
+    Coloring modes:
+
+    - 'community': color nodes by detected communities (Louvain/greedy modularity).
+    - 'value': color nodes by `node_values` (e.g. min loss per topology).
+    - 'count': color nodes by log1p(counts).
+    - 'dual': face colored by `node_values` and border colored by community id.
+
+    Args:
+        G_counts_csr : scipy.sparse.csr_matrix
+            Sparse adjacency with edge weights as distances.
+
+        counts : array-like
+            Per-node counts used for node sizing (and optionally labels).
+
+        node_values : array-like or None, optional
+            Per-node scalar values used for coloring in 'value' or 'dual' mode.
+
+        layout_method : str, optional
+            Layout method identifier. Currently uses spring-like layouts by default.
+            ('mds' name is accepted but may fall back depending on graph properties.)
+
+        color_by : str, optional
+            One of {'community', 'degree', 'count', 'value', 'dual'}.
+            Note: 'degree' is reserved but not explicitly implemented here; it will
+            behave like the default if not set up.
+
+        figsize : tuple, optional
+            Matplotlib figure size.
+
+        seed : int, optional
+            Random seed for layout reproducibility.
+
+        title : str, optional
+            Plot title.
+
+        label_percentile : float, optional
+            Percentile threshold for showing node labels (based on `counts`) when
+            `unique=False`.
+
+        unique : bool, optional
+            If True, assumes each node corresponds to a unique CRN instance (so counts
+            are typically all ones) and labels can use `crn_ids`.
+
+        crn_ids : array-like or None, optional
+            Optional IDs to label nodes when `unique=True`.
+
+        plot_dic : dict or None, optional
+            Matplotlib rcParams updates applied before plotting.
+
+        graph_dic : dict or None, optional
+            Plot styling configuration (node size multipliers, linewidths, etc.).
+
+    Returns:
+        matplotlib.figure.Figure
+            The created matplotlib figure (not shown automatically here).
     """
     if graph_dic is None:
         graph_dic = {"fontsize": 8, 
@@ -819,17 +1066,56 @@ def plot_topology_graph(G_counts_csr, counts,
 def visualize_crn_diversity(crn_list, perf=None, k=5, t=None, 
                             layout_method="spring", label_percentile=90, 
                             alpha=0.0, unique=False, plot_dic=None, graph_dic=None, figsize=(10,10)): # <--- NEW: Alpha parameter
-    """ 
-    Wrapper to process CRN list and plot. 
-    Args:
-        crn_list: List of IOCRN objects.
-        perf: Optional list/array of performance scores corresponding to crn_list.
-        k: Neighbors for k-NN graph.
-        t: Radius for radius graph.
-        alpha: Reward-weighting coefficient. 
-               If > 0, edges between nodes with different performance are stretched.
-               High alpha (e.g. 10.0) creates distinct clusters for high/low performance.
     """
+    High-level wrapper to visualize IOCRN topological diversity.
+
+    Extracts boolean signatures from CRNs, builds a sparse Hamming-distance graph
+    (k-NN or radius), optionally stretches edges by performance differences, and
+    plots the resulting topology map.
+
+    Expected CRN interface:
+
+      - crn.get_bool_signature() -> 1D boolean/{0,1} array
+
+    Args:
+        crn_list : list
+            List of CRN/IOCRN objects with `.get_bool_signature()`.
+
+        perf : array-like or None, optional
+            Per-CRN performance values. If `unique=False`, performance is aggregated
+            per unique topology by taking the minimum loss for that topology.
+
+        k : int, optional
+            Number of neighbors for k-NN graph construction (used if `t` is None).
+
+        t : int or None, optional
+            Hamming radius threshold in counts. If provided, radius graph is used.
+
+        layout_method : str, optional
+            Layout method forwarded to `plot_topology_graph`.
+
+        label_percentile : float, optional
+            Controls which nodes get labels (based on `counts`) when `unique=False`.
+
+        alpha : float, optional
+            Performance stretch coefficient. If > 0 and `perf` is provided, edges are
+            multiplied by (1 + alpha * |perf_u - perf_v|).
+
+        unique : bool, optional
+            If False, signatures are deduplicated into unique topologies.
+            If True, each CRN is treated as its own node.
+
+        plot_dic, graph_dic : dict or None, optional
+            Plot configuration dictionaries forwarded to plotting.
+
+        figsize : tuple, optional
+            Matplotlib figure size.
+
+    Returns:
+        matplotlib.figure.Figure or None
+            The created matplotlib figure, or None if signatures cannot be extracted.
+    """
+
     # 1. Extract Signatures
     try:
         crn_topologies = np.stack([crn.get_bool_signature() for crn in crn_list]).astype(bool)
@@ -900,18 +1186,53 @@ def plot_trajectory_ensemble(
     highlight_best=True
 ):
     """
-    Simulates (or retrieves cached) and plots an ensemble of trajectories for the top-performing CRNs.
-    Colors trajectories by their loss value and highlights the global best.
-    Arranges scenarios in a square-ish grid layout. Distinct species use different line styles.
+    Plot an ensemble of trajectories for the top-performing IOCRNs.
+
+    Networks are sorted by `crn.last_task_info['reward']` (ascending assumed best),
+    and the top `n_top` are simulated (or retrieved from cache if available).
+    For each input scenario, trajectories from all selected networks are rendered
+    as a LineCollection colored by loss value.
+
+    Caching behavior:
+
+    - If `crn.last_task_info` contains cached transient response fields
+      (type == 'transient response', plus outputs/time_horizon), those trajectories
+      are reused.
+    - Otherwise, trajectories are simulated via `crn.transient_response(...)`.
 
     Args:
-        all_iocrns: List of IOCRN objects.
-        ic: Initial Condition object.
-        u_list: List of input scenarios.
-        time_horizon: Time array for simulation (used if re-simulation is needed).
-        n_top: Number of top CRNs to plot.
-        cmap_name: Colormap for the ensemble lines.
-        highlight_best: If True, plots the #1 CRN in thick black lines.
+        all_iocrns : list
+            List of IOCRN objects.
+
+        ic : object
+            Initial condition helper with method `ic.get_ic(crn)` returning x0_list.
+
+        u_list : list
+            List of input scenarios passed to the CRN simulator.
+
+        time_horizon : np.ndarray
+            Time grid for simulation (and/or matching cached trajectories).
+
+        n_top : int, optional
+            Number of best networks to include.
+
+        figsize : tuple, optional
+            Matplotlib figure size.
+
+        cmap_name : str, optional
+            Colormap used to color trajectories by loss (default reversed so low loss
+            is brighter).
+
+        alpha_min, alpha_max : float, optional
+            Alpha range used to fade worse trajectories (higher loss -> lower alpha).
+
+        highlight_best : bool, optional
+            If True, overlays the best network trajectories (currently red dashed).
+
+    Returns
+    -------
+    None
+        Displays the plot via matplotlib.
     """
     
     # 1. Sort by Loss (Ascending: Best -> Worst)
@@ -1090,13 +1411,37 @@ def plot_trajectory_ensemble(
 
 def plot_truth_table(u_list, r_list, title='Truth Table for Target Logic Function', figsize=(6, 4), silent=False):
     """
-    Plots an improved heatmap of the truth table / logic function targets.
+    Plot a heatmap representation of a logic truth table (target outputs).
+
+    Inputs are displayed along the x-axis as tuples (e.g. (0, 1, 0)).
+    Outputs are displayed along the y-axis:
+
+    - If r_list is shape (N,), a single row "Output" is shown.
+    - If r_list is shape (N, 1), it is treated as a single output row.
+    - If r_list is shape (N, M), it is transposed to (M, N) and each output is a row.
+
+    Each cell is annotated with the numeric value (integer if near-integer, else
+    2-decimal float). A colorbar indicates output intensity.
 
     Args:
-        u_list: List of input combination vectors (e.g., [[0, 0], [0, 1], ...]).
-        r_list: List of output values (targets). Can be scalars or arrays.
-        title: Plot title.
-        figsize: Tuple for figure dimensions.
+        u_list : list
+            List of input combinations. Each element can be a list/array/scalar.
+
+        r_list : list or np.ndarray
+            Target outputs aligned with u_list.
+
+        title : str, optional
+            Plot title.
+
+        figsize : tuple, optional
+            Matplotlib figure size.
+
+        silent : bool, optional
+            If True, does not call plt.show() (useful in notebooks/pipelines).
+
+    Returns:
+        matplotlib.figure.Figure
+            The created figure (useful for saving).
     """
     
     # 1. Prepare Data

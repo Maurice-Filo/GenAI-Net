@@ -1,26 +1,56 @@
+"""
+Serial multi-environment evaluation.
+
+This module defines `SerialEnvironments`, a subclass of
+`RL4CRN.environments.abstract_multi_environments.AbstractMultiEnvironments`
+that evaluates rewards for multiple environments sequentially (no parallelism).
+
+This is useful for:
+
+- debugging and deterministic profiling,
+- small batch sizes where multiprocessing overhead dominates.
+"""
+
 import time
 import bisect
 from RL4CRN.environments.abstract_multi_environments import AbstractMultiEnvironments
 
 class SerialEnvironments(AbstractMultiEnvironments):
+    """Multi-environment manager with serial reward evaluation."""
+
     def __init__(self, envs, hall_of_fame_size, logger=None):
-        """
-        Initialize the serilal environments with a list of environments.
+        """Initialize the serial environments wrapper.
+
         Args:
-            envs (list): A list of CRN environment instances.
-            hall_of_fame_size (int): The size of the hall of fame to keep track of the best rewards.
-            logger (Logger, optional): An optional logger for logging metrics.
+            envs: List of CRN environment instances.
+            hall_of_fame_size: Maximum number of environments stored in the hall
+                of fame (0 disables hall of fame).
+            logger: Optional logger for metrics.
         """
         super().__init__(envs, hall_of_fame_size, logger=logger)
 
     def get_reward(self, routine):
-        """
-        Get the reward from the routine based on the current state of all environments in serial.
+        """Evaluate rewards for all environments sequentially.
+
+        The provided `routine` is applied to each environment's state in a Python
+        loop. The routine is expected to return a tuple `(reward, task_info)` for
+        each state.
+
+        Note:
+            Unlike `RL4CRN.environments.parallel_environments.ParallelEnvironments`,
+            this method does not explicitly write `task_info` back into
+            `env.state.last_task_info` as it is expected to be handled by the routine itself (default).
+
         Args:
-            routine (function): A function that takes an environment state and returns a reward.
+            routine: Callable taking an environment state and returning
+                `(reward, task_info)`.
+
         Returns:
-            rewards_list: A list of rewards obtained from the routine for each environment.
-            last_task_info_list: A list of information about the last task performed in each environment.
+            Sequence of reward values, one per environment.
+
+        Side Effects:
+            - Logs `'Reward Time'` if a logger is available.
+            - Adds all environments to the hall of fame (if enabled).
         """
         tic_reward = time.time()
         rewards_list, last_task_info_list = zip(*[routine(env.state) for env in self.envs])

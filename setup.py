@@ -7,5 +7,11 @@ setuptools.setup(
    author=['Maurice Filo', 'Nicolo Rossi'],
    author_email=['maurice.filo@bsse.ethz.ch', 'nicolo.rossi@bsse.ethz.ch'],
    install_requires=['wheel', 'torch', 'gymnasium', 'numpy', 'matplotlib', 'tqdm', 'scipy', 'openpyxl', 'pytorch_lightning', 'comet-ml', 'torchrl', 'networkx', 'seaborn', 'joblib', 'scikit-learn', 'scikit-sundae', 'python-louvain', ],
-   packages=setuptools.find_packages()
+   packages=setuptools.find_packages(),
+   extras_require={
+        "docs": [
+            "mkdocs-material",
+            "mkdocstrings[python]>=0.18",
+        ],
+    },
 )

@@ -1,3 +1,29 @@
+"""
+Single-environment wrapper for CRN design via reinforcement learning.
+
+This module defines `Environment`, a lightweight environment wrapper with
+a Gym-like interface tailored to chemical reaction networks (CRNs). The
+environment maintains a mutable CRN state initialized from a template and allows
+an agent to *add reactions* up to a fixed budget.
+
+Core loop:
+    - `reset` clones the CRN template into the current state.
+    - `step` applies an action to the current state via a provided
+      *stepper* and increments the reaction budget counter.
+    - The environment returns `(state, done)` where `done` indicates whether the
+      maximum number of added reactions has been reached.
+
+Action semantics:
+    The environment itself does not interpret actions. Instead, it delegates
+    state updates to a `stepper` object with a `step(state, action)` method
+    (see `RL4CRN.agent2env_interface.abstract_stepper.AbstractStepper`).
+
+Logging and rendering:
+    `render` supports a number of plotting/logging tasks driven by a
+    `mode` dictionary. In `'logger'` mode, plots are logged via the provided
+    logger as either figures or PNG images.
+"""
+
 from io import BytesIO
 from matplotlib import pyplot as plt
 from RL4CRN.utils.visualizations import plot_truth_table
@@ -5,19 +31,29 @@ import numpy as np
 from copy import deepcopy
 
 class Environment():
+    """Gym-like CRN environment based on adding reactions to a template.
+
+    Args:
+        crn_template: CRN object used as the initial template. Must provide
+            `clone()` and should expose plotting methods used by `render`
+            (e.g., `plot_transient_response`, `plot_phase_portrait`, etc.).
+        max_added_reactions: Maximum number of reactions that can be added before
+            the environment signals termination (`done=True`).
+        logger: Optional logger used by `render` in `'logger'` mode.
+            Expected to provide methods such as `log_text`, `log_figure`, and
+            `log_image`.
+        logger_schedule: Frequency of logging updates (stored for downstream use;
+            not actively enforced in the current implementation).
+
+    Attributes:
+        state: Current CRN state (a clone of `crn_template`, then mutated).
+        num_added_reactions: Number of actions applied since last reset.
+        actions_taken: List of environment actions applied via `step`.
+        raw_actions_taken: Optional list of raw policy actions (if provided to
+            `step`).
     """
-    Custom Environment that follows gym interface
-    This is the basic environment for CRNs.
-    """
+
     def __init__(self, crn_template, max_added_reactions, logger=None, logger_schedule=1):
-        """
-        Initialize the CRN environment with a template and maximum number of reactions.
-        Args:
-            crn_template (CRN object): The template for the CRNs to be generated.
-            max_added_reactions (int): The maximum number of reactions allowed to be added to the CRN template.
-            logger (Logger, optional): An optional logger for logging metrics.
-            logger_schedule (int, optional): The frequency of logging updates.
-        """
         super(Environment, self).__init__()
         self.crn_template = crn_template
         self.state = self.crn_template.clone()
@@ -29,7 +65,16 @@ class Environment():
         self.raw_actions_taken = []
 
     def clone(self):
-        """ Create a deep copy of the environment. """
+        """Create a deep copy of the environment.
+
+        The clone includes:
+            - a clone of the template and current state,
+            - the current reaction count,
+            - copies of `actions_taken` and `raw_actions_taken`.
+
+        Returns:
+            A new `Environment` instance with duplicated internal state.
+        """
         base = Environment(
             crn_template=self.crn_template.clone(),
             max_added_reactions=self.max_added_reactions,
@@ -43,7 +88,13 @@ class Environment():
         return base
 
     def reset(self):
-        """ Reset the state of the environment to an initial state by copying the CRN template. """
+        """Reset the environment state to the template.
+
+        This clears the reaction counter and stored action histories.
+
+        Returns:
+            The reset CRN state (clone of the template).
+        """
         self.state = self.crn_template.clone()
         self.num_added_reactions = 0
         self.actions_taken = []
@@ -51,6 +102,27 @@ class Environment():
         return self.state
 
     def step(self, action, stepper, raw_action=None):
+        """Apply an action to the CRN state via a stepper.
+
+        The `stepper` is responsible for mutating the current state given the
+        action. After applying the action, the environment increments
+        `num_added_reactions` and returns a termination flag indicating whether
+        the reaction budget is exhausted.
+
+        Args:
+            action: Environment action to apply (typically a reaction or a
+                reaction-like object).
+            stepper: Object providing `step(state, action)` that mutates the
+                state in-place.
+            raw_action: Optional raw policy action (stored in `raw_actions_taken`
+                if provided). Useful for algorithms that require access to the
+                policy outputs (e.g., self-imitation learning).
+
+        Returns:
+            Tuple `(state, done)` where:
+                - `state` is the updated CRN state.
+                - `done` is True if `num_added_reactions >= max_added_reactions`.
+        """
 
         stepper.step(self.state, action)
         self.num_added_reactions += 1  
@@ -70,46 +142,83 @@ class Environment():
         return self.state, done
     
     def get_action(self, index):
-        """
-        Get the action taken at a specific index.
+        """Return the environment action taken at a given step index.
+
         Args:
-            index (int): The index of the action to retrieve.
+            index: Index into `actions_taken`.
+
         Returns:
-            action: The action taken at the specified index.
+            The action stored at the specified index.
+
+        Raises:
+            IndexError: If `index` is out of range.
         """
         return self.actions_taken[index]
     
     def get_raw_action(self, index):
-        """
-        Get the raw action taken at a specific index.
+        """Return the raw policy action stored at a given step index.
+
         Args:
-            index (int): The index of the raw action to retrieve.
+            index: Index into `raw_actions_taken`.
+
         Returns:
-            raw_action: The raw action taken at the specified index.
+            The raw action stored at the specified index.
+
+        Raises:
+            IndexError: If `index` is out of range.
         """
         return self.raw_actions_taken[index]
     
     def get_reward(self, routine):
-        """
-        Get the reward from the routine based on the current state of the environment.
+        """Compute a reward (or loss) for the current CRN state.
+
+        The `routine` is expected to evaluate the current state and return a
+        structure whose first element is a tuple `(reward, last_task_info)`.
+        This method extracts the scalar reward component and returns it.
+
         Args:
-            routine (function): A function that takes the current state and returns a tuple (reward, last_task_info).
+            routine: Callable taking the current state and returning an iterable
+                whose first element is `(reward, last_task_info)`.
+
         Returns:
-            rewards (float): The reward obtained from the routine.
-            last_task_info (dict): Information about the last task performed.
+            Scalar reward value (as produced by `routine`).
+
+        Notes:
+            The `last_task_info` returned by the routine is not propagated by this
+            method. In most workflows it is expected to be stored inside
+            `self.state.last_task_info` by the routine/state implementation.
         """
         rewards, last_task_info = routine(self.state)[0]
         return rewards
 
     def render(self, mode={'style': 'human', 'task': 'transients', 'format': 'figure'}, ID=None):
-        """
-        Render the current state of the environment.
+        """Render or log diagnostics for the current CRN state.
+
+        Rendering behavior is controlled by a `mode` dictionary. Supported cases
+        include interactive plotting (`'human'`) and logging plots to a logger
+        (`'logger'`).
+
         Args:
-            mode (dict): A dictionary specifying the rendering style and task.
-                - 'style': 'human' for interactive display, 'logger' for logging to a file.
-                - 'task': 'transients' for transient response, 'rank' for matrix rank.
-                - 'format': 'figure' or 'image' for the output format.
-            ID (str, optional): An identifier for the CRN, used in logging.
+            mode: Dictionary describing rendering behavior. Typical keys:
+            
+                - `style`: `'human'` or `'logger'`.
+                - `task`: Diagnostic task. Supported values in this implementation
+                  include `'transients'`, `'phase_plot'`, `'rank'`,
+                  `'transients + dose-response'`, `'transients + frequency content'`,
+                  `'transients + logic'`, `'SSA_transients'`.
+                - `format`: `'figure'` to log matplotlib figures directly, or
+                  `'image'` to log PNG buffers.
+                Some tasks also consume optional keys such as `t0`, `bounds_freq`,
+                or `scale`.
+            ID: Optional identifier used when naming logged artifacts.
+
+        Returns:
+            None.
+
+        Side Effects:
+            - In `'human'` mode, opens matplotlib windows (depending on backend).
+            - In `'logger'` mode, logs text/figures/images via `self.logger`.
+            - Creates and closes matplotlib figures.
         """
         match mode:
             case {'style': 'human'}:

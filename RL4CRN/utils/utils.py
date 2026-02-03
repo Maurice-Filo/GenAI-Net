@@ -1,17 +1,51 @@
+"""
+General-purpose utilities for RL4CRN.
+
+This module collects small, reusable helpers that are shared across the project:
+
+- scalar performance metrics for tracking tasks (`performance_metric`)
+- batch encodings for discrete selections (`batch_multi_hot`)
+- combinatorial helpers (`cartesian_prod`)
+- convenience printing (`print_task_info`)
+- oscillation-specific diagnostics (`oscillation_metrics`)
+
+The functions are intentionally framework-light (NumPy/Torch/Scipy only) and are
+written to be called from environments, policies, and evaluation scripts.
+"""
+
 import torch
 import numpy as np
 from scipy.signal import find_peaks
 
 def performance_metric(r_list, y_list, w, norm=1, relative=False):
-    """ Computes the performance metric based on the difference between reference signal r and output y.
+    """
+    Compute a weighted tracking error between reference signals and output trajectories.
+
+    This metric compares a list of reference vectors ``r_list`` (one per rollout/task)
+    to a list of output trajectories ``y_list`` over time, and aggregates the weighted
+    error across batch, outputs, and time.
+
     Args:
-        r_list: A list of reference signals, each of shape (q,).
-        y_list: A list of outputs, each of shape (q, time_steps).
-        w: A numpy array of weights, shape (q, time_steps).
-        norm: An integer indicating the norm to use for the metric calculation.
-        relative: A boolean indicating whether to compute relative error.
+        r_list (list[np.ndarray]): List of reference/setpoint vectors.
+            Each element has shape ``(q,)`` where ``q`` is the number of measured outputs.
+        y_list (list[np.ndarray]): List of output trajectories.
+            Each element has shape ``(q, T)`` where ``T`` is the number of time steps.
+        w (np.ndarray): Weights over outputs and time with shape ``(q, T)``.
+            Larger weights penalize errors more strongly at the corresponding output/time.
+        norm (int): Error norm to use:
+
+            - ``1``: L1 error (mean absolute error)
+            - ``2``: L2 error (mean squared error)
+        relative (bool): If True, compute relative error per component:
+            ``(r - y) / max(|r|, 1e-6)``.
+            Useful when outputs have different scales.
+
     Returns:
-        float: Computed performance metric. """
+        float: Scalar performance value (lower is better).
+
+    Raises:
+        ValueError: If list lengths or signal dimensions are inconsistent.
+    """
     
     # Check if dimensions match
     if len(r_list) != len(y_list):
@@ -35,19 +69,37 @@ def performance_metric(r_list, y_list, w, norm=1, relative=False):
             raise ValueError(f"Unsupported norm: {norm}")
 
 def batch_multi_hot(indices, num_classes, intensities=None, device=None, pad_val=0):
-    """ Converts (B, R) numpy arrays of indices and intensities into:
-    - (B, num_classes) multi-hot tensor
-    - (B, num_classes) intensity tensor if intensities are provided.
+    """
+    Convert a padded batch of indices into a multi-hot encoding (optionally with intensities).
+
+    Given an integer array of shape ``(B, R)`` containing up to ``R`` indices per batch element,
+    this function produces a tensor of shape ``(B, num_classes)`` where each selected index is 1.
+    Padded entries (equal to ``pad_val``) are ignored.
+
+    If ``intensities`` is provided (aligned with ``indices``), an additional tensor is returned
+    where selected positions store the provided intensity values.
 
     Args:
-        indices (np.ndarray): (B, R) integer indices, padded with pad_val.
-        num_classes (int): Total number of possible categories.
-        intensities (np.ndarray): (B, R) float intensities, aligned with indices.
-        device (torch.device or None): Optional torch device.
-        pad_val (int): Value used for padding in indices.
+        indices (np.ndarray): Integer array of shape ``(B, R)`` containing indices.
+            Entries equal to ``pad_val`` are treated as padding.
+        num_classes (int): Total number of categories in the multi-hot representation.
+        intensities (np.ndarray | None): Optional float array of shape ``(B, R)`` containing
+            values associated with each index (e.g., weights). Must align with ``indices``.
+        device (torch.device | None): Optional device for the returned tensors.
+        pad_val (int): Padding value in ``indices`` to ignore.
 
     Returns:
-        (multi_hot, intensity_tensor): both torch.FloatTensors of shape (B, num_classes). """
+        torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+
+            - If ``intensities is None``: ``multi_hot`` tensor of shape ``(B, num_classes)``.
+            - If ``intensities`` provided: ``(multi_hot, intensity_tensor)``, both float tensors
+              of shape ``(B, num_classes)``.
+
+    Notes:
+        If the same index appears multiple times in a row of ``indices``, the multi-hot
+        entry will be set to 1 (no counting). For intensities, later assignments overwrite
+        earlier ones due to direct indexing.
+    """
     
     batch_size, num_reactions = indices.shape
     valid_mask = indices != pad_val
@@ -64,8 +116,24 @@ def batch_multi_hot(indices, num_classes, intensities=None, device=None, pad_val
         return multi_hot
     
 def cartesian_prod(arrays, *, dtype=None):
-    """ arrays: list/tuple of 1D numpy arrays.
-    returns: (prod(len(a) for a in arrays), len(arrays)) ndarray. """
+    """
+    Compute the cartesian product of 1D arrays.
+
+    Args:
+        arrays (Sequence[np.ndarray]): Non-empty list/tuple of 1D arrays. Each input is flattened.
+        dtype (np.dtype | None): Optional dtype to cast the output to.
+
+    Returns:
+        np.ndarray: Array of shape ``(Π_i len(arrays[i]), len(arrays))`` where each row is one
+        combination of values, ordered in 'ij' meshgrid order.
+
+    Raises:
+        ValueError: If ``arrays`` is empty.
+
+    Notes:
+        If any input array is empty, the result is an empty array with the correct
+        number of columns.
+    """
     
     arrays = [np.asarray(a).ravel() for a in arrays]
     if not arrays:
@@ -84,11 +152,20 @@ def cartesian_prod(arrays, *, dtype=None):
     return out
     
 def print_task_info(last_task_info, mode='sizes'):
-    """ Prints the information of the last task performed on the IOCRN.
-    Arguments:
-    - last_task_info: A dictionary containing the information of the last task performed.
-    - mode: A string indicating the mode of printing. It can be 'sizes' to print the sizes and types of the last task information, or 'values' to print the values of the last task information.
-    If no task has been performed yet, it prints a message indicating that. """
+    """
+    Pretty-print the contents of an environment/task info dictionary.
+
+    Args:
+        last_task_info (dict): Dictionary containing metadata about the last task/simulation
+            (e.g., reward, setpoints, trajectories, diagnostics).
+        mode (str): Printing mode:
+
+            - ``'sizes'``: print key, type, and shape/size summaries (default).
+            - otherwise: print full values (can be verbose).
+
+    Returns:
+        None
+    """
     if not last_task_info:
         print("No task has been performed yet.")
         return
@@ -116,18 +193,46 @@ def print_task_info(last_task_info, mode='sizes'):
             print(f"{key}: {value}")
 
 def oscillation_metrics(y_list, t, t0, f_list=None, mean_list=None):
-    """ Computes oscillation metrics: frequency error, damping metric, periodicity index, and means.
+    """
+    Compute oscillation diagnostics from output trajectories.
+
+    The function extracts peaks to estimate frequency and a simple damping metric,
+    computes mean values, and estimates a periodicity index based on the first
+    nonzero-lag local maximum of the normalized autocorrelation.
+
     Args:
-    - y_list: A list of outputs, each of shape (1, time_steps).
-    - t: A 1D numpy array representing the time vector.
-    - t0: A float representing the time after which to start considering peaks.
-    - f_list: A list of frequencies.
-    - mean_list: A list of desired mean values for each output.
+        y_list (list[np.ndarray]): List of output trajectories. Each entry is expected to have
+            shape ``(1, T)`` (single-output signal). (If you have multiple outputs, pass
+            them as separate list entries.)
+        t (np.ndarray): Time vector of shape ``(T,)``.
+        t0 (float): Start time for analysis. Only samples with ``t >= t0`` are considered
+            for peak detection and statistics.
+        f_list (list[float] | None): Desired frequencies for each output (same length as ``y_list``).
+            If provided, the function returns a relative frequency error; otherwise returns None.
+        mean_list (list[float] | None): Desired means for each output (same length as ``y_list``).
+            If provided, the function returns a relative mean error; otherwise returns None.
+
     Returns:
-    - frequency_error: A float representing the mean absolute error between desired and estimated frequencies.
-    - avg_damping_metric: A float representing the average damping metric across all outputs. 
-    - periodicity_index: A float representing the average periodicity index across all outputs.
-    - peaks_flag: A boolean indicating if peaks were found for all outputs. """
+        tuple:
+
+            - `frequency_error` (float | None): Mean relative frequency error across outputs,
+              or None if ``f_list`` is not provided.
+            - `mean_error` (float | None): Mean relative mean error across outputs,
+              or None if ``mean_list`` is not provided.
+            - `damping` (float): Average damping metric across outputs. Computed from ratios of
+              successive peak heights; 0 if insufficient peaks.
+            - `r1` (float): Average periodicity index across outputs, defined as the value of the
+              first nonzero-lag local maximum of the normalized autocorrelation.
+            - `peaks_flag` (bool): True if at least two peaks were found for *every* output;
+              False otherwise.
+
+    Raises:
+        ValueError: If input dimensions are inconsistent.
+
+    Notes:
+        - Peak prominence is chosen adaptively as ``max(0.01, 0.05 * dynamic_range)`` per signal.
+        - If a signal is nearly constant (autocorrelation ill-defined), its r1 contribution is 0.
+    """
     
     # Check if dimensions match
     if 1 != y_list[0].shape[0]:
