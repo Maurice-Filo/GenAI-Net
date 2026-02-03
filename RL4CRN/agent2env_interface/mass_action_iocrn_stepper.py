@@ -1,3 +1,7 @@
+"""
+MassActionIOCRNStepper [DEPRECATED]
+"""
+
 from RL4CRN.agent2env_interface.abstract_stepper import AbstractStepper
 
 class MassActionIOCRNStepper(AbstractStepper):

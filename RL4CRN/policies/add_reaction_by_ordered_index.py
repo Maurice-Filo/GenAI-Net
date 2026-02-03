@@ -6,15 +6,30 @@ from RL4CRN.policies.add_reaction_by_index import AddReactionByIndex
 from RL4CRN.utils.utils import batch_multi_hot
 
 def log_combinations(n, k):
-    """
-    Comupte log(C(n k)).
+    r"""
+    Compute the logarithm of the binomial coefficient, log C(n, k), in a numerically stable way.
+
+    This helper is used to build *combinatorial priors/biases* over remaining action choices.
+    It supports tensor-valued inputs and returns `-inf` for invalid pairs (k < 0 or k > n),
+    which is convenient when treating invalid combinations as impossible events.
 
     Args:
-    - n (torch.Tensor): number of items to choose from.
-    - k (torch.Tensor): number of items to choose.
+        n : torch.Tensor
+            Number of items available (can be broadcasted).
+        k : torch.Tensor
+            Number of items to choose (can be broadcasted).
 
     Returns:
-    - log_comb (torch.Tensor): log of the number of combinations C(n, k). 
+        torch.Tensor
+            `log(C(n, k))` with the broadcasted shape of `n` and `k`.
+            Entries corresponding to invalid (n, k) pairs are `-inf`.
+
+    Notes:
+        Uses the identity:
+        
+        $$\log C(n, k) = \log\Gamma(n+1) - \log\Gamma(k+1) - \log\Gamma(n-k+1)$$
+
+    and clamps intermediate values to avoid NaNs when masking invalid inputs.
     """
     valid_mask = (k >= 0) & (k <= n) # put -inf where invalid (as convenrtion)
     safe_n = torch.clamp(n, min=0.0)
@@ -28,6 +43,35 @@ def log_combinations(n, k):
     return log_comb.masked_fill(~valid_mask, float('-inf'))
 
 class AddReactionByOrderedIndex(AddReactionByIndex):
+    """
+    Extension of `AddReactionByIndex` that enforces an *ordered* reaction-selection scheme.
+
+    The base policy samples a reaction index from the library (excluding already-present reactions)
+    and then samples its parameters. This subclass adds two extra structural constraints:
+
+    1) **Template-aware ordering**
+       At the first call in an episode/batch, the current IOCRN reaction multi-hot vector is
+       snapshotted as a *template* (`template_mask`). Only reactions added *after* this snapshot
+       are considered "added by the agent". Ordering constraints are applied **only** to these
+       added reactions, so template reactions do not affect the allowed index range.
+
+    2) **Sequentiality constraint**
+       Once the agent has added at least one reaction, subsequent reactions must have an index
+       strictly greater than the maximum index among the agent-added reactions so far. Concretely:
+           r_next > max(added_indices)
+       This is enforced with either:
+
+       - a **soft** penalty (finite `constraint_strength`), or
+       - a **hard** mask (`constraint_strength = inf`), making violations impossible.
+
+    Additionally, an optional **combinatorial bias** term can be added to the structure logits
+    to shape the policy toward a uniform distribution over *unordered sets* of a target size
+    (rather than uniform over ordered action sequences).
+
+    Compared to the base class, the parameters heads/generators are unchanged; only the structure
+    sampling logits are modified prior to constructing the categorical distribution.
+    """
+
     def __init__(self, num_reactions, num_parameters, num_inputs, 
                  encoder_attributes, deep_layer_size, structure_head_attributes, parameter_head_attributes, 
                  input_influence_head_attributes, 
@@ -38,6 +82,36 @@ class AddReactionByOrderedIndex(AddReactionByIndex):
                  entropy_weights_per_head=None,
                  structure_head_temperature={"target_entropy_ratio_to_max": 1.0, "initial_temperature": 1.0, "rate": 0.0, "current_temperature": 1.0},
                  allow_input_influence=False, device=None, combinatorial_bias_enabled=True, constraint_strength=float('inf')):
+        """
+        Initialize the ordered-index reaction-addition policy.
+
+        All parameters from `AddReactionByIndex` are supported. Additional parameters:
+        
+        Args:
+            target_set_size : int
+                Desired total number of reactions in the final CRN (including template reactions).
+                Used to compute the combinatorial prior so that, under an uninformative policy,
+                the probability of arriving at a particular final *set* is approximately uniform:
+                    P(set) ∝ 1 / C(M, K)
+                where M is library size and K is `target_set_size`.
+
+            combinatorial_bias_enabled : bool, default=True
+                If True, adds a combinatorial bias term to the structure logits that accounts for how
+                many completions remain if a given index is chosen next.
+
+            constraint_strength : float, default=inf
+                Strength of the ordering constraint.
+                - If finite: applies a subtractive penalty to out-of-order logits (soft constraint).
+                - If infinite: treats out-of-order choices as impossible (hard mask).
+
+        Internal state:
+            - `template_mask` (torch.Tensor or None):
+                Snapshot of the initial reaction multi-hot vector for the current episode/batch.
+                Shape (N, M). Set on the first `forward` call after `reset_template()`.
+
+            - `library_indices` (torch.Tensor):
+                Float tensor [0, 1, ..., M-1] used to compute max indices efficiently.
+        """
         
         super().__init__(num_reactions, num_parameters, num_inputs, 
                  encoder_attributes, deep_layer_size, structure_head_attributes, parameter_head_attributes, 
@@ -59,48 +133,94 @@ class AddReactionByOrderedIndex(AddReactionByIndex):
         # self._initialize_structure_head_bias()
 
     def reset_template(self):
-        """ 
-        Call this at the start of a new episode/batch to reset the template snapshot. 
-        This allows the agent to distinguish between template reactions and added reactions.
+        """
+        Reset the internal template snapshot.
+
+        Call this at the start of a new episode (or whenever the “template CRN” changes) so that
+        the next call to `forward` captures the current reaction multi-hot vector as `template_mask`.
+
+        Why this matters:
+            The ordering constraint is designed to apply only to reactions *added by the agent*.
+            Resetting the template ensures that pre-existing/template reactions do not influence
+            the computed `max_added_index` and therefore do not restrict future choices.
         """
         self.template_mask = None
 
-    # def _initialize_structure_head_bias(self):
-    #     """
-    #     Initializes the final layer bias of the reaction_structure_head to a positive value.
-    #     This counteracts the large negative Combinatorial Bias term at the start of training,
-    #     preventing vanishing probabilities and exploding gradients.
-    #     """
-    #     try:
-    #         # Access the reaction structure head (assumed to be an FFNN or Sequential)
-    #         # We iterate to find the last Linear layer
-    #         last_linear = None
-    #         for module in self.reaction_structure_head.modules():
-    #             if isinstance(module, torch.nn.Linear):
-    #                 last_linear = module
-            
-    #         if last_linear is not None:
-    #             # Calculate a heuristic positive bias.
-    #             # The Combinatorial bias is roughly log(K/M).
-    #             # We want Initial_Logit + log(K/M) ~ 0
-    #             # So Initial_Logit ~ -log(K/M) = log(M/K)
-    #             if self.target_set_size > 0:
-    #                 heuristic_bias = math.log(max(1, self.M / self.target_set_size))
-    #             else:
-    #                 heuristic_bias = 1.0
-                
-    #             # Initialize the bias of the last layer
-    #             if last_linear.bias is not None:
-    #                 torch.nn.init.constant_(last_linear.bias, heuristic_bias)
-    #                 print(f"Initialized Reaction Structure Head Bias to +{heuristic_bias:.2f}")
-                
-    #             # Optional: Initialize weights to be small to reduce random noise at start
-    #             torch.nn.init.xavier_uniform_(last_linear.weight, gain=0.01)
-                
-    #     except Exception as e:
-    #         print(f"Warning: Could not initialize structure head weights: {e}")
-
     def forward(self, state, mode='full', action=None, structure_temp=None):
+        """
+        Sample or score actions under ordered-index and combinatorial constraints.
+
+        This method mirrors `AddReactionByIndex.forward` but modifies the structure logits
+        before sampling/scoring the reaction index.
+
+        Args:
+            state : torch.Tensor
+                Batched observation tensor (N, D). The first M entries must be the reaction multi-hot
+                vector indicating reactions present in the current IOCRN.
+            mode : {"full", "partial"}
+                - "full": sample structure + parameters (supported).
+                - "partial": not implemented.
+            action : list[dict] or None
+                If provided, the method computes log π(action|state) for the given actions instead of
+                sampling. The action dictionaries must include a "reaction index" and parameter fields
+                consistent with the configured generators (same as base class).
+            structure_temp : float or None
+                Optional temperature override for the structure head logits.
+
+        Returns:
+            - If `action is None`:
+                - `actions` (list[dict]):
+                    Sampled actions, one per batch element.
+                - `log_probabilities` (torch.Tensor):
+                    Log-probability per batch element, including structure + parameter terms.
+                - `entropies` (torch.Tensor):
+                    Weighted entropy per batch element (structure + parameter heads).
+            - If `action is not None`:
+                - `log_probabilities` (torch.Tensor):
+                    Log-probability per batch element for the provided actions.
+
+        Ordering logic: 
+            1. **Template snapshot (first call only)**
+                If `template_mask` is not set, store `state[:, :M]` as the template.
+
+            2. **Determine agent-added reactions**
+                `added_reactions_mask = (state[:,:M] - template_mask) > 0.5`
+                and compute: `num_added_by_agent`, `total_existing_counts`
+
+            3. **Sequentiality mask**
+            Let `max_added_index` be the maximum library index among *added* reactions.
+            If the agent has added at least one reaction, indices <= max_added_index are penalized
+            or masked (depending on `constraint_strength`).
+
+            4. **Combinatorial bias (optional)**
+            A bias term is added to each candidate reaction index i representing the log-count of
+            ways to complete the remaining set after choosing i, accounting for template-fixed items.
+            Invalid completions yield `-inf` and are hard-masked.
+
+            5. **Hard vs soft masks**
+            Hard mask:
+                - template reactions (cannot re-select fixed/template entries)
+                - impossible completions from combinatorial bias (`-inf`)
+            Soft mask:
+                - out-of-order indices (sequentiality violations), optionally penalized
+
+            6. **Emergency valve**
+            If all logits become `-inf` for any batch element, the last index is set to 0 to avoid
+            crashing the categorical distribution construction.
+
+            7. **Sampling / scoring**
+            Build a Categorical over masked logits (with temperature) and sample or evaluate the
+            provided indices.
+
+            8. **Parameter generation**
+            Delegates to the same continuous/discrete parameter generators as the base class.
+
+        Notes:
+            - This class does not change the parameterization; it only constrains structure sampling.
+            - The “entropy correction” term when combinatorial bias is enabled modifies the structure
+            entropy signal by adding E_p[bias], which corresponds to optimizing toward the biased prior
+            (i.e., minimizing KL(p || exp(bias)) up to a constant).
+        """
 
         # --- STEP 1: Snapshot the Template (First Call Only) ---
         if self.template_mask is None:

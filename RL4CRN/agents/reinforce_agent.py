@@ -1,3 +1,56 @@
+r"""
+REINFORCE-style policy gradient agent.
+
+This module provides **`REINFORCEAgent`**, a policy-gradient agent that
+collects per-step log-probabilities and entropies during rollout, and performs
+an update using a *risk-seeking* REINFORCE objective with an entropy bonus.
+Optionally, it can add a self-imitation learning (SIL) loss computed from a
+hall-of-fame buffer.
+
+Terminology:
+    This code treats the optimization target as a *loss* to be minimized
+    (smaller is better). The variable name `rewards` in `update` actually
+    represents per-sample final losses.
+
+Risk-seeking objective:
+    Let $\ell_i$ be the final loss for sample $i$ in a batch of size
+    $N$. Let $\pi_\theta$ be the policy and let
+    $\log \pi_\theta(a_{i,t} \mid s_{i,t})$ be the log-probability of the
+    action chosen at step $t$.
+
+    A risk parameter $r \in [0, 1]$ defines a top-k subset
+    $\mathcal{K}$ of the best samples (lowest losses), where:
+
+    $$k = \left\lfloor N (1 - r) \right\rfloor$$
+
+    The code computes a baseline $b$ as the *worst* (largest) loss among
+    these top-k samples (or $\max_i \ell_i$ if $k = 0$), ensuring
+    non-negative weights within the selected subset.
+
+    The (un-normalized) policy-gradient loss term used in the implementation is:
+
+    
+
+    $$\mathcal{L}_{\text{PG}}
+        = \frac{1}{k} \sum_{i \in \mathcal{K}} (\ell_i - b) \sum_t \log \pi_\theta(a_{i,t}\mid s_{i,t})$$
+
+Entropy regularization:
+    An entropy term is subtracted from the objective to encourage exploration.
+    The implementation tracks entropies per step and forms a batch-level entropy
+    statistic with separate weights for the top-k subset and the remainder.
+
+Self-imitation learning (optional):
+    If enabled, an additional term $\mathcal{L}_{\text{SIL}}$ is added to
+    the total loss. It replays trajectories from a hall-of-fame buffer and
+    reinforces actions whose final loss improves upon the current batch best.
+
+Notes:
+    - `act` stores tensors needed for the later update in internal lists.
+      Call `update` once per rollout batch to clear this state.
+    - This agent assumes the policy supports a forward signature compatible with
+      this code (see `act` for details).
+"""
+
 import torch
 import time
 import numpy as np
@@ -5,26 +58,56 @@ from RL4CRN.agents.abstract_agent import AbstractAgent
 from RL4CRN.environments.serial_environments import SerialEnvironments
 
 class REINFORCEAgent(AbstractAgent):
+    """Risk-seeking REINFORCE agent with entropy regularization and optional SIL.
+
+    The agent performs batched rollouts, storing per-step log-probabilities and
+    entropies. During `update`, it selects the best samples according to a
+    risk parameter, forms a baseline from that subset, and applies a REINFORCE-
+    style policy gradient update with an entropy bonus.
+
+    Args:
+        policy: Policy network used to sample actions and return log-probabilities
+            and entropies. It must support being called as
+            `policy(states, mode=...)` and return `(raw_actions, logPs, entropies)`
+            for action sampling. For SIL replay, it must also support being called
+            as `policy(observations, mode='full', action=raw_actions)` and return
+            per-sample log-probabilities.
+        allow_input_influence: Whether actions may include input influence. The
+            `'parameters'` mode with input influence is not implemented.
+        logger: Optional logger providing `log_metric(name, value, step=...)`.
+        learning_rate: Learning rate for the Adam optimizer.
+        entropy_scheduler: Dictionary controlling entropy regularization. If empty,
+            defaults are used. Supported keys:
+
+            - `entropy_weight`: global multiplier for entropy regularization
+            - `topk_entropy_weight`: weight for entropy of top-k subset
+            - `remainder_entropy_weight`: weight for entropy of the remainder subset
+            - `entropy_update_coefficient`: multiplicative update factor
+            - `entropy_schedule`: update period (iterations)
+            - `minimum_entropy_weight`: lower bound for `entropy_weight`
+        risk_scheduler: Dictionary controlling the risk parameter. If empty,
+            defaults are used. Supported keys:
+
+            - `risk`: initial risk value $r$ (higher means fewer samples used)
+            - `risk_update`: additive increment for `risk`
+            - `max_risk`: upper bound for `risk`
+            - `risk_schedule`: update period (iterations)
+        sil_settings: Dictionary controlling self-imitation learning. If empty,
+            defaults are used. Supported keys:
+
+            - `sil_loss_weight`: multiplier for the SIL term
+            - `use_adaptive_baseline`: if True, uses an exponential moving baseline
+            - `baseline_annealing_rate`: EMA coefficient for adaptive baseline
+        device: Torch device. If None, defaults to CPU.
+
+    Attributes:
+        logPs_sequence: List of tensors containing per-step log-probabilities.
+        entropies_sequence: List of tensors containing per-step entropies.
+        entropy_scheduler: Dictionary of entropy scheduling parameters.
+        risk_scheduler: Dictionary of risk scheduling parameters.
+    """
+
     def __init__(self, policy, allow_input_influence=False, logger=None, learning_rate=1e-3, entropy_scheduler={}, risk_scheduler={}, sil_settings={}, device=None):
-        """ Initialize the REINFORCE agent with a policy, learning rate, and optional entropy and risk schedulers.
-        Args:
-        - policy (torch.nn.Module): The policy network to be used by the agent.
-        - allow_input_influence (bool): Whether to allow actions to include input influence. Default is False.
-        - logger (Logger): An optional logger for logging metrics.
-        - learning_rate (float): The learning rate for the optimizer.
-        - entropy_scheduler (dict): A dictionary containing parameters for the entropy scheduler:
-            - entropy_weight (float): Initial weight for entropy. It is modified during training.
-            - topk_entropy_weight (float): Weight for entropy computed over top-k samples.
-            - remainder_entropy_weight (float): Weight for entropy computed over the remaining samples after removing the topk.
-            - entropy_update_coefficient (float): Multiplicative coefficient to update the entropy weight.
-            - entropy_schedule (int): Number of iterations after which to update the entropy weight.
-            - minimum_entropy_weight (float): Minimum value for the entropy weight.
-        - risk_scheduler (dict): A dictionary containing parameters for the risky policy scheduler:
-            - risk (float): Initial risk value.
-            - risk_update (float): Amount to increase the risk value.
-            - max_risk (float): Maximum value for the risk.
-            - risk_schedule (int): Number of iterations after which to update the risk value.
-        - device (torch.device): The device to run the agent on (CPU or GPU). If None, defaults to CPU. """
         
         super(REINFORCEAgent, self).__init__()
         self.device = device if device is not None else torch.device('cpu')
@@ -64,14 +147,31 @@ class REINFORCEAgent(AbstractAgent):
         self.adaptive_baseline = None
         
     def act(self, states, actuator, mode='full'):
-        """ Select actions based on the current policy and the observed states.
+        """Sample actions from the policy for a batch of states.
+
+        This method performs the forward pass through the policy, stores the
+        resulting log-probabilities and entropies for the later update, and
+        converts raw policy outputs into environment actions via the provided
+        actuator.
+
         Args:
-        - states (torch.Tensor): The observed states. Shape: (N, state_dim).
-        - actuator (AbstractActuator): The actuator to convert policy actions to environment actions.
-        - mode (str): The mode of the policy ('full', 'partial', or 'parameters'). Default is 'full'.
+            states: Batch of observed states (typically a tensor of shape
+                `(N, state_dim)`).
+            actuator: Actuator that converts raw policy actions into environment
+                actions (must provide `actuate(policy_action)`).
+            mode: Policy mode. Expected values include `'full'`, `'partial'`, and
+                `'parameters'` (depending on the policy implementation).
+
         Returns:
-        - actions (list): A list of actions to be taken in the environment. 
-        - raw_actions (list): A list of raw actions output by the policy before actuation. (needed for SIL)
+            A tuple `(actions, raw_actions)`:
+
+                - actions: list of environment actions produced by the actuator.
+                - raw_actions: list of raw policy actions prior to actuation
+                  (used by self-imitation learning).
+
+        Raises:
+            NotImplementedError: If `mode == 'parameters'` and `allow_input_influence`
+                is True.
         """
 
         super(REINFORCEAgent, self).act()
@@ -95,7 +195,53 @@ class REINFORCEAgent(AbstractAgent):
     
     # TODO this might be general enough to be in its separate utility file (maybe)
     def self_imitation_learingin_loss(self, hof, final_loss_for_each_sample, top_k_indices, weighting_scheme='uniform', observer=None, tensorizer=None, stepper=None, sil_batch_size=None):
-        """ Compute the self-imitation learning loss using samples from the hall of fame (HoF). """
+        r"""Compute self-imitation learning (SIL) loss using hall-of-fame samples.
+
+        The SIL term replays trajectories from the hall-of-fame (HoF) buffer and
+        reinforces actions that yield a loss better than the current batch best.
+
+        For each HoF sample $j$, the advantage used in the implementation is:
+
+        
+
+        $$    A_j = \max(0, \ell_{\text{best}} - \ell^{\text{HoF}}_j)$$
+
+        where $\ell_{\text{best}}$ is the best (lowest) loss in the
+        current batch among the selected top-k samples. Constrained to positive
+        advantages, this encourages the agent to imitate only those HoF samples
+        that improve upon its current best performance.
+
+        The SIL objective is:
+
+
+        $$\mathcal{L}_{\text{SIL}} = -\frac{1}{M} \sum_{j=1}^M w_j A_j \log \pi_\theta(\tau_j)$$
+
+        where $\log \pi_\theta(\tau_j)$ is the sum of log-probabilities
+        assigned by the current policy to the replayed trajectory $\tau_j$
+        and $w_j$ are optional sample weights.
+
+        Args:
+            hof: Hall-of-fame buffer providing `__len__` and `sample(batch_size)`.
+                Each sample must be cloneable (used to create replay environments)
+                and must provide `get_raw_action(j)` and `get_action(j)` for each
+                replay step.
+            final_loss_for_each_sample: Tensor-like object containing the final
+                per-sample loss for the current batch.
+            top_k_indices: Tensor of indices of the selected top-k samples in the
+                current batch.
+            weighting_scheme: Currently only `'uniform'` is supported.
+            observer: Observer used to produce observations from environments.
+            tensorizer: Tensorizer used to convert observations to tensors.
+            stepper: Stepper used to apply actions in the environment.
+            sil_batch_size: Number of HoF samples to replay. Defaults to `len(hof)`.
+
+        Returns:
+            Scalar SIL loss (float or tensor). Returns 0.0 if HoF is empty.
+
+        Raises:
+            ValueError: If `observer`, `tensorizer`, or `stepper` is not provided.
+            NotImplementedError: If `weighting_scheme` is not implemented.
+        """
 
         if observer is None or tensorizer is None or stepper is None:
             raise ValueError("Observer, tensorizer, and stepper must be provided for self-imitation learning loss computation.")
@@ -154,10 +300,43 @@ class REINFORCEAgent(AbstractAgent):
 
     
     def update(self, rewards, step_iteration=None, hof=None, use_sil=False, sil_weighting_scheme='uniform', observer=None, tensorizer=None, stepper=None, sil_batch_size=None):
-        """ Update the agent's policy based on the rewards received.
+        """Update the policy using stored rollout statistics and final losses.
+
+        This method consumes the sequences collected by `act` and performs
+        a single optimization step.
+
+        Important:
+            The argument `rewards` is treated as *final losses* to minimize.
+            Smaller values are better.
+
+        Overview of computations:
+            - Stack and sum log-probabilities and entropies across steps.
+            - Select top-k samples according to the risk parameter.
+            - Compute a baseline (worst loss in top-k, or batch max if k=0).
+            - Form the policy gradient loss on the selected subset.
+            - Subtract an entropy regularization term.
+            - Optionally add a self-imitation learning (SIL) term.
+            - Backpropagate, clip gradients, and update policy parameters.
+
         Args:
-        - rewards (list): A list of rewards, at the final step, received for each sample in the batch.
-        - step_iteration (int): The current iteration step for logging purposes. """
+            rewards: List/array/tensor of length `N` containing final per-sample
+                losses for the batch.
+            step_iteration: Optional integer step for logging.
+            hof: Optional hall-of-fame buffer used for SIL.
+            use_sil: If True, adds the SIL loss term.
+            sil_weighting_scheme: Weighting scheme for SIL samples. Currently only
+                `'uniform'` is supported.
+            observer: Observer used for SIL replay.
+            tensorizer: Tensorizer used for SIL replay.
+            stepper: Stepper used for SIL replay.
+            sil_batch_size: Number of HoF samples to replay.
+
+        Returns:
+            None.
+
+        Raises:
+            RuntimeError: If called before any `act` call (no stored logPs).
+        """
         
         super(REINFORCEAgent, self).update(rewards)
         tic_backward = time.time()

@@ -1,3 +1,34 @@
+"""
+Input-Output Chemical Reaction Network (IOCRN) representation.
+
+This module defines `IOCRN`, a representation of an input-output chemical
+reaction network with utilities for:
+
+- building and compiling a CRN from a list of reactions,
+- mapping between symbolic labels (species/inputs) and numeric indices,
+- simulating transient responses (ODE solvers and SSA),
+- plotting simulation results,
+- exporting the network to a DSL format used by external simulators,
+- (optionally) solving dynamics using CVODE via `sksundae`.
+
+This modules provides utilities for deterministic simulations of CRNs, 
+while it relies on an external package for stochastic simulation (SSA).
+
+Caching:
+    Simulation results are cached in `last_task_info` to avoid recomputation
+    if the same task is requested repeatedly. Adding reactions or calling
+    `reset` clears cached task info.
+
+Solver support:
+    - `'LSODA'` uses `scipy.integrate.solve_ivp`.
+    - `'CVODE'` uses `sksundae.cvode.CVODE`.
+
+SSA support:
+    Stochastic simulation is supported via an external package
+    `StochasticSimulationsNew` plus project utilities in :mod:`RL4CRN.utils.stochastic`.
+    If the external package is missing, SSA methods raise an ImportError.
+"""
+
 import numpy as np
 import sympy as sp
 from itertools import product
@@ -8,18 +39,69 @@ from scipy.integrate import solve_ivp
 import pandas as pd
 
 class IOCRN:
-    """ A class representing a general Input-Output Chemical Reaction Network (IOCRN). """
+    """Input-Output Chemical Reaction Network.
+
+    An IOCRN consists of:
+        - a list of reactions,
+        - a set of output species labels,
+        - an implied set of species and inputs gathered from reactions,
+        - dynamics defined by stoichiometry and propensities.
+
+    The network must be `compile`d after construction or modification to
+    build internal indices and matrices used for simulation.
+
+    Args:
+        reactions: List of `Reaction` objects. Each reaction is expected to
+            provide methods such as:
+
+            - `get_involved_species()`
+            - `get_involved_inputs()`
+            - `get_stoichiometry_dict()`
+            - `propensity(x, u)`
+            - `set_crn_context(iocrn)`
+
+            and attributes such as:
+            
+            - `ID`
+            - `params`
+            - `num_parameters`
+            - `num_unknown_params`
+        
+        output_labels: List of species labels treated as outputs.
+        solver: ODE solver identifier. Supported values:
+        
+            - `'CVODE'` (requires `sksundae`)
+            - `'LSODA'` (SciPy solve_ivp)
+        
+        atol: Absolute tolerance for ODE integration.
+        rtol: Relative tolerance for ODE integration.
+
+    Attributes:
+        reactions: List of reaction objects.
+        output_labels: List of output species labels.
+        num_outputs: Number of outputs.
+        num_unknown_params: Total number of unknown parameters across reactions.
+        last_task_info: Dictionary caching results/metadata of the last evaluated
+            task (e.g., transient response).
+        solver: Selected solver backend name.
+        atol: Absolute tolerance.
+        rtol: Relative tolerance.
+    """
 
     # ------------------------ Construction Methods ------------------------
     def __init__(self, reactions, output_labels, solver='CVODE', atol=1e-6, rtol=1e-3): 
-        """ Initialize an IOCRN with the given reactions and output labels.
-        Arguments:
-        - reactions: List of Reaction objects.
-        - outputs_labels: List of strings representing the labels of the outputs in the IOCRN. 
-        - solver: String representing the ODE solver to be used for simulations. Default is 'CVODE'. alternative is 'LSODA'.
-        - atol: Float representing the absolute tolerance for the ODE solver. Default is 1e-6. (as in scipy.solve_ivp)
-        - rtol: Float representing the relative tolerance for the ODE solver. Default is 1e-3. (as in scipy.solve_ivp)
-        Compile must be called after initialization to set up the internal representations of the IOCRN.
+        """Initialize the IOCRN.
+
+        Important:
+            After initialization, call `compile` to create internal
+            representations (species/input indices, stoichiometry matrix, etc.).
+
+        Args:
+            reactions: List of reaction objects.
+            output_labels: List of labels for output species.
+            solver: ODE solver backend (`'CVODE'` or `'LSODA'`).
+            atol: Absolute tolerance passed to the solver.
+            rtol: Relative tolerance passed to the solver.
         """
         
         # Record the reactions, output labels, and number of outputs
@@ -40,20 +122,26 @@ class IOCRN:
         self.rtol = rtol
 
     def clone(self):
+        """Return a deep copy of the IOCRN."""
         return copy.deepcopy(self)
     
     def reset(self):
-        """ Resets the IOCRN to its initial state by clearing the last task information. 
-        This method does not modify the reactions or their parameters. 
+        """Clear cached task information.
+
+        This does not modify reactions or parameters; it only clears the cached
+        `last_task_info`.
         """
         self.last_task_info = {}
         self.last_task_info['type'] = None
 
     def add_reaction(self, reaction):
-        """ Add a reaction to the IOCRN. It does not update the internal representations of the IOCRN. 
-        Call compile to update its internal representations.    
-        Arguments:
-        - reaction: A Reaction object to be added to the IOCRN. 
+        """Add a reaction and recompile.
+
+        Adding a reaction clears cached task info and updates internal
+        representations by calling `compile`.
+
+        Args:
+            reaction: Reaction object to append to the network.
         """
         # Flush the last task information
         self.reset()
@@ -63,7 +151,14 @@ class IOCRN:
         self.compile()
 
     def retrieve_species(self):
-        """ Retrieve and store the labels of the species present in the IOCRN and their corresponding indices in the IOCRN. """
+        """Collect species labels from reactions and create index mappings.
+
+        Side Effects:
+            Sets:
+
+            - `species_labels`: sorted list of all species labels
+            - `species_idx_dict`: mapping label -> index
+        """
         # Get labels of all the species involved in the IOCRN, and sort them alphanumerically
         self.species_labels = list(set(sum([reaction.get_involved_species() for reaction in self.reactions], []))) # list of strings of all species
         for output_label in self.output_labels:
@@ -75,7 +170,14 @@ class IOCRN:
         self.species_idx_dict = {species_label: idx for idx, species_label in enumerate(self.species_labels)} # dictionary mapping species labels to indices
 
     def retrieve_input(self):
-        """ Retrieve and store the input labels and their corresponding indices in the IOCRN. 
+        """Collect input labels from reactions and create index mappings.
+
+        Side Effects:
+            Sets:
+
+            - `input_labels`: sorted list of all input labels
+            - `num_inputs`: number of inputs
+            - `input_idx_dict`: mapping label -> index
         """
         # Get labels of all the species involved in the IOCRN, and sort them alphanumerically
         self.input_labels = list(set(sum([r.get_involved_inputs() for r in self.reactions], []))) # list of strings of all inputs
@@ -85,44 +187,80 @@ class IOCRN:
         # Create a mapping from input labels to their indices
         self.input_idx_dict = {input_label: idx for idx, input_label in enumerate(self.input_labels)} # dictionary mapping input labels to indices
 
-    def set_unknown_parameters(self, params): #TODO: test this method
-        params = np.array(params).flatten()
-        for reaction in self.reactions:
-            params = reaction.set_unknown_parameters(params)
+    # def set_unknown_parameters(self, params): 
+    #     """Set all unknown parameters in all reactions.
+
+    #     The provided parameter vector is flattened and consumed in sequence by
+    #     each reaction via `reaction.set_unknown_parameters(params)`.
+
+    #     Args:
+    #         params: Array-like of unknown parameters.
+
+    #     Raises:
+    #         Exception: If not all provided parameters are consumed, indicating a
+    #             mismatch between `params` and the unknown parameter slots.
+    #     """
+    #     params = np.array(params).flatten()
+    #     for reaction in self.reactions:
+    #         params = reaction.set_unknown_parameters(params)
         
-        if len(params) > 0:
-            raise Exception(f"Error: {len(params)} parameters were not set - they are still unknown.")
+    #     if len(params) > 0:
+    #         raise Exception(f"Error: {len(params)} parameters were not set - they are still unknown.")
         
     def species_label_to_idx(self, labels):
-        """ Map species labels to their corresponding indices.
-        Arguments:
-        - labels: A string or a list of strings representing species labels.
+        """Map species labels to indices.
+
+        Args:
+            labels: Species label (str) or list of species labels.
+
         Returns:
-        - A single index if a string is provided, or a list of indices if a list of strings is provided. 
+            If `labels` is a string, returns an integer index.
+                If `labels` is a list, returns a list of integer indices.
         """
         if isinstance(labels, str):
             return self.species_idx_dict[labels] # single index
         return [self.species_idx_dict[label] for label in labels] # list of indices
     
     def input_label_to_idx(self, labels):
-        """ Map input labels to their corresponding indices.
-        Arguments:
-        - labels: A string or a list of strings representing input labels.
+        """Map input labels to indices.
+
+        Args:
+            labels: Input label (str) or list of input labels. Elements may be
+                `None`, which are preserved.
+
         Returns:
-        - A single index if a string is provided, or a list of indices if a list of strings is provided. 
+            If `labels` is a string, returns an integer index.
+                If `labels` is a list, returns a list of indices (with `None` preserved).
         """
         if isinstance(labels, str):
             return self.input_idx_dict[labels] # single index
         return [self.input_idx_dict[l] if l is not None else None for l in labels] # list of indices
     
     def set_library_context(self, reaction_library):
-        """ Set the context for each reaction in the IOCRN using the provided reaction library. """
+        """Set a reaction-library context for all reactions.
+
+        This is required for some topology comparisons and signatures.
+
+        Args:
+            reaction_library: Library object passed to `reaction.set_library_context(...)`.
+
+        Side Effects:
+            Sets `self.reaction_library`.
+        """
         for reaction in self.reactions:
             reaction.set_library_context(reaction_library)
         self.reaction_library = reaction_library
 
     def get_bool_signature(self):
-        """ Get the boolean signature of the IOCRN with respect to the provided reaction library. """
+        """Return a boolean signature of present reactions relative to a library.
+
+        Returns:
+            Boolean numpy array of length `len(self.reaction_library)` where True
+                indicates the corresponding library reaction ID is present.
+
+        Raises:
+            AttributeError: If `reaction_library` has not been set.
+        """
         IDs = self.gather_reaction_IDs()
         M = len(self.reaction_library)
         signature = np.zeros(M, dtype=bool)
@@ -130,18 +268,26 @@ class IOCRN:
         return signature
     
     def is_topologically_equal(self, other_iocrn):
-        """ Compare the topology of this IOCRN with another IOCRN. Assumes both IOCRNs have the same reaction library set.
-        Arguments:
-        - other_iocrn: Another IOCRN object to compare with.
+        """Check topology equality against another IOCRN.
+
+        Assumes both IOCRNs share the same reaction library context.
+
+        Args:
+            other_iocrn: Another `IOCRN`.
+
         Returns:
-        - True if the topologies are the same, False otherwise. """
+            True if their boolean signatures match, else False.
+        """
         
         return np.array_equal(self.get_bool_signature(), other_iocrn.get_bool_signature())
 
     def get_stoichiometry_matrix(self):
-        """ Construct and return the stoichiometry matrix S of the IOCRN.
+        """Construct the stoichiometry matrix $S$.
+
         Returns:
-        - S: A numpy array of shape (number of species, number of reactions) representing the stoichiometry matrix.
+            Numpy array `S` of shape `(num_species, num_reactions)` where
+                `S[i, j]` is the net stoichiometric coefficient of species `i` in
+                reaction `j`.
         """
         self.num_species = len(self.species_labels)                 # number of species
         self.num_reactions = len(self.reactions)                    # number of reactions
@@ -154,16 +300,12 @@ class IOCRN:
         return S
     
     def gather_reaction_IDs(self):
-        """ Gather and return the IDs of all reactions in the IOCRN.
-        Returns:
-        - reaction_IDs: A list of integers representing the IDs of the reactions. """
+        """Return reaction IDs for all reactions in the network."""
         reaction_IDs = [reaction.ID for reaction in self.reactions]
         return reaction_IDs
     
     def gather_reaction_params(self):
-        """ Gather and return the parameters of all reactions in the IOCRN.
-        Returns:
-        - reaction_params: A list of lists of parameters for all reactions. """
+        """Return a list of parameter vectors for all reactions."""
 
         reaction_params = []
         for reaction in self.reactions:
@@ -171,9 +313,21 @@ class IOCRN:
         return reaction_params
 
     def compile(self):
-        """
-        Compile the IOCRN by setting up species, inputs, stoichiometry matrix, and reaction contexts.   
-        This method should be called after adding all reactions and before simulating the IOCRN.
+        """Compile internal IOCRN representations.
+
+        This method:
+            - retrieves and indexes species and inputs,
+            - computes `output_idx` for output species,
+            - builds the stoichiometry matrix `S`,
+            - calls `reaction.set_crn_context(self)` on each reaction.
+
+        Call this after:
+            - initialization,
+            - adding/removing reactions,
+            - changing reaction definitions that affect involved species/inputs.
+        
+        Important:
+            This method should be called after adding all reactions and before simulating the IOCRN.
         """
         # Compile the species and input labels and indices
         self.retrieve_species()
@@ -194,7 +348,13 @@ class IOCRN:
     
     # ------------------------ Printing Methods ------------------------
     def __str__(self):
-        """ Return a string representation of the IOCRN, including inputs, species, output species, and reactions. When print is called, this method is invoked.
+        """Return a readable string representation of the IOCRN.
+
+        Includes:
+            - inputs
+            - species
+            - output species
+            - reactions (sorted by reaction ID if available)
         """
         try:
             reaction_signatures = [r.ID for r in self.reactions]
@@ -211,10 +371,16 @@ class IOCRN:
         return out
     
     def to_reaction_file(self):
-        """ 
-        Converts the current IOCRN into a string format compatible with the custom DSL. 
+        """Export the IOCRN to a custom DSL reaction-file format.
+
+        The exported text contains:
+            1. An `input ...;` section (if inputs are present),
+            2. A `species ... = 0;` section (excluding emptyset/∅),
+            3. A reactions section where each reaction contributes one or more
+               lines via `reaction.to_reaction_format()`.
+
         Returns:
-            str: The text content of the reaction file.
+            The DSL text as a single string.
         """
         lines = []
         
@@ -249,41 +415,94 @@ class IOCRN:
     
     # ------------------------ Computation Methods ------------------------
     def propensity_function(self, x, u):
-        """ Compute the propensity vector for the current state x and input u.
-        Arguments:
-        - x: numpy array of species counts.
-        - u: numpy array of input values.
+        """Compute propensities $a(x,u)$ for all reactions.
+
+        Args:
+            x: Species state vector (array-like of shape `(n,)`).
+            u: Input vector (array-like of shape `(p,)`).
+
         Returns:
-        - propensities: numpy array of propensities for all the reactions.
+            Numpy array of propensities of shape `(num_reactions,)`.
         """
         propensities = np.array([r.propensity(x, u) for r in self.reactions])
         return propensities
     
     def rate_function(self, t, x, u):
-        """ Computes the rate of change of concentrations for the IOCRN given time t, concentrations x, and inputs u.
-        Arguments:
-        - t: float representing the current time.
-        - x: numpy array of shape (n,) representing the concentrations of the species.
-        - u: numpy array of shape (p,) representing the inputs to the IOCRN.
+        """Compute time-derivative $\dot{x} = S a(x,u)$.
+
+        Args:
+            t: Time (unused for autonomous dynamics, but accepted by solver APIs).
+            x: Species state vector of shape `(n,)`.
+            u: Input vector of shape `(p,)`.
+
         Returns:
-        - A numpy array of shape (n,) representing the rate of change of concentrations.
+            Numpy array of shape `(n,)` giving $\dot{x}$.
         """
         return np.matmul(self.S, self.propensity_function(x, u))
     
 
     def transient_response_SSA(self, u_list, x0_list, time_horizon, n_trajectories=100, max_threads=10000, max_value=1e6):
-        """ 
-        Computes the stochastic transient response of the IOCRN using SSA.
-        Equivalent to transient_response but returns Mean and Std Dev of stochastic trajectories.
-        
-        Arguments:
-        - u_list: List of input vectors (numpy arrays).
-        - x0_list: List of initial condition vectors (numpy arrays).
-        - time_horizon: Numpy array of time points.
-        - n_trajectories: Number of stochastic runs per configuration (to compute mean/std).
-        
+        """Compute stochastic transient responses via SSA (mean ± std).
+
+        This method runs a stochastic simulation algorithm (SSA) backend for the
+        current IOCRN by first exporting the network to the project DSL
+        (`to_reaction_file`) and then invoking the external SSA engine.
+
+        For each pair `(u, x0)` in the Cartesian product `u_list × x0_list`, the
+        method performs `n_trajectories` independent SSA runs and returns the
+        empirical mean and standard deviation trajectories for all species and
+        outputs. Results are interpolated onto the requested `time_horizon`.
+
+        The results are cached in `last_task_info` with
+        `type == 'transient response SSA'`.
+
+        Args:
+            u_list: List of input vectors. Each element is array-like of shape
+                `(p,)`, where `p = num_inputs`. Inputs are treated as constant
+                over time for each scenario.
+            x0_list: List of initial condition vectors. Each element is array-like
+                of shape `(n,)`, where `n = num_species`.
+            time_horizon: 1D array-like of time points at which to return
+                statistics. The SSA backend is sampled at a step `t_step`
+                inferred from `time_horizon` and then interpolated to match it.
+            n_trajectories: Number of SSA trajectories per `(u, x0)` scenario used
+                to estimate mean and standard deviation.
+            max_threads: Maximum threads/parallelism hint for the SSA backend.
+                (Currently not directly used in this method; kept for API
+                compatibility / future backend control.)
+            max_value: Divergence threshold passed to the SSA measurement helper.
+                Trajectories exceeding this value may be flagged as diverged.
+
         Returns:
-            time_horizon, x_mean_list, y_mean_list, x_std_list, y_std_list, last_task_info
+            Tuple `(time_horizon, x_mean_list, y_mean_list, x_std_list, y_std_list, last_task_info)`:
+
+                - `time_horizon`: The same array of time points passed in.
+                - `x_mean_list`: List of mean state trajectories, one per scenario.
+                Each entry has shape `(n, T)`.
+                - `y_mean_list`: List of mean output trajectories, one per scenario.
+                Each entry has shape `(q, T)`.
+                - `x_std_list`: List of std-dev state trajectories, one per scenario.
+                Each entry has shape `(n, T)`.
+                - `y_std_list`: List of std-dev output trajectories, one per scenario.
+                Each entry has shape `(q, T)`.
+                - `last_task_info`: Dictionary caching inputs, initial conditions,
+                trajectories and metadata.
+
+        Raises:
+            ImportError: If the external SSA package `StochasticSimulationsNew`
+                is not available.
+            ValueError: If the network contains unknown parameters
+                (`num_unknown_params > 0`) and the backend requires fully specified
+                propensities (backend-dependent).
+
+        Notes:
+            - This method assumes the SSA helper `RL4CRN.utils.stochastic.quick_measurement_SSA`
+              returns a summary dataframe with columns compatible with the parsing
+              logic in this implementation.
+            - `last_task_info` uses keys:
+              `'inputs'`, `'initial conditions'`, `'time_horizon'`,
+              `'trajectories'`, `'trajectories_std'`, `'outputs'`, `'outputs_std'`,
+              `'has_diverged'`.
         """
         
         # 1. Generate DSL and Parse CRN
@@ -455,20 +674,52 @@ class IOCRN:
         return time_horizon, x_mean_list, y_mean_list, x_std_list, y_std_list, self.last_task_info
     
     def transient_response(self, u_list, x0_list, time_horizon, LARGE_NUMBER=1e4):
-        """ Computes the transient response of the IOCRN given a list of inputs, a list of initial conditions, and a time horizon. 
-        The combination of inputs and initial conditions are taken as the cartesian product of the two lists.
-        If the CRN has been simulated and stored before, it returns the stored results instead of recomputing them.
-        If the integration fails or becomes unstable, it fills the remaining time points with large numbers. 
-        The results are stored in the last_task_info dictionary for future reference.
-        Arguments:
-        - u_list: A list of numpy arrays, each of shape (p,) representing the constant inputs to the IOCRN for each input scenario.
-        - x0_list: A list of numpy arrays, each of shape (n,) representing the initial conditions for the concentrations of the species for each initial condition scenario.
-        - time_horizon: numpy array of shape (T,) representing the time points at which to evaluate the system.
-        Returns a tupple containing:
-            - time_horizon: numpy array of shape (T,) representing the time points at which the system was evaluated.
-            - x_list: A list of numpy arrays of shape (n, T) representing the full state trajectories for each input and initial condition scenario.
-            - y_list: A list of numpy arrays of shape (q, T) representing the output trajectories for each input and initial condition scenario.
-            - last_task_info: A dictionary containing information about the last task performed, including inputs, initial conditions, time horizon, trajectories, and outputs.
+        r"""Compute deterministic transient responses (ODE integration).
+
+        This method integrates the ODE dynamics:
+
+        $$\dot{x}(t) = S\,a(x(t), u),$$
+
+        for each pair `(u, x0)` in the Cartesian product `u_list × x0_list`,
+        where inputs `u` are treated as constant in time for each scenario.
+
+        Results are cached in `last_task_info` with
+        `type == 'transient response'`. If the cache already contains a transient
+        response, the stored results are returned immediately.
+
+        Numerical stability:
+            If the integrator fails or the solution becomes unstable (detected by
+            an event when `max(|x|)` exceeds `LARGE_NUMBER` or becomes non-finite),
+            the remaining portion of the trajectory is filled with `LARGE_NUMBER`.
+
+        Args:
+            u_list: List of constant input vectors, each array-like of shape `(p,)`.
+            x0_list: List of initial condition vectors, each array-like of shape `(n,)`.
+            time_horizon: 1D array-like of time points of shape `(T,)` at which to
+                evaluate/interpolate the solution.
+            LARGE_NUMBER: Threshold used both as an instability detection bound
+                and as a fill value when integration fails.
+
+        Returns:
+            Tuple `(time_horizon, x_list, y_list, last_task_info)`:
+
+                - `time_horizon`: 1D numpy array of shape `(T,)`.
+                - `x_list`: List of full state trajectories, one per scenario, each
+                of shape `(n, T)`.
+                - `y_list`: List of output trajectories, one per scenario, each of
+                shape `(q, T)`, extracted via `output_idx`.
+                - `last_task_info`: Dictionary caching the results. Keys include
+                `'inputs'`, `'initial conditions'`, `'time_horizon'`,
+                `'trajectories'`, `'outputs'`.
+
+        Raises:
+            ValueError: If `num_unknown_params > 0`.
+            ValueError: If `solver` is not one of `'LSODA'` or `'CVODE'`.
+
+        Notes:
+            - For `'LSODA'`, integration is performed using SciPy's `solve_ivp`.
+            - For `'CVODE'`, the method delegates to `solve_with_cvode` and
+              interpolates the solver output onto `time_horizon`.
         """
         # If the CRN dynamics has been simulated and stored before, return the stored results
         if self.last_task_info['type'] == 'transient response':
@@ -559,29 +810,56 @@ class IOCRN:
 
 
     def transient_response_piecewise(self, u_nested_list, x0_list, nested_time_horizon, LARGE_NUMBER=1e4):
-        """ 
-        Computes the transient response of the IOCRN.
-        
-        The combination of input sequences and initial conditions are taken as the 
-        cartesian product of u_list and x0_list (preserving original logic).
-        
-        However, each 'u' in u_list is now treated as a SEQUENCE of inputs applied 
-        consecutively over the segments defined in time_horizon.
+        """Compute deterministic transient responses with piecewise-constant inputs.
 
-        Arguments:
-        - u_list: A list of LISTS. Each element is a sequence of numpy arrays [u_1, u_2, ... u_k] 
-                representing the inputs for specific time intervals. 
-                Length of the inner list must match len(time_horizon).
-        - x0_list: A list of numpy arrays, each of shape (n,) representing initial conditions.
-        - time_horizon: A list of numpy arrays [t_1, t_2, ... t_k]. 
-                        Each array represents the time points for that specific interval. 
-                        (e.g. [np.linspace(0,10,100), np.linspace(10,20,100)])
-        
+        This method generalizes `transient_response` to *input sequences*.
+        Each element of `u_nested_list` is a sequence of input vectors
+        `[u_0, ..., u_{K-1}]` applied consecutively over corresponding time
+        segments `nested_time_horizon = [t_0, ..., t_{K-1}]`.
+
+        For each scenario `(u_sequence, x0)` in the Cartesian product
+        `u_nested_list × x0_list`, the method integrates the dynamics on each time
+        segment in order, using the final state of segment `k` as the initial
+        condition for segment `k+1`.
+
+        Instability handling:
+            If any segment fails or terminates early due to instability, the
+            remainder of the trajectory (for that scenario) is filled with
+            `LARGE_NUMBER`.
+
+        Caching:
+            Results are cached in `last_task_info` with
+            `type == 'transient response'` and returned if a matching cache is
+            detected (currently a heuristic check based on lengths).
+
+        Args:
+            u_nested_list: List of input sequences. Each entry is a list of input
+                vectors `[u_0, ..., u_{K-1}]`, each vector array-like of shape `(p,)`.
+                The sequence length must match `len(nested_time_horizon)`.
+            x0_list: List of initial conditions, each array-like of shape `(n,)`.
+            nested_time_horizon: List of 1D time grids `[t_0, ..., t_{K-1}]`.
+                Each `t_k` is a 1D array of times for segment `k`. The segments
+                are concatenated (with offsets) into a single `full_time_horizon`
+                stored in the cache and returned.
+            LARGE_NUMBER: Instability bound and fill value for failed segments.
+
         Returns:
-        - full_time_horizon: numpy array (concatenated time points of all intervals).
-        - x_list: A list of numpy arrays of shape (n, Total_T) representing full state trajectories.
-        - y_list: A list of numpy arrays of shape (q, Total_T) representing output trajectories.
-        - last_task_info: A dictionary containing cached info.
+            Tuple `(full_time_horizon, x_list, y_list, last_task_info)`:
+
+            - `full_time_horizon`: 1D array formed by concatenating shifted segment
+              time grids, shape `(T_total,)`.
+            - `x_list`: List of full state trajectories, one per scenario, each
+              of shape `(n, T_total)`.
+            - `y_list`: List of output trajectories, one per scenario, each of
+              shape `(q, T_total)`.
+            - `last_task_info`: Cache dictionary storing inputs, initial conditions,
+              time horizon, trajectories, and outputs.
+
+        Raises:
+            ValueError: If any input sequence length does not match the number of
+                time segments.
+            ValueError: If `num_unknown_params > 0`.
+            ValueError: If `solver` is not one of `'LSODA'` or `'CVODE'`.
         """
 
         # 2. Calculate durations using the correctly identified sequence
@@ -719,14 +997,25 @@ class IOCRN:
 
     # ------------------------ Plotting Methods ------------------------
     def plot_transient_response(self, fig=None, axes=None, alpha=0.1):
-        """ Plots the transient response of the IOCRN for each output species.
-        Arguments:
-        - fig: matplotlib figure object to plot on. If None, a new figure is created.
-        - axes: matplotlib axes object to plot on. If None, a new set of axes is created.
-        - alpha: float, transparency level for the plot lines.
+        """Plot cached transient response trajectories for each output.
+
+        This method visualizes the output trajectories stored by
+        `transient_response` or `transient_response_piecewise`.
+
+        Args:
+            fig: Optional matplotlib figure to plot into. If None, a new figure is
+                created.
+            axes: Optional axes list/array. If None, new axes are created with one
+                subplot per output species.
+            alpha: Line transparency for overlaid trajectories.
+
         Returns:
-        - fig: matplotlib figure object containing the plots.
-        - axes: matplotlib axes object containing the plots. """
+            Tuple `(fig, axes)` where `axes` is a list-like of length `num_outputs`.
+
+        Raises:
+            ValueError: If no deterministic transient response is cached in
+                `last_task_info` (i.e., `type != 'transient response'`).
+        """
 
         # Check if transient response data is available
         if self.last_task_info.get('type') != 'transient response':
@@ -749,14 +1038,25 @@ class IOCRN:
         return fig, axes
     
     def plot_phase_portrait(self, fig=None, axis=None, alpha=0.1):
-        """ Plots the phase portrait of the IOCRN.
-        Arguments:
-        - fig: matplotlib figure object to plot on. If None, a new figure is created.
-        - axes: matplotlib axis object to plot on. If None, a new axis is created.
-        - alpha: float, transparency level for the plot lines.
+        """Plot a phase portrait from cached transient response trajectories.
+
+        For two species, plots $x_1(t)$ vs $x_2(t)$.
+        For three species, plots a 3D trajectory.
+
+        Args:
+            fig: Optional matplotlib figure. If None, a new figure is created.
+            axis: Optional matplotlib axis (2D or 3D). If None, a new axis is
+                created depending on the number of species.
+            alpha: Line transparency for overlaid trajectories.
+
         Returns:
-        - fig: matplotlib figure object containing the plots.
-        - axes: matplotlib axes object containing the plots. """
+            Tuple `(fig, axis)`.
+
+        Raises:
+            ValueError: If no deterministic transient response is cached
+                (`type != 'transient response'`).
+            ValueError: If `num_species` is not 2 or 3.
+        """
 
         # Check if transient response data is available
         if self.last_task_info.get('type') != 'transient response':
@@ -790,14 +1090,28 @@ class IOCRN:
         return fig, axis
     
     def plot_dose_response(self, fig=None, axes=None, alpha=0.5):
-        """ Plots the dose response of the IOCRN for each output species. The dose response for each output species, for each input scenario is plotted versus the input dose.
-        Arguments:
-        - fig: matplotlib figure object to plot on. If None, a new figure is created.
-        - axes: matplotlib axes object to plot on. If None, a new set of axes is created.
-        - alpha: float, transparency level for the plot lines.
+        """Plot dose-response curves from cached simulation data.
+
+        Two modes are supported depending on the cached task:
+            - If `last_task_info['type'] == 'dose response'`, uses precomputed
+              dose-response data (if present in the cache).
+            - If `last_task_info['type'] == 'transient response'`, constructs a
+              dose-response by taking the final-time output value for each input
+              scenario and plotting it versus the input dose (currently assumes
+              a single scalar dose per scenario, typically `u[0]`).
+
+        Args:
+            fig: Optional matplotlib figure. If None, a new figure is created.
+            axes: Optional axes list. If None, new axes are created (one per output).
+            alpha: Line transparency for plotted curves.
+
         Returns:
-        - fig: matplotlib figure object containing the plots.
-        - axes: matplotlib axes object containing the plots. """
+            Tuple `(fig, axes)`.
+
+        Raises:
+            ValueError: If neither dose-response nor transient-response data is
+                present in `last_task_info`.
+        """
 
         # Check if dose response data is available
         if self.last_task_info.get('type') != 'dose response' and self.last_task_info.get('type') != 'transient response':
@@ -850,15 +1164,29 @@ class IOCRN:
         return fig, axes
     
     def plot_frequency_content(self, fig=None, axes=None, alpha=0.1, t0=0.0):
-        """Plots the frequency content (Fourier magnitude spectra) of each output species.
-        Arguments:
-        - fig: matplotlib figure object to plot on. If None, a new figure is created.
-        - axes: matplotlib axes object to plot on. If None, a new set of axes is created.
-        - alpha: float, transparency level for the plot lines.
-        - t0: float, time threshold; only data with time >= t0 are used for the Fourier transform.
+        """Plot Fourier magnitude spectra of outputs from cached transient responses.
+
+        For each cached transient response trajectory, this method:
+            1) truncates the signal to times `t >= t0`,
+            2) subtracts the mean,
+            3) computes a one-sided FFT magnitude spectrum,
+            4) normalizes magnitudes by their maximum (per trajectory),
+            5) overlays spectra for all scenarios.
+
+        Args:
+            fig: Optional matplotlib figure. If None, a new figure is created.
+            axes: Optional axes list. If None, new axes are created (one per output).
+            alpha: Line transparency for overlaid spectra.
+            t0: Time threshold; only samples with time >= t0 are used.
+
         Returns:
-        - fig: matplotlib figure object containing the plots.
-        - axes: matplotlib axes object containing the plots. """
+            Tuple `(fig, axes)`.
+
+        Raises:
+            ValueError: If no deterministic transient response is cached.
+            ValueError: If fewer than two samples exist after `t0`.
+            ValueError: If a non-positive sampling interval is inferred.
+        """
 
         # Check if transient response data is available
         if self.last_task_info.get('type') != 'transient response':
@@ -913,16 +1241,25 @@ class IOCRN:
     # ------------------------ stochastic simulation methods ------------------------
 
     def plot_SSA_transient_response(self, fig=None, axes=None, alpha=0.2):
-        """ 
-        Plots the stochastic transient response (Mean ± Std) of the IOCRN for each output species.
+        r"""Plot cached SSA transient responses (mean ± std) for each output.
+
+        This method visualizes the stochastic results produced by
+        `transient_response_SSA`, plotting the mean trajectory and a shaded
+        band corresponding to $\pm 1$ standard deviation:
+
+        $$ y(t) \pm \sigma(t). $$
         
-        Arguments:
-        - fig: matplotlib figure object. If None, a new figure is created.
-        - axes: matplotlib axes object. If None, a new set of axes is created.
-        - alpha: float, transparency level for the standard deviation shading.
-        
+        Args:
+            fig: Optional matplotlib figure. If None, a new figure is created.
+            axes: Optional axes list. If None, new axes are created (one per output).
+            alpha: Transparency for the standard deviation shading.
+
         Returns:
-        - fig, axes
+            Tuple `(fig, axes)`.
+
+        Raises:
+            ValueError: If no SSA transient response is cached in `last_task_info`
+                (i.e., `type != 'transient response SSA'`).
         """
 
         # 1. Validation
@@ -993,6 +1330,38 @@ class IOCRN:
     # ------------------------ CVODE Solver Method ------------------------
     
     def solve_with_cvode(self, x0, time_horizon, u, nonneg_idx, stop_fn):
+        """Integrate the IOCRN ODE using CVODE and return a solve_ivp-like solution.
+
+        This is an internal helper used when `self.solver == 'CVODE'`. It wraps the
+        `sksundae.cvode.CVODE` interface into an object that mimics SciPy's
+        `solve_ivp` result structure (fields `.t`, `.y`, `.status`, `.message`,
+        and `.raw`).
+
+        Args:
+            x0: Initial condition vector of shape `(n,)`.
+            time_horizon: 1D array of requested times at which the solver should
+                return values (similar to `t_eval` in SciPy).
+            u: Constant input vector of shape `(p,)` used by the rate function.
+            nonneg_idx: Indices of state variables constrained to be nonnegative.
+                If provided, CVODE inequality constraints are applied.
+            stop_fn: Event-like function `stop_fn(t, x)` returning a scalar whose
+                sign determines whether integration should stop (similar to SciPy
+                event functions). Its attributes `terminal` and `direction` (if
+                present) are forwarded to the CVODE events wrapper.
+
+        Returns:
+            A lightweight solution object with:
+
+                - `t`: 1D array of solver times
+                - `y`: 2D array of shape `(n, len(t))`
+                - `status`: integer status code
+                - `message`: solver message
+                - `raw`: the underlying CVODE solution object
+
+        Raises:
+            ImportError: If `sksundae`/CVODE is not installed.
+        """
+
         t0 = float(time_horizon[0])
         tf = float(time_horizon[-1])
         x0 = np.asarray(x0, dtype=float)
@@ -1034,8 +1403,12 @@ class IOCRN:
         return solution
 
 
+# TODO check 'initial_conditions' and 'initial conditions' in last_task_info consistency
+
 import numpy as np
 from sksundae.cvode import CVODE
+
+# code to convert a SciPy-style event function to a CVODE-style event function
 
 def make_eventsfn(stop_if_unstable):
     def eventsfn(t, y, events):

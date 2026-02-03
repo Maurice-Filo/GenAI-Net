@@ -1,3 +1,27 @@
+"""
+Multi-environment utilities for CRN reinforcement learning.
+
+This module defines `AbstractMultiEnvironments`, a lightweight manager for
+running multiple CRN environments in parallel (synchronously) and providing
+common operations such as reset, stepping, observation/tensorization, and rich
+rendering/logging of the best-performing environments.
+
+Key features:
+    - **Batch stepping**: applies one action per environment.
+    - **Observation pipeline**: uses an observer and tensorizer to produce a batch
+      tensor suitable for an agent.
+    - **Logging-oriented rendering**: selects top-performing environments and
+      logs plots/images to a provided logger.
+    - **Hall of fame (optional)**: keeps a buffer of top environments and renders
+      them alongside the current batch.
+
+Notes:
+    This class is intentionally "abstract" in the sense that it does not enforce a
+    specific environment implementation beyond the methods accessed in the code
+    (`reset`, `step`, `render`, and `state` access). It can be used directly if the
+    provided environments follow the expected interface.
+"""
+
 import time
 import torch
 import matplotlib.pyplot as plt
@@ -9,17 +33,27 @@ from RL4CRN.utils.visualizations import plot_truth_table
 from RL4CRN.utils.hall_of_fame import HallOfFame
 
 class AbstractMultiEnvironments:
-    """
-    Abstract class for multiple environments in CRN reinforcement learning.
-    This class provides a framework for managing multiple CRN environments in parallel.
+    """Synchronous manager for multiple CRN environments.
+
+    Args:
+        envs: List of environment instances. Each environment is expected to
+            expose:
+            - `reset()`
+            - `step(action, stepper, raw_action=None)` (raw_action optional)
+            - `render(mode=..., ID=...)`
+            - `state` attribute (IOCRN-like), used by observers and plotting code
+        hall_of_fame_size: Maximum number of environments stored in the hall of
+            fame. If 0, hall of fame is disabled.
+        logger: Optional logger for metrics and figures/images. Expected to
+            provide methods such as `log_metric`, `log_figure`, and `log_image`.
+
+    Attributes:
+        envs: List of managed environments.
+        hall_of_fame: Optional `RL4CRN.utils.hall_of_fame.HallOfFame`
+            storing best-performing environments.
+        rendering_iteration: Counter used to label logged figures/images.
     """
     def __init__(self, envs, hall_of_fame_size=10, logger=None):
-        """
-        Initialize the parallel environments with a list of environments and an optional logger.
-        Args:
-            envs (list): A list of environment instances.
-            logger (Logger, optional): An optional logger for logging metrics.
-        """
         self.envs = envs
         self.logger = logger
         self.rendering_iteration = 0
@@ -29,28 +63,40 @@ class AbstractMultiEnvironments:
             self.hall_of_fame = None
 
     def reset(self):
-        """ Reset all environments to their initial state.
+        """Reset all environments.
+
         Returns:
-            list: A list of initial states for each environment. """
-        
+            List of initial states for each environment (as returned by each
+                environment's `reset()` method).
+        """
         return [env.reset() for env in self.envs]
     
     def gather(self):
-        """
-        Gather the current state from all environments.
+        """Gather the current state from all environments.
+
         Returns:
-            list: A list of current states (IOCRNs) for each environment.
+            List of current environment states (typically IOCRN objects), one per
+                environment.
         """
         return [env.state for env in self.envs]
     
     def step(self, actions, stepper, raw_actions=None):
-        """
-        Step through all environments with the provided actions.
+        """Step all environments forward by one action.
+
         Args:
-            actions (list): A list of actions (reactions) to be taken in each environment.
-            stepper: 
+            actions: List of environment actions to apply, one per environment.
+            stepper: Stepper object passed to each environment's `step(...)`.
+            raw_actions: Optional list of raw policy actions aligned with `actions`.
+                If provided, each environment is called as
+                `env.step(action, stepper, raw_action=raw_action)`.
+
         Returns:
-            list: A list of tuples containing the new state and done flag for each environment.
+            List of per-environment step outputs. The structure depends on the
+                underlying environment's `step` method (commonly `(state, done)` or
+                similar).
+
+        Side Effects:
+            Logs a timing metric `'Timing: Step'` if a logger is available.
         """
         tic_step = time.time()
         if raw_actions is None:
@@ -63,21 +109,67 @@ class AbstractMultiEnvironments:
         return output
     
     def observe(self, observer, tensorizer):
+        """Observe all environments and tensorize the resulting observations.
+
+        Args:
+            observer: Observer providing `observe(state)` and returning an
+                observation object per environment.
+            tensorizer: Tensorizer providing `tensorize(observation)` and returning
+                a tensor per environment (or at least stackable tensors).
+
+        Returns:
+            Tensor of stacked observations with shape `(N, ...)`, where `N` is the
+                number of environments.
+        """
         output = [observer.observe(env.state) for env in self.envs]
         tensorized_output = torch.stack([tensorizer.tensorize(o) for o in output])
         return tensorized_output.float()
     
     def render(self, rewards, n_best=1, disregarded_percentage=0.9, mode={'style': 'logger', 'task': 'transients', 'format': 'figure'}):
-        """
-        Render the current state of the environments based on the provided mode.
+        r"""Render and/or log diagnostics for the current batch of environments.
+
+        This method is primarily designed for logging workflows. It selects a set
+        of top environments according to `rewards` and logs a variety of plots,
+        depending on the requested `mode`.
+
+        Selection of top environments:
+            Rewards are interpreted as *losses* (smaller is better), and the
+            top subset is selected via:
+
+            $$k = \left\lfloor N (1 - p) \right\rfloor.$$
+
+            where $p$ is `disregarded_percentage` and $N$ is the number
+            of environments.
+
         Args:
-            rewards (list): A list of rewards for each environment.
-            n_best (int): The number of best environments to render every step.
-            disregarded_percentage (float): The percentage of environments to disregard when selecting the best ones.
-            mode (dict): A dictionary specifying the rendering style and task.
-                - 'style': 'human' for interactive display, 'logger' for logging to a file.
-                - 'task': 'transients' for transient response, 'rank' for ranking.
-                - 'format': 'figure' or 'image' for the output format.
+            rewards: Sequence of per-environment scalar scores. Smaller values are
+                treated as better when selecting top environments.
+            n_best: Number of best environments to render individually via each
+                environment's `render(...)`.
+            disregarded_percentage: Fraction of environments to discard when forming
+                the "top-k" subset for aggregate plots. For example, with
+                `disregarded_percentage=0.9`, only the best 10% are considered.
+            mode: Dictionary describing the rendering behavior. Expected keys:
+                - `style`: `'logger'` (supported here) or `'human'` (not implemented
+                  in this method).
+                - `task`: controls what diagnostics to log. Supported values in this
+                  method include (depending on code paths):
+                  `'transients'`, `'transients + dose-response'`, `'phase_plot'`,
+                  `'rank'`, `'transients + frequency content'`, `'transients + logic'`,
+                  `'SSA_transients'`.
+                - `format`: `'figure'` to log matplotlib figures directly, or `'image'`
+                  to log PNG buffers.
+                Additional optional keys may be used by specific tasks:
+                - `bounds`, `bounds_freq`, `scale`, `t0`, `topology`.
+
+        Returns:
+            None.
+
+        Side Effects:
+            - Calls `env.render(...)` on selected environments.
+            - Logs figures/images/metrics via `self.logger` (if present).
+            - May create and close matplotlib figures.
+            - Increments `self.rendering_iteration` on each call in logger mode.
         """
         tic_step = time.time()
         if mode['style'] == 'logger':

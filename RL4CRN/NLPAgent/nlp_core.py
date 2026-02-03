@@ -85,7 +85,7 @@ class NLPAgent:
                 else:
                     # Final Fallback
                     print(f"[{self.name}] Failed after retries. Returning empty.")
-                    content = "{}" if "json" in self.generation_config.response_mime_type else "[Silence due to Connection Error]"
+                    content = "{}" 
 
         # 4. Update Memory
         entry = {

@@ -7,21 +7,45 @@ def generate_triangular_prism_points(
     n_along_edge=20      # samples along each edge of the triangle
 ):
     """
-    Generate points near a regular triangular prism whose axis is the line x=y=z.
+    Generate surface samples of a triangular prism centered on the diagonal line x=y=z.
 
-    The points are then classified by which coordinate is largest:
-    - "A": points where x is largest  -> class (10, 0, 0)
-    - "B": points where y is largest  -> class (0, 10, 0)
-    - "C": points where z is largest  -> class (0, 0, 10)
+    This utility constructs a *regular* triangle in the plane orthogonal to the
+    diagonal direction (i.e., in the plane x+y+z=0), then translates that triangle
+    along the axis x=y=z to form a prism. Points are sampled on the three
+    rectangular faces of the prism by linearly interpolating along each triangle
+    edge at multiple heights.
 
-    Returns
-    -------
-    dict
-        {
-          "A": [[x, y, z], ...],  # list of points in class A (x largest)
-          "B": [[x, y, z], ...],  # list of points in class B (y largest)
-          "C": [[x, y, z], ...],  # list of points in class C (z largest)
-        }
+    After sampling, each point is assigned to one of three classes based on the
+    index of its maximum coordinate:
+
+    - `A`: x is strictly/weakly the largest coordinate (argmax = 0)
+    - `B`: y is strictly/weakly the largest coordinate (argmax = 1)
+    - `C`: z is strictly/weakly the largest coordinate (argmax = 2)
+
+    Args:
+        max_val (float): Upper bound of the ambient cube [0, max_val]^3 in which
+            points are generated.
+        radius (float): Distance from the axis x=y=z to the triangle vertices
+            (controls prism thickness).
+        n_height (int): Number of sample positions along the axis x=y=z.
+        n_along_edge (int): Number of samples along each triangle edge for each
+            height (controls face resolution).
+
+    Returns:
+        dict[str, list[list[float]]]: Dictionary mapping class labels to lists of
+            3D points:
+            
+            - `A: [[x, y, z], ...]`, points with x largest
+            - `B: [[x, y, z], ...]`, points with y largest
+            - `C: [[x, y, z], ...]`, points with z largest
+
+    Notes:
+        - Ties are broken by `np.argmax`, which returns the first occurrence of
+          the maximum (e.g., if x==y>z the label will be indicated as "A").
+        - The prism is kept inside the box [0, max_val]^3 by restricting the
+          diagonal coordinate s to [radius, max_val-radius].
+        - Only the *faces* of the prism are sampled (not the interior).
+        
     """
 
     # Direction vectors in the plane x+y+z=0

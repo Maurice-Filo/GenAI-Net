@@ -1,4 +1,20 @@
-# helper functions
+"""
+Plotting utilities for SSA / simulation diagnostics.
+
+This module contains small helper functions to visualize simulation results,
+with an emphasis on stochastic simulations where multiple trajectories per
+input setting are summarized via mean ± standard deviation.
+
+The main entry point, `plot_simulation_summary`, accepts either:
+
+1. **Raw SSA output** with per-trajectory samples (identified by a `time` column
+   and species columns), in which case it aggregates on-the-fly; or
+2. **Pre-summarized output** (e.g., from `quick_measurement_SSA`) where columns
+   are a pandas MultiIndex with statistics like `('X_1', 'mean')`, `('X_1', 'std')`.
+
+The function groups traces by unique input combinations (e.g., `u_1, u_2, u_3`)
+and draws a grid of subplots, one panel per distinct input setting.
+"""
 
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -6,12 +22,43 @@ import math
 
 def plot_simulation_summary(df, species_cols=['X_1', 'X_2', 'X_3', 'OUT'], input_cols=['u_1', 'u_2', 'u_3'], mean_only=False):
     """
-    Plots the mean and standard deviation of species trajectories 
-    for each unique input combination.
-    
-    Compatible with:
-    1. Raw Data (contains 'thread_index', needs aggregation)
-    2. Summarized Data (output of quick_measurement_SSA, already has mean/std)
+    Plot mean ± standard deviation trajectories for each distinct input setting.
+
+    This helper is designed to work with two common dataframe layouts:
+
+    **(A) Raw data (per-trajectory samples)**
+
+    - Must contain a `time` column and one column per species in `species_cols`.
+    - May contain input columns in `input_cols` (e.g., `u_1`, `u_2`, `u_3`).
+    - The function will aggregate with:
+    `subset.groupby('time')[species_cols].agg(['mean','std'])`.
+
+    **(B) Summarized data (already aggregated)**
+
+    - Uses a pandas `MultiIndex` on columns where the second level contains
+    statistics such as `'mean'` and `'std'`.
+    - Expected column pattern: `(species_name, 'mean')` and `(species_name, 'std')`.
+    - Still requires a `time` column (possibly as `('time','')` in MultiIndex).
+
+    For each unique combination of the available input columns, a subplot is created
+    and the mean trajectory for each species is plotted; shaded bands show ±1 std
+    unless `mean_only=True`.
+
+    Args:
+        df (pandas.DataFrame): Dataframe containing either raw or summarized simulation data.
+        species_cols (Sequence[str]): Species columns to plot (default: ('X_1','X_2','X_3','OUT')).
+        input_cols (Sequence[str]): Input columns used to partition the dataframe into subplots.
+            Columns may be plain strings or appear as `(name, '')` in MultiIndex frames.
+        mean_only (bool): If True, plot only means (no ±std shading).
+
+    Returns:
+        None. The function creates a matplotlib figure and subplots.
+            (It does not call `plt.show()` so it can be used in notebooks/scripts flexibly.)
+
+    Notes:
+        - If no valid `input_cols` are present, the entire dataframe is plotted in a single panel.
+        - If a species is not present in the dataframe, it is skipped silently.
+        - The function prints whether it detected summarized vs raw mode.
     """
     
     if df.empty:

@@ -1,3 +1,16 @@
+"""
+Parallel multi-environment evaluation.
+
+This module defines `ParallelEnvironments`, a subclass of
+`RL4CRN.environments.abstract_multi_environments.AbstractMultiEnvironments`
+that evaluates rewards for multiple environments in parallel using
+`joblib`.
+
+Only the reward computation is parallelized here (via `get_reward`).
+Stepping and observation remain synchronous and are inherited from the base
+class.
+"""
+
 # from pathos.multiprocessing import ProcessingPool as Pool
 from joblib import Parallel, delayed
 import os
@@ -5,27 +18,46 @@ import time
 from RL4CRN.environments.abstract_multi_environments import AbstractMultiEnvironments
 
 class ParallelEnvironments(AbstractMultiEnvironments):
+    """Multi-environment manager with parallel reward evaluation.
+
+    Args:
+        envs: List of CRN environment instances.
+        hall_of_fame_size: Maximum number of environments stored in the hall of
+            fame (0 disables hall of fame).
+        N_CPUs: Number of worker processes for parallel computation. Defaults to
+            `os.cpu_count()`.
+        logger: Optional logger for metrics.
+
+    Attributes:
+        N_CPUs: Number of parallel workers used for reward computation.
+    """
+
     def __init__(self, envs, hall_of_fame_size, N_CPUs=os.cpu_count(), logger=None):
-        """
-        Initialize the parallel environments with a list of environments and the number of CPUs to use.
-        Args:
-            envs (list): A list of CRN environment instances.
-            hall_of_fame_size (int): The size of the hall of fame to keep track of the best rewards.
-            N_CPUs (int): The number of CPUs to use for parallel processing. Defaults to the number of available CPUs.
-            logger (Logger, optional): An optional logger for logging metrics.
-        """
         super().__init__(envs, hall_of_fame_size, logger=logger)
         self.N_CPUs = N_CPUs
     
     def get_reward(self, routine):
-        """
-        Get the reward from the routine based on the current state of all environments in parallel.
+        """Evaluate rewards for all environments in parallel.
+
+        The provided `routine` is applied to each environment's state using
+        `joblib.Parallel`. The routine is expected to return a tuple
+        `(reward, task_info)` for a given state.
+
+        Because evaluation happens outside the environment objects, this method
+        explicitly writes `task_info` back into each `env.state.last_task_info`.
+
         Args:
-            routine (function): A function that takes an environment state and returns a tuple of (reward, task_info).
+            routine: Callable taking an environment state and returning
+                `(reward, task_info)`.
+
         Returns:
-            rewards_list: A list of rewards obtained from the routine for each environment.
-            last_task_info_list: A list of information about the last task performed in each environment.
-        """       
+            List of reward values, one per environment.
+
+        Side Effects:
+            - Sets `env.state.last_task_info` for each environment.
+            - Logs `'Timing: Rewards'` if a logger is available.
+            - Adds all environments to the hall of fame (if enabled).
+        """    
         tic_reward = time.time()
         results = Parallel(n_jobs=self.N_CPUs)(delayed(routine)(env.state) for env in self.envs)
         # results = self.pool.map(routine, [env.state for env in self.envs])

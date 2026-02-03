@@ -1,19 +1,90 @@
+"""
+Reaction primitives for IOCRNs.
+
+This module defines the core reaction objects used throughout the package:
+
+- `Reaction` is the abstract base class that stores reaction *structure*
+  (reactants/products), parameter slots (possibly unknown), optional input-channel
+  associations for parameters, and context hooks used when embedding reactions in
+  an IOCRN or registering them in a reaction library.
+
+- `MassAction` implements standard mass-action kinetics with an optional
+  scalar input modulation of the rate constant.
+
+- `HillProduction` implements regulated production from the empty complex
+  using Hill-type activation/repression.
+
+Reactions are designed to be:
+
+- **library-friendly**: each reaction can be registered and retrieved by ID,
+  while equality is typically based on a structure-only ``signature``.
+- **CRN-friendly**: once a reaction is placed in an IOCRN, it can precompute
+  index mappings (species/input labels → integer indices) for fast simulation.
+
+Conventions:
+
+- Stoichiometry is represented implicitly by repeated labels in
+  ``reactant_labels`` / ``product_labels`` (e.g. ``['A','A']`` means 2A).
+- Parameter vectors are aligned with ``input_channels`` and
+  ``params_controllability``; unknown parameters are represented by ``None``.
+"""
+
+
 import numpy as np
 
 class Reaction:
     # Note: whenever adding new input components for the constructor (e.g. catalysts), ensure they are sorted as well
     def __init__(self, reactant_labels, product_labels, input_channels=[None], params=[None], params_controllability=[False], ID = None, signature=None):
-        """ Initializes a reaction.
-        Arguments:
-        - reactant_labels: list of strings representing the labels of the reactants, can be empty
-        - product_labels: list of strings representing the labels of the products, can be empty
-        - input_channels: list of strings representing the channels of the inputs, cannot be empty, can contain None. None entries indicate that the corresponding parameter does not depend on any input
-        - params: list of floats representing the parameters of the reaction, cannot be empty, can contain None. If None, it indicates that the parameter is unknown and needs to be set later 
-        - params_controllability: list of booleans representing whether each parameter is controllable by an input, cannot be empty
-        - ID: integer representing the unique identifier of the reaction within the context of a reaction library, can be None
-        - signature: string representing the unique signature of the reaction, can be None
-        The lengths of input_channels, params, and params_controllability must be the same. 
-        Each parameter in params corresponds to the parameter controllability in params_controllability and the input channel in input_channels at the same index. 
+        """Base class for reactions used in IOCRNs.
+
+        A `Reaction` defines:
+
+        - a *structure* (reactants/products, optional "inputs" that modulate parameters),
+        - a parameter vector (with optional unknown entries),
+        - bookkeeping fields used when the reaction is placed inside a CRN
+            (species/input indices) and inside a library (reaction ID).
+
+        The class is intended to be subclassed by specific kinetic laws (e.g.
+        `MassAction`, `HillProduction`). Subclasses must implement
+        `propensity` and `to_reaction_format`.
+
+        Parameters are stored in parallel lists:
+
+        - ``params[j]``: numerical value (float-like) or ``None`` if unknown.
+        - ``params_controllability[j]``: whether the parameter is controllable.
+        - ``input_channels[j]``: name of the input signal multiplying/modulating
+        that parameter, or ``None`` if the parameter is not input-dependent.
+
+        These lists must have identical length.
+
+        Notes:
+            - The constructor sorts reactants/products and de-duplicates + sorts
+            ``input_labels`` (excluding ``None``) for deterministic behavior.
+            - Equality (``==``) is defined via the reaction ``signature`` only.
+            A signature is meant to identify the *topology/structure* of a reaction,
+            ignoring parameter values.
+
+        Args:
+            reactant_labels: Labels of reactant species (can be empty for ∅).
+            product_labels: Labels of product species (can be empty for ∅).
+            input_channels: Input channel per parameter slot. Can contain ``None``.
+            params: Parameter values per slot. ``None`` entries denote unknown parameters.
+            params_controllability: Boolean flag per slot indicating controllability.
+            ID: Optional integer identifier used when the reaction is registered in a
+                `RL4CRN.iocrns.reaction_library.ReactionLibrary`.
+            signature: Optional string uniquely identifying the *structure* of the reaction.
+
+        Attributes:
+            reactant_labels: Sorted list of reactant labels.
+            product_labels: Sorted list of product labels.
+            input_channels: Input channel list, aligned with `params`.
+            params: Parameter list (may contain ``None`` values).
+            params_controllability: Controllability list, aligned with `params`.
+            num_parameters: Number of parameters (length of `params`).
+            input_labels: Sorted list of unique non-``None`` input channel labels.
+            ID: Reaction ID in a library context (or ``None``).
+            signature: Structural signature (or ``None``).
+            crn: Set by `set_crn_context` when placed in an IOCRN.
         """
         # Assert that input_channels, params, and params_controllability have the same length
         assert len(input_channels) == len(params) == len(params_controllability), "Input channels, parameters, and parameter controllability lists must have the same length."
@@ -37,46 +108,78 @@ class Reaction:
         self.product_labels.sort()
         self.input_labels.sort()               
 
-    def set_unknown_parameters(self, params, initial_idx=0): #TODO: test this method
-        i = initial_idx
-        for j in range(self.num_parameters):
-            if self.params[j] is None:
-                self.params[j] = params[i]
-                i += 1
+    # def set_unknown_parameters(self, params, initial_idx=0): 
+    #     """Set unknown parameters from a provided list. """
+    #     i = initial_idx
+    #     for j in range(self.num_parameters):
+    #         if self.params[j] is None:
+    #             self.params[j] = params[i]
+    #             i += 1
 
     def get_ID(self):
+        """Return the reaction's library ID (or ``None`` if unset)."""
         return self.ID
     
     def set_ID(self, ID):
+        """Set the reaction's library ID."""
         self.ID = ID
 
     def get_num_controllable_parameters(self):
+        """Return the number of controllable parameters."""
         return sum(self.params_controllability)
     
     def get_num_unknown_params(self):
+        """Return the number of unknown parameters (``None`` entries)."""
         return sum(1 for param in self.params if param is None)
         
     def propensity(self, x, u):
+        """Compute the propensity/rate contribution of this reaction.
+
+        Subclasses must implement this.
+
+        Args:
+            x: Full CRN state vector (species concentrations/counts).
+            u: Full input vector (input signal values).
+
+        Returns:
+            float: Propensity of the reaction under the provided state and inputs.
+        """
         pass
 
     def __call__(self, x, u):
+        """Alias for `propensity`."""
         return self.propensity(x, u)
     
     def set_crn_context(self, crn):
+        """Attach the reaction to an IOCRN context.
+
+        Subclasses typically override this to precompute index arrays for fast
+        propensity evaluation.
+
+        Args:
+            crn: IOCRN instance providing label->index maps.
+        """
         self.crn = crn
 
     def __eq__(self, other):
-        """ Checks if two reactions are equivalent based on their signatures. 
-        Arguments:
-        - other: another Reaction instance to compare with.
-        Returns:
-        - True if the reactions have the same signature, False otherwise. """
-        
+        """Check structural equivalence via ``signature``.
+
+        Two reactions are considered equal if their signatures are equal.
+        """
         return self.signature == other.signature
 
     def set_library_context(self, reaction_library):
-        """ Sets the context of the reaction within a given reaction library by assigning its ID if it exists in the library based on its signature. """
-        
+        """Resolve and set this reaction's ID from a reaction library.
+
+        Finds the first reaction in `reaction_library` with the same signature
+        (via `__eq__`) and sets `ID` accordingly.
+
+        Args:
+            reaction_library: A `RL4CRN.iocrns.reaction_library.ReactionLibrary`.
+
+        Raises:
+            ValueError: If no matching reaction is found.
+        """
         for reaction in reaction_library.reactions:
             if self == reaction:
                 self.ID = reaction.ID
@@ -84,11 +187,28 @@ class Reaction:
         raise ValueError("Reaction not found in the provided reaction library.")
     
     def to_reaction_format(self):
-        """ Returns the string representation of the reaction in the CRN format (e.g. 'A:1 -- mak(k) -> B:1;'). """
+        """Serialize the reaction to the project's DSL/CRN text format.
+
+        Subclasses must implement this.
+
+        Returns:
+            str: A line of text such as `'A:1 -- mak(k) -> B:1;'`.
+        """
         raise NotImplementedError("Subclasses must implement to_reaction_format")
 
     def _format_species_list(self, labels):
-        """ Helper to format species list for CRN (e.g. ['A', 'A', 'B'] -> 'A:2, B:1'). """
+        """Format a multiset of species labels into DSL syntax.
+
+        Examples:
+            - ``['A', 'A', 'B']`` -> ``'A:2, B:1'``
+            - ``[]`` -> ``'emptyset'``
+
+        Args:
+            labels: List of species labels, possibly with repeats.
+
+        Returns:
+            str: DSL-formatted species multiset.
+        """
         if not labels:
             return "emptyset"
         
@@ -99,14 +219,43 @@ class Reaction:
 
 class MassAction(Reaction):
     def __init__(self, reactant_labels, product_labels, input_channels=[None], params=[None], params_controllability=[True]):
-        """ Initializes a mass action reaction.
-        Arguments:
-        - reactant_labels: list of strings representing the labels of the reactants, can be empty. If empty, it indicates a zeroth-order reaction (e.g., ∅ -> A).
-        - product_labels: list of strings representing the labels of the products, can be empty. If empty, it indicates a degradation reaction (e.g., A -> ∅).
-        - input_channels: list of one string representing the channel of the input, cannot be empty, can contain None. If None, it indicates that the reaction does not depend on any input.
-        - params: list of one float representing the rate constant of the reaction, cannot be empty, can contain None. If None, it indicates that the rate constant is unknown and needs to be set later.
-        - params_controllability: list of one boolean representing whether the rate constant is controllable by an input, cannot be empty.
-        The lengths of input_channels, params, and params_controllability must be one. """
+        r"""Mass-action reaction with optional input modulation.
+
+        A mass-action reaction has the form:
+
+        $$\sum_i \nu_i X_i \;\longrightarrow\; \sum_i \nu'_i X_i$$
+
+        with propensity
+
+        $$a(x, u) = k \;\prod_{X_i \in \text{reactants}} x_i \; g(u),$$
+
+        where:
+        
+        - $k$ is the (possibly unknown) rate constant,
+        - $x_i$ are the reactant concentrations/counts,
+        - $g(u)$ is an optional scalar input modulation.
+            In the current implementation:
+            - if the single ``input_channel`` is ``None`` then $g(u)=1$,
+            - otherwise $g(u)=u_{c}$ for the corresponding input channel/index.
+
+        The parameter layout is fixed to a single scalar parameter:
+
+        - ``params = [k]
+
+        Args:
+            reactant_labels: Reactant species labels. Empty means a 0th-order reaction (∅ → ...).
+            product_labels: Product species labels. Empty means degradation (... → ∅).
+            input_channels: A single-element list `[channel]` or `[None]`.
+            params: A single-element list `[k]` where `k` may be ``None``.
+            params_controllability: A single-element list indicating controllability of `k`.
+
+        Attributes:
+            rate_constant: The mass-action rate constant `k` (float or ``None``).
+            signature: Structural signature (depends only on reactants/products).
+            num_continuous_parameters: Always 1.
+            num_discrete_parameters: Always 0.
+            num_unknown_params: Number of unknown parameters (0 or 1).
+        """
         
         # Call the parent constructor
         super().__init__(reactant_labels, product_labels, input_channels, params, params_controllability)
@@ -124,9 +273,14 @@ class MassAction(Reaction):
         self.num_unknown_params = self.get_num_unknown_params()     # Number of unknown parameters (0 or 1)
 
     def set_parameters(self, params):
-        """ Sets the parameters of the mass action reaction.
-        Arguments:
-        - params: list of one float representing the rate constant of the reaction. """
+        """Set the rate constant.
+
+        Args:
+            params: Single-element list `[k]`.
+
+        Raises:
+            AssertionError: If `params` does not have length 1.
+        """
         
         # Ensure params has exactly one element (the rate constant)
         assert len(params) == 1, "MassAction reaction must have exactly one parameter (the rate constant)."
@@ -138,24 +292,23 @@ class MassAction(Reaction):
         self.params = params
  
     def get_involved_species(self):
-        """ Returns a list of all species involved in the reaction (reactants and products). 
-        Returns:
-        - species: list of strings representing the labels of the involved species. 
-        """
+        """Return sorted unique species involved in the reaction (reactants ∪ products)."""
         species = list(set(self.reactant_labels + self.product_labels))
         species.sort()
         return species
     
     def get_involved_inputs(self):
-        """ Returns a list of all inputs involved in the reaction. 
-        Returns:
-        - input_labels: list of strings representing the labels of the involved inputs. """
+        """Return input channel labels used by the reaction (excluding ``None``)."""
         return self.input_labels 
     
     def get_stoichiometry_dict(self):
-        """ Constructs and returns the stoichiometry dictionary for the reaction.
+        """Return stoichiometry coefficients as a dictionary.
+
+        Reactants contribute -1 per occurrence, products +1 per occurrence.
+
         Returns:
-        - stoich: A dictionary mapping labels of species involved in the reaction to their stoichiometric coefficients. """
+            dict[str, int]: Mapping species label -> net stoichiometric coefficient.
+        """
         
         stoich = {}
         for reactant_label in self.reactant_labels:
@@ -171,9 +324,11 @@ class MassAction(Reaction):
         return stoich
     
     def set_crn_context(self, crn):
-        """ Sets the context of the reaction within a given IOCRN by mapping species and input labels to their respective indices.
-        Arguments:
-        - crn: An instance of IOCRN containing species and input labels. """
+        """Precompute indices for fast propensity evaluation.
+
+        Args:
+            crn: IOCRN instance providing label->index maps.
+        """
         
         super().set_crn_context(crn)
         self.reactant_idx = crn.species_label_to_idx(self.reactant_labels) # single index or list of indices
@@ -181,12 +336,20 @@ class MassAction(Reaction):
         self.input_idx = crn.input_label_to_idx(self.input_channels) # single index or list of indices
 
     def propensity(self, x, u):
-        """ Computes the propensity of the reaction given species counts x and inputs u.
-        Arguments:
-        - x: numpy array of shape (num_species,) representing the concentrations of the species of the whole IOCRN.
-        - u: numpy array of shape (num_inputs,) representing the inputs to the whole IOCRN.
+        """Compute the mass-action propensity.
+
+        Args:
+            x: Full species state vector of the parent IOCRN.
+            u: Full input vector of the parent IOCRN.
+
         Returns:
-        - propensity: float representing the propensity of the reaction. """
+            float: Reaction propensity.
+
+        Notes:
+            This implementation multiplies all reactant entries via ``np.prod``.
+            For repeated reactants, the state is indexed with repeated indices,
+            so the product includes appropriate powers.
+        """
         
         # Extract relevant species and inputs
         x = x[self.reactant_idx]
@@ -196,11 +359,7 @@ class MassAction(Reaction):
         return self.rate_constant * np.prod(x) * u
     
     def __str__(self):
-        """ Returns a string representation of the reaction in the format:
-        Reactants ----> Products;  [MAK(rate_constant, input)]
-        If there are no reactants, it uses '∅' to denote the empty set. If there are no inputs, it omits the input part. 
-        Returns:
-        - reaction_str: string representing the reaction. """
+        """Human-readable string representation."""
         try:
             species_str = f"{self.reactant_labels} : {self.reactant_idx}, {self.product_labels} : {self.product_idx}, {self.input_channels} : {self.input_idx}"
         except:
@@ -214,7 +373,15 @@ class MassAction(Reaction):
         return f"{reactants_str} ----> {products_str};  [MAK({self.rate_constant}, {inputs_str})]" 
     
     def to_reaction_format(self):
-        """ Formats as 'LHS -- ARROW -> RHS;' """
+        """Serialize to the CRN DSL.
+
+        Returns:
+            str: DSL line, e.g. ``'A:1 -- mak(k*u1) -> B:1;'``.
+
+        Notes:
+            The DSL formatting here distinguishes the "zero-order input generation"
+            special-case when there are no reactants but an input channel exists.
+        """
         lhs = self._format_species_list(self.reactant_labels)
         rhs = self._format_species_list(self.product_labels)
         
@@ -235,23 +402,53 @@ class MassAction(Reaction):
 
 class HillProduction(Reaction):
     def __init__(self, product_labels, activator_labels, repressor_labels, input_channels=[None], params=[None], params_controllability=[True]):
-        """ Initializes a Hill production reaction.
-        Arguments:
-        - product_labels: list of strings representing the labels of the products, cannot be empty
-        - activator_labels: list of strings representing the labels of the activators, can be empty
-        - repressor_labels: list of strings representing the labels of the repressors, can be empty
-        - input_channels: list of strings representing the channels of the inputs, cannot be empty, can contain None. None entries indicate that the corresponding parameter does not depend on any input
-        - params: list of floats representing the parameters of the reaction, cannot be empty, can contain None. If None, it indicates that the parameter is unknown and needs to be set later 
-        - params_controllability: list of booleans representing whether each parameter is controllable by an input, cannot be empty
-        The lengths of input_channels, params, and params_controllability must be the same. 
-        Each parameter in params corresponds to the parameter controllability in params_controllability and the input channel in input_channels at the same index. 
-        Layout of params: [b, Vmax, (Ka for each activator in sorted order), (Kr for each repressor in sorted order)]
-        Hill coefficients are fixed to one.
-        Where:
-        - b: basal production rate
-        - Vmax: maximal production rate
-        - Ka: dissociation constant for each activator
-        - Kr: dissociation constant for each repressor """
+        r"""Hill-regulated production reaction (Hill coefficients fixed to 1).
+
+        This reaction represents regulated production from the empty complex:
+
+        $$\emptyset \rightarrow \text{products}$$
+
+        with a propensity of the form:
+
+        $$
+            a(x) = b + V_{\max} \;\Bigg(\prod_{i \in A}
+            \frac{x_i}{K_{a,i} + x_i}\Bigg)
+            \Bigg(\prod_{j \in R}
+            \frac{K_{r,j}}{K_{r,j} + x_j}\Bigg),$$
+
+        where:
+        - $b$ is the basal production rate,
+        - $V_{\max}$ is the maximal regulated production rate,
+        - $A$ is the set of activators, $R$ the set of repressors,
+        - Hill coefficients are fixed to 1 in this implementation.
+
+        Parameter layout (after sorting activator/repressor labels):
+            ``params = [b, Vmax, Ka_1, ..., Ka_|A|, Kr_1, ..., Kr_|R|]``
+
+        Note:
+            Each parameter slot may be associated with an ``input_channel`` label.
+            In the current implementation, the input vector `u` is collected but not
+            applied inside `propensity`. This is a placeholder for future
+            extensions where parameters may be modulated by inputs.
+
+        Args:
+            product_labels: Product species labels (non-empty).
+            activator_labels: Activator species labels (may be empty).
+            repressor_labels: Repressor species labels (may be empty).
+            input_channels: Input channel list aligned with `params` (may contain None).
+            params: Parameter list aligned with `input_channels` (may contain None).
+            params_controllability: Controllability flags aligned with `params`.
+
+        Attributes:
+            basal_rate: Basal rate `b`.
+            maximal_rate: Maximal rate `Vmax`.
+            activator_dissociation_constants: List of `Ka` values, aligned with sorted activators.
+            repressor_dissociation_constants: List of `Kr` values, aligned with sorted repressors.
+            signature: Structural signature independent of parameter values.
+            num_continuous_parameters: `2 + |A| + |R|`.
+            num_discrete_parameters: 0 (Hill coefficients fixed to 1 here).
+            num_unknown_params: Number of unknown parameters (`None` entries).
+        """
         
         # Ensure the number of parameters is correct (2 + number of activators + number of repressors)
         assert len(params) ==  2 + len(activator_labels) + len(repressor_labels), "HillProduction reaction must have exactly 2 + number of activators + number of repressors parameters (the basal rate, the maximal rate, and the dissociation constants for each activator and repressor)."
@@ -319,8 +516,17 @@ class HillProduction(Reaction):
         self.num_unknown_params = self.get_num_unknown_params()   
 
     def set_parameters(self, params):
-        """ Sets the whole parameter vector.
-        Layout: [b, Vmax, (Ka for each activator in sorted order), (Kr for each repressor in sorted order)]. """
+        """Set the full parameter vector.
+
+        Layout:
+            ``[b, Vmax, Ka_1, ..., Ka_|A|, Kr_1, ..., Kr_|R|]``
+
+        Args:
+            params: Parameter vector matching the layout above.
+
+        Raises:
+            AssertionError: If the provided vector has the wrong length.
+        """
 
         # Ensure the number of parameters is correct (2 + number of activators + number of repressors)
         assert len(params) ==  2 + len(self.activator_labels) + len(self.repressor_labels), "HillProduction reaction must have exactly 2 + number of activators + number of repressors parameters (the basal rate, the maximal rate, and the dissociation constants for each activator and repressor)."
@@ -335,10 +541,7 @@ class HillProduction(Reaction):
         self.params = params
 
     def get_involved_species(self):
-        """ Returns a list of all species involved in the reaction (products, activators, and repressors). 
-        Returns:
-        - species: list of strings representing the labels of the involved species. """
-        
+        """Return sorted unique species involved (products ∪ activators ∪ repressors)."""
         species = list(set(self.product_labels + self.activator_labels + self.repressor_labels))
         species.sort()
         return species
@@ -351,9 +554,11 @@ class HillProduction(Reaction):
         return self.input_labels
     
     def get_stoichiometry_dict(self):
-        """ Constructs and returns the stoichiometry dictionary for the reaction.
+        """Return stoichiometry coefficients as a dictionary (products only).
+
         Returns:
-        - stoich: A dictionary mapping labels of species involved in the reaction to their stoichiometric coefficients. """
+            dict[str, int]: Mapping product label -> stoichiometric coefficient.
+        """
         
         stoich = {}
         for product_label in self.product_labels:
@@ -364,9 +569,10 @@ class HillProduction(Reaction):
         return stoich
     
     def set_crn_context(self, crn):
-        """ Sets the context of the reaction within a given IOCRN by mapping species and input labels to their respective indices. 
-        Arguments:
-        - crn: An instance of IOCRN containing species and input labels. 
+        """Precompute indices for fast propensity evaluation.
+
+        Args:
+            crn: IOCRN instance providing label->index maps.
         """
 
         super().set_crn_context(crn)
@@ -376,12 +582,19 @@ class HillProduction(Reaction):
         self.input_idx = crn.input_label_to_idx(self.input_channels) # single index or list of indices
 
     def propensity(self, x, u):
-        """ Computes the propensity of the reaction given species counts x and inputs u.
-        Arguments:
-        - x: numpy array of shape (num_species,) representing the concentrations of the species of the whole IOCRN.
-        - u: numpy array of shape (num_inputs,) representing the inputs to the whole IOCRN.
+        """Compute Hill-regulated production propensity.
+
+        Args:
+            x: Full species state vector of the parent IOCRN.
+            u: Full input vector of the parent IOCRN.
+
         Returns:
-        - propensity: float representing the propensity of the reaction. """
+            float: Reaction propensity.
+
+        Notes:
+            Input modulations of Hill coefficients are fixed to 1. This method currently does **not**
+            apply input modulation to parameters even if `input_channels` are set.
+        """
     
         # Extract relevant species and inputs        
         x_activators = x[self.activator_idx] if self.activator_idx else np.array([])
@@ -407,11 +620,7 @@ class HillProduction(Reaction):
         return self.basal_rate + self.maximal_rate * activation_term * repression_term 
     
     def __str__(self):
-        """ Returns a string representation of the reaction in the format:
-        ∅ ----> Products;  [HILLProd(basal_rate, maximal_rate, (Ka for each activator), (Kr for each repressor), inputs)]
-        If there are no inputs, it omits the input part. 
-        Returns:
-        - reaction_str: string representing the reaction. """
+        """Human-readable string representation."""
         
         try:
             species_str = f"{self.product_labels} : {self.product_idx}, {self.activator_labels} : {self.activator_idx}, {self.repressor_labels} : {self.repressor_idx}, {self.input_channels} : {self.input_idx}"
@@ -456,7 +665,16 @@ class HillProduction(Reaction):
     
 
     def to_reaction_format(self): # TODO: verify this method
-        """ Formats as '∅ -- hill(...) -> RHS;' """
+        """Serialize to the CRN DSL.
+
+        Returns:
+            str: DSL line, e.g. ``'emptyset -- hill(b=..., Vm=..., A(Ka,1), R(Kr,1)) -> X:1;'``.
+
+        Notes:
+            This method emits a `hill(...)` construct assumed to be understood by
+            your SSA/DSL backend. If the backend expects a different argument
+            order or syntax, adapt accordingly.
+        """
         # Reusing the string construction logic from __str__ but adapting the output format
         rhs = self._format_species_list(self.product_labels)
         
@@ -493,240 +711,3 @@ class HillProduction(Reaction):
         return f"emptyset -- {hill_def} -> {rhs};"
 
 
-
-
-
-
-
-
-
-
-
-# class HillProduction(Reaction):
-#     def __init__(self, product_labels, activator_labels, repressor_labels, input_channels=[None], params=[None], params_controllability=[True]):
-#         """ Initializes a Hill production reaction.
-#         Arguments:
-#         - product_labels: list of strings representing the labels of the products, cannot be empty
-#         - activator_labels: list of strings representing the labels of the activators, can be empty
-#         - repressor_labels: list of strings representing the labels of the repressors, can be empty
-#         - input_channels: list of strings representing the channels of the inputs, cannot be empty, can contain None. None entries indicate that the corresponding parameter does not depend on any input
-#         - params: list of floats representing the parameters of the reaction, cannot be empty, can contain None. If None, it indicates that the parameter is unknown and needs to be set later 
-#         - params_controllability: list of booleans representing whether each parameter is controllable by an input, cannot be empty
-#         The lengths of input_channels, params, and params_controllability must be the same. 
-#         Each parameter in params corresponds to the parameter controllability in params_controllability and the input channel in input_channels at the same index. 
-#         Layout of params: [b, Vmax, (Ka,na for each activator in sorted order), (Kr,nr for each repressor in sorted order)]
-#         Where:
-#         - b: basal production rate
-#         - Vmax: maximal production rate
-#         - Ka: dissociation constant for each activator
-#         - na: Hill coefficient for each activator
-#         - Kr: dissociation constant for each repressor
-#         - nr: Hill coefficient for each repressor """
-        
-#         # Ensure the number of parameters is correct (2 + 2*number of activators + 2*number of repressors)
-#         assert len(params) ==  2 + 2*len(activator_labels) + 2*len(repressor_labels), "HillProduction reaction must have exactly 2 + 2*number of activators + 2*number of repressors parameters (the basal rate, the maximal rate, and the Hill coefficients and dissociation constants for each activator and repressor)."
-
-#         # Sort and Record the activator and repressor labels
-#         if len(activator_labels) > 1:
-#             sorted_activator_indices = sorted(range(len(activator_labels)), key=lambda i: activator_labels[i])
-#             self.activator_labels = [activator_labels[i] for i in sorted_activator_indices]
-#         else:
-#             self.activator_labels = activator_labels
-
-#         if len(repressor_labels) > 1:
-#             sorted_repressor_indices = sorted(range(len(repressor_labels)), key=lambda i: repressor_labels[i])
-#             self.repressor_labels = [repressor_labels[i] for i in sorted_repressor_indices]
-#         else:
-#             self.repressor_labels = repressor_labels
-
-#         # Sort the parameters
-#         # Activators
-#         self.num_activators = len(self.activator_labels)
-#         params_activators = [params[2 + 2*i : 4 + 2*i] for i in range(self.num_activators)]
-#         params_activators = sum([params_activators[i] for i in sorted_activator_indices] if self.num_activators > 1 else params_activators, [])
-#         # Repressors
-#         self.num_repressors = len(self.repressor_labels)
-#         params_repressors = [params[2 + 2*self.num_activators + 2*i : 4 + 2*self.num_activators + 2*i] for i in range(self.num_repressors)]
-#         params_repressors = sum([params_repressors[i] for i in sorted_repressor_indices] if self.num_repressors > 1 else params_repressors, [])
-#         # Combine sorted parameters
-#         params = params[0:2] + params_activators + params_repressors
-
-#         # Sort the input channels
-#         # Activators
-#         input_channels_activators = [input_channels[2 + 2*i : 4 + 2*i] for i in range(self.num_activators)]
-#         input_channels_activators = sum([input_channels_activators[i] for i in sorted_activator_indices] if self.num_activators > 1 else input_channels_activators, [])
-#         # Repressors
-#         input_channels_repressors = [input_channels[2 + 2*self.num_activators + 2*i : 4 + 2*self.num_activators + 2*i] for i in range(self.num_repressors)]
-#         input_channels_repressors = sum([input_channels_repressors[i] for i in sorted_repressor_indices] if self.num_repressors > 1 else input_channels_repressors, [])
-#         # Combine sorted input channels
-#         input_channels = input_channels[0:2] + input_channels_activators + input_channels_repressors
-
-#         # Sort the parameter controllability
-#         # Activators
-#         params_controllability_activators = [params_controllability[2 + 2*i : 4 + 2*i] for i in range(self.num_activators)]
-#         params_controllability_activators = sum([params_controllability_activators[i] for i in sorted_activator_indices] if self.num_activators > 1 else params_controllability_activators, [])
-#         # Repressors
-#         params_controllability_repressors = [params_controllability[2 + 2*self.num_activators + 2*i : 4 + 2*self.num_activators + 2*i] for i in range(self.num_repressors)]
-#         params_controllability_repressors = sum([params_controllability_repressors[i] for i in sorted_repressor_indices] if self.num_repressors > 1 else params_controllability_repressors, [])
-#         # Combine sorted parameter controllability
-#         params_controllability = params_controllability[0:2] + params_controllability_activators + params_controllability_repressors
-
-#         # Call the parent constructor
-#         super().__init__([], product_labels, input_channels, params, params_controllability)
-
-#         # Create the reaction signature: depends on the reaction structure only, not on the parameters or inputs
-#         # Signature format: ('HILLProd', product_labels, activator_labels, repressor_labels) all sorted alphanumerically
-#         self.signature = str(('HILLProd', self.product_labels, self.activator_labels, self.repressor_labels))
-
-#         # Record the basal and maximal rates, the dissociation constants, and the Hill coefficients
-#         self.basal_rate = self.params[0]                                                 # float or None
-#         self.maximal_rate = self.params[1]                                               # float or None
-#         self.activator_dissociation_constants = self.params[2:2+2*self.num_activators:2] if self.activator_labels else []  # list of floats or None
-#         self.activator_hill_coefficients = self.params[3:2+2*self.num_activators:2] if self.activator_labels else []  # list of floats or None
-#         self.repressor_dissociation_constants = self.params[2+2*self.num_activators:2+2*self.num_activators+2*self.num_repressors:2] if self.repressor_labels else []  # list of floats or None
-#         self.repressor_hill_coefficients = self.params[3+2*self.num_activators:2+2*self.num_activators+2*self.num_repressors:2] if self.repressor_labels else []  # list of floats or None
-
-#         self.num_continuous_parameters = 2 + len(self.activator_labels) + len(self.repressor_labels)                            # basal and maximal rates, and dissociation constants
-#         self.num_discrete_parameters = len(self.activator_labels) + len(self.repressor_labels)                                  # Hill coefficients
-#         self.num_unknown_params = self.get_num_unknown_params()   
-
-#     def set_parameters(self, params):
-#         """ Sets the whole parameter vector.
-#         Layout: [b, Vmax, (Ka,na for each activator in sorted order), (Kr,nr for each repressor in sorted order)]. """
-
-#         # Ensure the number of parameters is correct (2 + 2*number of activators + 2*number of repressors)
-#         assert len(params) ==  2 + 2*len(self.activator_labels) + 2*len(self.repressor_labels), "HillProduction reaction must have exactly 2 + 2*number of activators + 2*number of repressors parameters (the basal rate, the maximal rate, and the Hill coefficients and dissociation constants for each activator and repressor)."
-
-#         # Set the basal and maximal rates, the dissociation constants, and the Hill coefficients
-#         self.basal_rate = params[0]                                                 # float or None
-#         self.maximal_rate = params[1]                                               # float or None
-#         self.activator_dissociation_constants = params[2:2+len(self.activator_labels)] if self.activator_labels else []  # list of floats or None
-#         self.activator_hill_coefficients = params[2+len(self.activator_labels):2+2*len(self.activator_labels)] if self.activator_labels else []  # list of floats or None
-#         self.repressor_dissociation_constants = params[2+2*len(self.activator_labels):2+2*len(self.activator_labels)+len(self.repressor_labels)] if self.repressor_labels else []  # list of floats or None
-#         self.repressor_hill_coefficients = params[2+2*len(self.activator_labels)+len(self.repressor_labels):] if self.repressor_labels else []  # list of floats or None
-
-#         # Update the params list
-#         self.params = params
-
-#     def get_involved_species(self):
-#         """ Returns a list of all species involved in the reaction (products, activators, and repressors). 
-#         Returns:
-#         - species: list of strings representing the labels of the involved species. """
-        
-#         species = list(set(self.product_labels + self.activator_labels + self.repressor_labels))
-#         species.sort()
-#         return species
-    
-#     def get_involved_inputs(self):
-#         """ Returns a list of all inputs involved in the reaction. 
-#         Returns:
-#         - input_labels: list of strings representing the labels of the involved inputs. """
-        
-#         return self.input_labels
-    
-#     def get_stoichiometry_dict(self):
-#         """ Constructs and returns the stoichiometry dictionary for the reaction.
-#         Returns:
-#         - stoich: A dictionary mapping labels of species involved in the reaction to their stoichiometric coefficients. """
-        
-#         stoich = {}
-#         for product_label in self.product_labels:
-#             if product_label in stoich:
-#                 stoich[product_label] += 1
-#             else:
-#                 stoich[product_label] = 1
-#         return stoich
-    
-#     def set_crn_context(self, crn):
-#         """ Sets the context of the reaction within a given IOCRN by mapping species and input labels to their respective indices. 
-#         Arguments:
-#         - crn: An instance of IOCRN containing species and input labels. 
-#         """
-        
-#         super().set_crn_context(crn)
-#         self.product_idx = crn.species_label_to_idx(self.product_labels) # single index or list of indices
-#         self.activator_idx = crn.species_label_to_idx(self.activator_labels) if self.activator_labels else [] # list of indices
-#         self.repressor_idx = crn.species_label_to_idx(self.repressor_labels) if self.repressor_labels else [] # list of indices
-#         self.input_idx = crn.input_label_to_idx(self.input_channels) # single index or list of indices
-
-#     def propensity(self, x, u):
-#         """ Computes the propensity of the reaction given species counts x and inputs u.
-#         Arguments:
-#         - x: numpy array of shape (num_species,) representing the concentrations of the species of the whole IOCRN.
-#         - u: numpy array of shape (num_inputs,) representing the inputs to the whole IOCRN.
-#         Returns:
-#         - propensity: float representing the propensity of the reaction. """
-        
-#         # x = x[self.reactant_idx]
-#         # u = u[self.input_idx[0]] if self.input_idx[0] is not None else 1.0
-#         # return self.rate_constant * np.prod(x) * u
-    
-#         # Extract relevant species and inputs        
-#         x_activators = x[self.activator_idx] if self.activator_idx else np.array([])
-#         x_repressors = x[self.repressor_idx] if self.repressor_idx else np.array([])
-#         u = np.array([u[i] if i is not None else 1 for i in self.input_idx])
-
-#         # Compute the activation term
-#         activation_term = 1.0
-#         for i in range(self.num_activators):
-#             Ka = self.activator_dissociation_constants[i]
-#             na = self.activator_hill_coefficients[i]
-#             activation_term *= (x_activators[i]**na) / (Ka**na + x_activators[i]**na) if Ka is not None and na is not None else 1.0
-
-#         # Compute the repression term
-#         repression_term = 1.0
-#         for i in range(self.num_repressors):
-#             Kr = self.repressor_dissociation_constants[i]
-#             nr = self.repressor_hill_coefficients[i]
-#             repression_term *= Kr**nr / (Kr**nr + x_repressors[i]**nr) if Kr is not None and nr is not None else 1.0
-
-#         # Compute the propensity using Hill kinetics
-#         return self.basal_rate + (self.maximal_rate - self.basal_rate) * activation_term * repression_term 
-    
-#     def __str__(self):
-#         """ Returns a string representation of the reaction in the format:
-#         ∅ ----> Products;  [HILLProd(basal_rate, maximal_rate, (Ka,na for each activator), (Kr,nr for each repressor), inputs)]
-#         If there are no inputs, it omits the input part. 
-#         Returns:
-#         - reaction_str: string representing the reaction. """
-        
-#         try:
-#             species_str = f"{self.product_labels} : {self.product_idx}, {self.activator_labels} : {self.activator_idx}, {self.repressor_labels} : {self.repressor_idx}, {self.input_channels} : {self.input_idx}"
-#         except:
-#             species_str = "unset"
-            
-#         reactants_str = '∅'
-#         products_str = ' + '.join(self.product_labels) if self.product_labels else '∅'
-        
-#         # Construct parameters string
-#         # Basal rate
-#         if self.input_channels[0] is None:
-#             params_str = f"b = {self.basal_rate}, "
-#         else:
-#             params_str = f"b = {self.basal_rate}{self.input_channels[0]}, "
-
-#         # Maximal rate
-#         if self.input_channels[1] is None:
-#             params_str += f"Vm = {self.maximal_rate},    "
-#         else:
-#             params_str += f"Vm = {self.maximal_rate}{self.input_channels[1]},    "
-
-#         # Activators
-#         params_str += f"(Ka, na) = "
-#         for i in range(self.num_activators):
-#             if self.input_channels[2 + 2*i] is None:
-#                 params_str += f"{self.activator_labels[i]}({self.activator_dissociation_constants[i]}, {self.activator_hill_coefficients[i]})"
-#             else:
-#                 params_str += f"{self.activator_labels[i]}({self.activator_dissociation_constants[i]}{self.input_channels[2 + 2*i]}, {self.activator_hill_coefficients[i]})"
-#             params_str += ", " if i < self.num_activators - 1 else ""
-
-#         # Repressors
-#         params_str += f";    (Kr, nr) = "
-#         for i in range(self.num_repressors):
-#             if self.input_channels[2 + 2*self.num_activators + 2*i] is None:
-#                 params_str += f"{self.repressor_labels[i]}({self.repressor_dissociation_constants[i]}, {self.repressor_hill_coefficients[i]})"
-#             else:
-#                 params_str += f"{self.repressor_labels[i]}({self.repressor_dissociation_constants[i]}{self.input_channels[2 + 2*self.num_activators + 2*i]}, {self.repressor_hill_coefficients[i]})"
-#             params_str += ", " if i < self.num_repressors - 1 else ""
-        
-#         return f"{reactants_str} ----> {products_str};  [HILLProd({params_str})]"
