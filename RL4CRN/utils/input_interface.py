@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from itertools import product
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import copy
 import os
-import cloudpickle
 
+import cloudpickle
 import numpy as np
 import torch
 
@@ -29,21 +29,21 @@ import torch
 # Small general utilities
 # ----------------------------
 
-def get_device(prefer: str = "auto") -> str:
-    """Return the torch device string to use.
+def get_device(prefer: str = "auto") -> str: # CHECKED ___ OK
+    """Select a torch device string.
 
     Args:
         prefer: Device preference. Options:
             - "auto": choose "cuda" if available, else "cpu"
             - "cpu": force CPU
-            - "cuda": force CUDA (will raise if not available)
+            - "cuda": force CUDA (raises if not available)
 
     Returns:
-        Device string, either "cpu" or "cuda".
+        Device string ("cpu" or "cuda").
 
     Raises:
         RuntimeError: If prefer="cuda" but CUDA is not available.
-        ValueError: If prefer is not one of {"auto","cpu","cuda"}.
+        ValueError: If prefer is not one of {"auto", "cpu", "cuda"}.
     """
     prefer = prefer.lower().strip()
     if prefer not in {"auto", "cpu", "cuda"}:
@@ -57,11 +57,10 @@ def get_device(prefer: str = "auto") -> str:
             raise RuntimeError("CUDA requested but not available.")
         return "cuda"
 
-    # auto
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def seed_everything(seed: int) -> None:
+def seed_everything(seed: int) -> None: # CHECKED ___ OK
     """Seed common RNG sources for reproducibility.
 
     Args:
@@ -74,36 +73,392 @@ def seed_everything(seed: int) -> None:
 
 
 # ----------------------------
-# Task builder
+# Task specification + builders
 # ----------------------------
 
 VectorLogic = Callable[[np.ndarray], Union[bool, np.bool_]]
 
 
-def build_logic_task(
-    logic_fn: VectorLogic,
-    n_inputs: int,
-    input_values: Iterable[float] = (0.0, 1.0),
-) -> Tuple[List[np.ndarray], List[np.ndarray], VectorLogic]:
-    """Build a truth-table dataset for a boolean logic function on a vector input.
+@dataclass
+class TaskSpec: # CHECKED ___ OK
+    """Fully materialized task description used by environments.
 
-    The convention is:
-        - inputs are float vectors `u` of shape (n_inputs,)
-        - the target output is a single float in {0.0, 1.0} stored as shape (1,)
+    Attributes:
+        name: Task name/kind (e.g., "logic", "tracking", "oscillator", ...).
+        time_horizon: 1D array of time points.
+        u_list: List of input vectors (each shape (p,), float32).
+        ic: RL4CRN IC object.
+        compute_reward: Reward callable. Must accept the environment state (CRN)
+            and return either:
+            - float loss, or
+            - (float loss, dict info)
+        render_mode: Optional rendering configuration.
+    """
+    name: str
+    time_horizon: np.ndarray
+    u_list: List[np.ndarray]
+    ic: Any
+    compute_reward: Callable[[Any], Union[float, Tuple[float, Dict[str, Any]]]]
+    render_mode: Optional[dict] = "transients"
+
+
+def make_time_grid(t_f: float = 100.0, n_t: int = 1000) -> np.ndarray: # CHECKED ___ OK
+    """Create a uniform time grid.
 
     Args:
-        logic_fn: Function mapping `u` (shape (n_inputs,)) to a boolean-like value.
-        n_inputs: Number of input channels (length of u).
-        input_values: Values to enumerate per input dimension (default: {0,1}).
+        t_f: Final time.
+        n_t: Number of time points.
 
     Returns:
-        u_list: List of all input vectors (dtype float32).
-        r_list: List of targets, each an array of shape (1,) float32.
-        logic_fn: The original logic function (returned for convenience).
+        Time grid as float32 array of shape (n_t,).
     """
-    u_list = [np.array(u, dtype=np.float32) for u in product(list(input_values), repeat=n_inputs)]
-    r_list = [np.array([float(bool(logic_fn(u)))], dtype=np.float32) for u in u_list]
-    return u_list, r_list, logic_fn
+    return np.linspace(0.0, t_f, n_t, dtype=np.float32)
+
+
+def build_u_list(
+    kind: str,
+    *,
+    n_inputs: Optional[int] = None,
+    p: Optional[int] = None,
+    u_values: Optional[List[float]] = None,
+    dose_range: Optional[Tuple[float, float, int]] = None,
+    u_spec: Optional[tuple] = None,
+) -> List[np.ndarray]: # CHECKED ___ OK
+    """Construct a list of inputs for a task kind.
+
+    Args:
+        kind: Task kind.
+        n_inputs: Number of input channels for "logic" tasks.
+        p: Number of input channels for non-logic tasks (CRN template inputs).
+        u_values: Values to enumerate for grid tasks.
+        dose_range: (u_min, u_max, n) for "dose_response" tasks.
+        u_spec: Optional escape hatch specifying exact input generation:
+            - ("custom", u_list)
+            - ("grid", values)
+            - ("linspace", u_min, u_max, n)
+
+    Returns:
+        List of input vectors (float32 arrays).
+    """
+    if u_spec is not None:
+        tag, *args = u_spec
+        if tag == "custom":
+            return args[0]
+        if tag == "grid":
+            values = args[0]
+            dim = p if p is not None else n_inputs
+            if dim is None:
+                raise ValueError("u_spec=('grid', ...) needs p or n_inputs.")
+            return [np.array(u, dtype=np.float32) for u in product(values, repeat=dim)]
+        if tag == "linspace":
+            u_min, u_max, n = args
+            return [np.array([u], dtype=np.float32) for u in np.linspace(u_min, u_max, n)]
+        raise ValueError(f"Unknown u_spec: {u_spec}")
+
+    if kind == "logic":
+        if n_inputs is None:
+            raise ValueError("logic task needs n_inputs.")
+        return [np.array(u, dtype=np.float32) for u in product([0.0, 1.0], repeat=n_inputs)]
+
+    if kind in ("tracking", "oscillator", "ssa_tracking", "ssa_robust"):
+        if p is None:
+            raise ValueError(f"{kind} task needs p.")
+        values = u_values if u_values is not None else [1.0]
+        return [np.array(u, dtype=np.float32) for u in product(values, repeat=p)]
+
+    if kind == "dose_response":
+        u_min, u_max, n = dose_range if dose_range is not None else (0.0, 10.0, 10)
+        return [np.array([u], dtype=np.float32) for u in np.linspace(u_min, u_max, n)]
+
+    raise ValueError(f"Unknown task kind: {kind}")
+
+
+def build_ic(species_labels: List[str], ic_spec: Union[str, tuple]) -> Any: # CHECKED ___ OK
+    """Build an RL4CRN IC object from a compact spec.
+
+    Args:
+        species_labels: Species names for the CRN.
+        ic_spec: One of:
+            - "zero"
+            - ("constant", value)
+            - ("values", values_2d)
+
+    Returns:
+        RL4CRN IC instance.
+
+    Raises:
+        ValueError: If ic_spec is unknown.
+    """
+    from RL4CRN.utils.ic import IC
+
+    if ic_spec == "zero":
+        return IC(names=species_labels, values=[[0.0 for _ in species_labels]])
+
+    if isinstance(ic_spec, tuple):
+        tag = ic_spec[0]
+        if tag == "constant":
+            val = float(ic_spec[1])
+            return IC(names=species_labels, values=[[val for _ in species_labels]])
+        if tag == "values":
+            return IC(names=species_labels, values=ic_spec[1])
+
+    raise ValueError(f"Unknown ic_spec: {ic_spec}")
+
+
+def build_weights(q: int, n_t: int, w_spec: Union[str, tuple]) -> np.ndarray: # CHECKED ___ OK
+    """Build a weight matrix for tracking losses.
+
+    Args:
+        q: Output dimension (usually 1).
+        n_t: Number of time points.
+        w_spec: One of:
+            - "steady_state": weight only last time point
+            - "uniform": all ones
+            - "transient": bias early/late times
+            - ("custom", array_like)
+
+    Returns:
+        Weight matrix of shape (q, n_t) float32.
+
+    Raises:
+        ValueError: If w_spec is unknown.
+    """
+    if w_spec == "steady_state":
+        w = np.zeros((q, n_t), dtype=np.float32)
+        w[:, -1] = float(n_t)
+        return w
+
+    if w_spec == "uniform":
+        return np.ones((q, n_t), dtype=np.float32)
+
+    if w_spec == "transient":
+        w = np.ones(n_t, dtype=np.float32)
+        w[(len(w) // 5) * 4:] *= 2.0
+        w[: (len(w) // 5)] *= 0.25
+        return w[None, :]
+
+    if isinstance(w_spec, tuple) and w_spec[0] == "custom":
+        return np.asarray(w_spec[1], dtype=np.float32)
+
+    raise ValueError(f"Unknown w_spec: {w_spec}")
+
+
+def _reward_to_tuple(reward_out: Union[float, Tuple[float, Dict[str, Any]]]) -> Tuple[float, Dict[str, Any]]:
+    """Normalize reward outputs to (loss, info).
+
+    Args:
+        reward_out: Either a float loss or (float loss, info dict).
+
+    Returns:
+        Tuple (loss, info).
+    """
+    if isinstance(reward_out, tuple) and len(reward_out) == 2 and isinstance(reward_out[1], dict):
+        return float(reward_out[0]), reward_out[1]
+    return float(reward_out), {}
+
+
+def make_task(
+    kind: str,
+    species_labels: List[str],
+    *,
+    # time
+    t_f: float = 100.0,
+    n_t: int = 1000,
+    # inputs
+    n_inputs: Optional[int] = None,
+    p: Optional[int] = None,
+    u_values: Optional[List[float]] = None,
+    dose_range: Optional[Tuple[float, float, int]] = None,
+    u_spec: Optional[tuple] = None,
+    # IC / weights
+    ic: Union[str, tuple] = "zero",
+    weights: Union[str, tuple] = "transient",
+    # targets
+    logic_fn: Optional[VectorLogic] = None,
+    target: Union[str, float, None] = None,
+    target_fn: Optional[Callable[[float], float]] = None,
+    # oscillator knobs
+    osc_w: Optional[List[float]] = None,
+    t0: float = 20.0,
+    # SSA knobs
+    n_trajectories: int = 256,
+    max_threads: int = 1024,
+    cv_weight: float = 1.0,
+    rpa_weight: float = 1.0,
+) -> TaskSpec:
+    """Create a TaskSpec for several common tutorial tasks.
+
+    Supported kinds:
+        - "logic": truth-table of a boolean function over {0,1}^n
+        - "tracking": mean-tracking (e.g. copy input 0 or constant target)
+        - "dose_response": 1D dose sweep with a provided target function
+        - "oscillator": oscillation_error reward
+        - "ssa_tracking": SSA tracking reward
+        - "ssa_robust": SSA robust tracking reward
+
+    Args:
+        kind: Task kind.
+        species_labels: Species names (used for IC construction).
+        t_f: Final simulation time.
+        n_t: Number of time points.
+        n_inputs: Input dimension for "logic".
+        p: Input dimension for non-logic tasks.
+        u_values: Enumerated values for grid inputs (non-logic).
+        dose_range: Dose sweep parameters for "dose_response".
+        u_spec: Custom input generation spec.
+        ic: Initial condition spec.
+        weights: Weight spec for tracking tasks.
+        logic_fn: Boolean function for "logic".
+        target: Target spec for tracking/SSA tasks.
+        target_fn: Target function for dose response.
+        osc_w: Weight vector for oscillation_error.
+        t0: Oscillation error start time.
+        n_trajectories: SSA trajectories.
+        max_threads: SSA max threads.
+        cv_weight: Robust SSA coefficient-of-variation weight.
+        rpa_weight: Robust SSA relative peak amplitude weight.
+
+    Returns:
+        TaskSpec instance.
+
+    Raises:
+        ValueError: If kind is unknown or required knobs are missing.
+    """
+    from RL4CRN.rewards.deterministic import dynamic_tracking_error, oscillation_error
+    from RL4CRN.rewards.stochastic import dynamic_tracking_error_SSA, robust_tracking_loss_SSA
+
+    time_horizon = make_time_grid(t_f, n_t)
+    u_list = build_u_list(
+        kind, n_inputs=n_inputs, p=p, u_values=u_values, dose_range=dose_range, u_spec=u_spec
+    )
+    ic_obj = build_ic(species_labels, ic)
+
+    if kind == "logic":
+        if logic_fn is None:
+            raise ValueError("logic task needs logic_fn.")
+        r_list = [np.array([float(bool(logic_fn(u)))], dtype=np.float32) for u in u_list]
+        w = build_weights(q=1, n_t=n_t, w_spec=weights)
+
+        def compute_reward(state: Any) -> Tuple[float, Dict[str, Any]]:
+            x0_list = ic_obj.get_ic(state)
+            out = dynamic_tracking_error(
+                state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4
+            )
+            return _reward_to_tuple(out)
+
+        return TaskSpec("logic", time_horizon, u_list, ic_obj, compute_reward)
+
+    if kind == "tracking":
+        if target == "copy_input0":
+            r_list = [np.array([u[0]], dtype=np.float32) for u in u_list]
+        elif isinstance(target, (int, float)):
+            r_list = [np.array([float(target)], dtype=np.float32) for _ in u_list]
+        else:
+            raise ValueError("tracking needs target='copy_input0' or a constant float target.")
+        w = build_weights(q=1, n_t=n_t, w_spec=weights)
+
+        def compute_reward(state: Any) -> Tuple[float, Dict[str, Any]]:
+            x0_list = ic_obj.get_ic(state)
+            out = dynamic_tracking_error(
+                state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4
+            )
+            return _reward_to_tuple(out)
+
+        return TaskSpec("tracking", time_horizon, u_list, ic_obj, compute_reward)
+
+    if kind == "dose_response":
+        if target_fn is None:
+            raise ValueError("dose_response needs target_fn(u)->y*.")
+        w = build_weights(q=1, n_t=n_t, w_spec=weights)
+
+        def compute_reward(state: Any) -> Tuple[float, Dict[str, Any]]:
+            x0_list = ic_obj.get_ic(state)
+            r_list = [np.array([target_fn(float(u[0]))], dtype=np.float32) for u in u_list] * len(x0_list)
+            out = dynamic_tracking_error(
+                state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4
+            )
+            return _reward_to_tuple(out)
+
+        return TaskSpec("dose_response", time_horizon, u_list, ic_obj, compute_reward)
+
+    if kind == "oscillator":
+        mean_list = [np.array([u[0]], dtype=np.float32) for u in u_list]
+        w_local = osc_w if osc_w is not None else [0.4, 0.0, 0.2, 0.4]
+
+        def compute_reward(state: Any) -> Tuple[float, Dict[str, Any]]:
+            x0_list = ic_obj.get_ic(state)
+            out = oscillation_error(
+                state,
+                u_list,
+                x0_list,
+                time_horizon,
+                f_list=None,
+                mean_list=mean_list,
+                w=w_local,
+                t0=t0,
+                LARGE_NUMBER=1e4,
+            )
+            return _reward_to_tuple(out)
+
+        return TaskSpec("oscillator", time_horizon, u_list, ic_obj, compute_reward)
+
+    if kind == "ssa_tracking":
+        if target == "copy_input0":
+            r_list = [np.array([u[0]], dtype=np.float32) for u in u_list]
+        else:
+            raise ValueError("ssa_tracking currently supports target='copy_input0'.")
+        w = build_weights(q=1, n_t=n_t, w_spec=weights)
+
+        def compute_reward(state: Any) -> Tuple[float, Dict[str, Any]]:
+            x0_list = ic_obj.get_ic(state)
+            out = dynamic_tracking_error_SSA(
+                state,
+                u_list,
+                x0_list,
+                time_horizon,
+                r_list,
+                w,
+                n_trajectories=n_trajectories,
+                max_threads=max_threads,
+                norm=1,
+                relative=False,
+                LARGE_NUMBER=1e4,
+                LARGE_PENALTY=1e4,
+            )
+            return _reward_to_tuple(out)
+
+        return TaskSpec("ssa_tracking", time_horizon, u_list, ic_obj, compute_reward)
+
+    if kind == "ssa_robust":
+        if target == "copy_input0":
+            r_list = [np.array([u[0]], dtype=np.float32) for u in u_list]
+        else:
+            raise ValueError("ssa_robust currently supports target='copy_input0'.")
+        w = build_weights(q=1, n_t=n_t, w_spec=weights)
+
+        def compute_reward(state: Any) -> Tuple[float, Dict[str, Any]]:
+            x0_list = ic_obj.get_ic(state)
+            out = robust_tracking_loss_SSA(
+                state,
+                u_list,
+                x0_list,
+                time_horizon,
+                r_list,
+                w,
+                n_trajectories=n_trajectories,
+                max_threads=max_threads,
+                norm=1,
+                relative=True,
+                LARGE_NUMBER=1e3,
+                LARGE_PENALTY=100,
+                cv_weight=cv_weight,
+                rpa_weight=rpa_weight,
+            )
+            return _reward_to_tuple(out)
+
+        return TaskSpec("ssa_robust", time_horizon, u_list, ic_obj, compute_reward)
+
+    raise ValueError(f"Unknown kind: {kind}")
 
 
 # ----------------------------
@@ -115,21 +470,25 @@ class TaskCfg:
     """Task configuration.
 
     Attributes:
-        n_inputs: Number of binary input channels.
-        logic_fn: Vectorized logic function mapping u -> bool.
-        input_values: Values per input dimension to enumerate.
+        kind: Task kind used by make_task().
+        n_inputs: Number of binary input channels for logic tasks.
+        logic_fn: Vectorized logic function mapping u -> bool (logic tasks).
         t_f: Final simulation time.
         N_t: Number of time points.
-        ic_value: Default initial concentration used for all species in IC builder.
-        steady_state_weight: Weight multiplier applied to the last time point in w.
+        ic_value: Default initial concentration for ("constant", ic_value).
+        weights: Weight spec for tracking-style tasks.
+        target: Target spec for tracking tasks.
     """
+    kind: str = "logic"
     n_inputs: int = 3
     logic_fn: VectorLogic = lambda u: bool(np.all(u))
-    input_values: Tuple[float, float] = (0.0, 1.0)
     t_f: float = 100.0
     N_t: int = 1000
     ic_value: float = 0.01
-    steady_state_weight: float = 1.0
+    weights: Union[str, tuple] = "steady_state"
+    target: Union[str, float, None] = None
+    target_fn: Optional[Callable[[float], float]] = None
+    dose_range: Optional[Tuple[float, float, int]] = None
 
 
 @dataclass
@@ -151,11 +510,11 @@ class TrainCfg:
     """Training configuration.
 
     Attributes:
-        epochs: Total number of epochs (in tutorial you may run in chunks).
+        epochs: Total number of epochs (you may run in chunks).
         max_added_reactions: Episode length: number of reaction-addition steps.
         render_every: Print progress every N epochs (0 disables).
         hall_of_fame_size: Hall-of-fame capacity in ParallelEnvironments.
-        batch_multiplier: Batch size = batch_multiplier * num_cpus (if batch_size is "auto").
+        batch_multiplier: Batch size = batch_multiplier * num_cpus (if batch_size is None).
         seed: Random seed for reproducibility.
         n_cpus: CPU count to use. If None, uses os.cpu_count().
         batch_size: If provided, overrides auto batch sizing.
@@ -199,12 +558,14 @@ class PolicyCfg:
     depth: int = 5
     deep_layer_size: int = 10240
     continuous_distribution: Dict[str, Any] = field(default_factory=lambda: {"type": "lognormal_1D"})
-    entropy_weights_per_head: Dict[str, float] = field(default_factory=lambda: {
-        "structure": 2.0,
-        "continuous": 1.0,
-        "discrete": 0.0,
-        "input_influence": 0.0,
-    })
+    entropy_weights_per_head: Dict[str, float] = field(
+        default_factory=lambda: {
+            "structure": 2.0,
+            "continuous": 1.0,
+            "discrete": 0.0,
+            "input_influence": 0.0,
+        }
+    )
     ordering_enabled: bool = False
     constraint_strength: float = float("inf")
 
@@ -220,20 +581,24 @@ class AgentCfg:
         sil_settings: Self-imitation learning configuration.
     """
     learning_rate: float = 1e-4
-    entropy_scheduler: Dict[str, Any] = field(default_factory=lambda: {
-        "entropy_weight": 1e-3,
-        "topk_entropy_weight": 1.0,
-        "remainder_entropy_weight": 1.0,
-        "entropy_update_coefficient": 1,
-        "entropy_schedule": 1000,
-        "minimum_entropy_weight": 0.0,
-    })
-    risk_scheduler: Dict[str, Any] = field(default_factory=lambda: {
-        "risk": 0.95,
-        "risk_update": 0.0,
-        "max_risk": 1.0,
-        "risk_schedule": 1000,
-    })
+    entropy_scheduler: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "entropy_weight": 1e-3,
+            "topk_entropy_weight": 1.0,
+            "remainder_entropy_weight": 1.0,
+            "entropy_update_coefficient": 1,
+            "entropy_schedule": 1000,
+            "minimum_entropy_weight": 0.0,
+        }
+    )
+    risk_scheduler: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "risk": 0.95,
+            "risk_update": 0.0,
+            "max_risk": 1.0,
+            "risk_schedule": 1000,
+        }
+    )
     sil_settings: Dict[str, Any] = field(default_factory=lambda: {"sil_loss_weight": 1.0})
 
 
@@ -281,13 +646,12 @@ class Configurator:
     def preset(name: str = "balanced") -> Config:
         """Create a config from a named preset.
 
-        Presets are intended to give users a single switch for speed/quality.
-
         Args:
             name: Preset name. Supported:
                 - "fast": small networks, looser tolerances
                 - "balanced": sensible defaults
                 - "quality": larger networks, more capacity
+                - "paper": settings used in the GenAI-Net paper experiments
 
         Returns:
             Config instance.
@@ -316,19 +680,22 @@ class Configurator:
             cfg.policy.deep_layer_size = 16384
             cfg.train.hall_of_fame_size = 50
             return cfg
+        
+        if name == "paper":
+            cfg.policy.width = 1024
+            cfg.policy.depth = 5
+            cfg.policy.deep_layer_size = 10240
+            cfg.train.epochs = 300
+            cfg.train.hall_of_fame_size = 50
+            cfg.solver.rtol = 1e-10
+            cfg.solver.atol = 1e-10
+            return cfg
 
         raise ValueError(f"Unknown preset: {name!r}")
 
     @staticmethod
     def with_overrides(cfg: Config, **overrides: Dict[str, Any]) -> Config:
         """Return a deep-copied config with nested overrides applied.
-
-        Example:
-            cfg = Configurator.with_overrides(
-                Configurator.preset("balanced"),
-                task=dict(n_inputs=3, logic_fn=lambda u: u[0] and u[1]),
-                train=dict(epochs=200),
-            )
 
         Args:
             cfg: Base config.
@@ -365,24 +732,16 @@ def build_template_crn(
 ):
     """Build and compile the template IO-CRN.
 
-    Template structure:
-        - Input-driven productions: ∅ -> X_i with channel u_i
-        - Optional dilution: X_i -> ∅
-        - Output species "OUT" is included as a species label
-
     Args:
         n_inputs: Number of inputs.
         include_dilution: Whether to include dilution reactions.
         solver: Solver configuration.
         n_support_species: Number of support species to include.
         dilution_rate: Dilution rate for species.
+
     Returns:
         Tuple (crn_template, species_labels).
-
-    Notes:
-        This function imports RL4CRN internals locally to keep the module import light.
     """
-    # Local imports to avoid forcing RL4CRN heavy imports at module import time.
     from RL4CRN.iocrns.iocrn import IOCRN
     from RL4CRN.iocrns.reactions import MassAction
 
@@ -438,7 +797,7 @@ def build_template_crn(
     return crn_template, species_labels
 
 
-def build_MAK_library(crn_template, species_labels: List[str], order: int):
+def build_MAK_library(crn_template: Any, species_labels: List[str], order: int):
     """Construct and attach a mass-action reaction library.
 
     Args:
@@ -447,12 +806,7 @@ def build_MAK_library(crn_template, species_labels: List[str], order: int):
         order: Reaction order.
 
     Returns:
-        Tuple (library, M, K, masks) where:
-
-            - library: reaction library object
-            - M: number of reactions in library
-            - K: number of total parameters
-            - masks: dict of parameter/logit masks
+        Tuple (library, M, K, masks).
     """
     from RL4CRN.iocrns.reaction_library import construct_mass_action_library
 
@@ -469,40 +823,8 @@ def build_MAK_library(crn_template, species_labels: List[str], order: int):
     return library, M, K, masks
 
 
-def dynamic_tracking_loss(ic, u_list, r_list, time_horizon, w, large_number: float = 1e4):
-    """Build the reward function closure used by environments.
-
-    Args:
-        ic: RL4CRN IC object.
-        u_list: List of input vectors.
-        r_list: List of target outputs.
-        time_horizon: 1D array of simulation time points.
-        w: Weight array for dynamic_tracking_error, typically emphasizing steady-state.
-        large_number: Penalty constant for invalid simulations.
-
-    Returns:
-        Function compute_reward(state) -> float
-    """
-    from RL4CRN.rewards.deterministic import dynamic_tracking_error
-
-    def compute_reward(state):
-        x0_list = ic.get_ic(state)
-        return dynamic_tracking_error(
-            state,
-            u_list,
-            x0_list,
-            time_horizon,
-            r_list,
-            w,
-            norm=1,
-            LARGE_NUMBER=large_number,
-        )
-
-    return compute_reward
-
-
 def build_envs(
-    template,
+    template: Any,
     max_added_reactions: int,
     batch_size: int,
     hall_of_fame_size: int,
@@ -531,7 +853,7 @@ def build_envs(
     return mult_env
 
 
-def build_interfaces(library, device: str, allow_input_influence: bool = False):
+def build_interfaces(library: Any, device: str, allow_input_influence: bool = False):
     """Build standard env<->agent interfaces.
 
     Args:
@@ -623,7 +945,7 @@ def build_policy(
     return policy
 
 
-def build_agent(policy, device: str, agent_cfg: AgentCfg, logger: Any = None):
+def build_agent(policy: Any, device: str, agent_cfg: AgentCfg, logger: Any = None):
     """Build the REINFORCE(+SIL) agent.
 
     Args:
@@ -658,41 +980,49 @@ def build_agent(policy, device: str, agent_cfg: AgentCfg, logger: Any = None):
 class Session:
     """Container for all objects needed to run training and inspection.
 
-    This is created once per configuration and reused for stop/resume training.
+    Attributes:
+        cfg: Config used to build this session.
+        device: Torch device string.
+        n_cpus: Number of CPUs used for parallel rollouts.
+        batch_size: Number of parallel environments.
+        task: Materialized TaskSpec used to compute rewards.
+        crn_template: Compiled IOCRN template.
+        species_labels: Species labels for template/library.
+        library: Reaction library.
+        M: Number of reactions in library.
+        K: Number of parameters in library.
+        masks: Parameter/logit masks from the library.
+        p: Number of CRN input channels.
+        mult_env: Parallel environments.
+        observer: Env->agent observer.
+        tensorizer: Observer tensorizer.
+        actuator: Agent->env actuator.
+        stepper: Environment stepper.
+        policy: Policy instance.
+        agent: Agent instance.
     """
     cfg: Config
     device: str
     n_cpus: int
     batch_size: int
 
-    # Task + simulation
-    u_list: List[np.ndarray]
-    r_list: List[np.ndarray]
-    logic_fn: VectorLogic
-    time_horizon: np.ndarray
-    w: np.ndarray
+    task: TaskSpec
 
-    # CRN + reward
     crn_template: Any
     species_labels: List[str]
-    ic: Any
-    compute_reward: Callable[[Any], float]
 
-    # Library
     library: Any
     M: int
     K: int
     masks: Dict[str, Any]
     p: int
 
-    # Environment + interfaces
     mult_env: Any
     observer: Any
     tensorizer: Any
     actuator: Any
     stepper: Any
 
-    # Policy + agent
     policy: Any
     agent: Any
 
@@ -702,7 +1032,7 @@ class Session:
 
         Args:
             cfg: Configuration object.
-            device: Device string. If None, uses cfg + auto selection.
+            device: Torch device string. If None, auto-selects.
 
         Returns:
             Initialized Session with all required RL4CRN objects wired up.
@@ -710,23 +1040,10 @@ class Session:
         if device is None:
             device = get_device("auto")
 
-        # Seed early for deterministic-ish behavior
         seed_everything(cfg.train.seed)
 
         n_cpus = cfg.train.n_cpus or (os.cpu_count() or 1)
         batch_size = cfg.train.batch_size or (cfg.train.batch_multiplier * n_cpus)
-
-        # Task
-        u_list, r_list, logic_fn = build_logic_task(
-            logic_fn=cfg.task.logic_fn,
-            n_inputs=cfg.task.n_inputs,
-            input_values=cfg.task.input_values,
-        )
-
-        # Horizon + weights (steady-state by default)
-        time_horizon = np.linspace(0.0, cfg.task.t_f, cfg.task.N_t, dtype=np.float32)
-        w = np.zeros((1, cfg.task.N_t), dtype=np.float32)
-        w[:, -1] = cfg.task.steady_state_weight * cfg.task.N_t
 
         # Template CRN + species labels
         crn_template, species_labels = build_template_crn(
@@ -735,22 +1052,25 @@ class Session:
             solver=cfg.solver,
         )
 
-        # IC
-        from RL4CRN.utils.ic import IC
-        ic = IC(names=species_labels, values=[[cfg.task.ic_value for _ in species_labels]])
-
-        # Reward function
-        compute_reward = dynamic_tracking_loss(
-            ic=ic,
-            u_list=u_list,
-            r_list=r_list,
-            time_horizon=time_horizon,
-            w=w,
-        )
-
         # Library
         library, M, K, masks = build_MAK_library(crn_template, species_labels, order=cfg.library.order)
         p = crn_template.num_inputs
+
+        # Task (end-of-file task API)
+        task = make_task(
+            cfg.task.kind,
+            species_labels=species_labels,
+            t_f=cfg.task.t_f,
+            n_t=cfg.task.N_t,
+            n_inputs=cfg.task.n_inputs,
+            p=p,
+            ic=("constant", cfg.task.ic_value),
+            weights=cfg.task.weights,
+            logic_fn=cfg.task.logic_fn if cfg.task.kind == "logic" else None,
+            target=cfg.task.target,
+            target_fn=cfg.task.target_fn,          # <-- ADD THIS
+            dose_range=cfg.task.dose_range,        # <-- ADD THIS (or default inside make_task)
+        )
 
         # Environments
         mult_env = build_envs(
@@ -782,15 +1102,9 @@ class Session:
             device=device,
             n_cpus=n_cpus,
             batch_size=batch_size,
-            u_list=u_list,
-            r_list=r_list,
-            logic_fn=logic_fn,
-            time_horizon=time_horizon,
-            w=w,
+            task=task,
             crn_template=crn_template,
             species_labels=species_labels,
-            ic=ic,
-            compute_reward=compute_reward,
             library=library,
             M=M,
             K=K,
@@ -825,11 +1139,12 @@ class Trainer:
         """Initialize trainer.
 
         Args:
-            session: Built Session containing envs, agent, and reward fn.
+            session: Built Session containing envs, agent, and task reward function.
         """
         self.s = session
         self.state = TrainState()
         self._loaded_hof: Optional[List[Any]] = None
+        self._loaded_cfg: Optional[dict] = None
 
     def step_epoch(self) -> Tuple[float, float]:
         """Run a single epoch: rollout, reward eval, and policy update.
@@ -848,7 +1163,11 @@ class Trainer:
             actions, raw_actions = agent.act(obs, self.s.actuator)
             mult_env.step(actions, self.s.stepper, raw_actions=raw_actions)
 
-        rewards = mult_env.get_reward(self.s.compute_reward)
+        # IMPORTANT:
+        # Passing a bound method (e.g. self._compute_loss) forces joblib to pickle `self`,
+        # which drags in agent/policy and breaks multiprocessing serialization.
+        reward_fn = self.s.task.compute_reward
+        rewards = mult_env.get_reward(reward_fn)
 
         agent.update(
             rewards,
@@ -868,14 +1187,9 @@ class Trainer:
         self.state.epoch += 1
         return best, med
 
+
     def run(self, epochs: int, checkpoint_path: Optional[str] = None) -> None:
         """Run training for a chunk of epochs.
-
-        This method is designed for notebooks:
-
-            - You can interrupt with Ctrl+C
-            - Then inspect intermediate results
-            - Then call run(...) again to resume
 
         Args:
             epochs: Number of epochs to run in this chunk.
@@ -887,7 +1201,6 @@ class Trainer:
         def _maybe_save(current_epoch: int) -> None:
             if checkpoint_path is None:
                 return
-            # Save at the same cadence as progress prints (or every epoch if render_every=0)
             cadence = max(1, cfg.train.render_every) if cfg.train.render_every else 1
             if current_epoch % cadence == 0:
                 self.save(checkpoint_path)
@@ -895,11 +1208,9 @@ class Trainer:
         try:
             for _ in range(epochs):
                 best, med = self.step_epoch()
-
                 e = self.state.epoch - 1
                 if cfg.train.render_every and (e % cfg.train.render_every == 0):
                     print(f"[epoch {e}] best loss={best:.4g} | median loss={med:.4g}")
-
                 _maybe_save(e)
 
         except KeyboardInterrupt:
@@ -922,7 +1233,7 @@ class Trainer:
         """Print and optionally plot the current best CRN.
 
         Args:
-            plot: If True, calls best_crn.plot_transient_response().
+            plot: If True, calls best_crn.plot_transient_response() when available.
 
         Returns:
             Best CRN if present, else None.
@@ -941,14 +1252,8 @@ class Trainer:
     def save(self, path: str) -> None:
         """Save a training checkpoint.
 
-        The checkpoint includes:
-            - epoch counter + history
-            - policy weights
-            - a snapshot of hall-of-fame CRNs
-            - RNG states (NumPy + torch)
-
         Args:
-            path: File path to save (passed to torch.save).
+            path: File path to save.
         """
         payload = {
             "config": self.s.cfg.to_dict(),
@@ -966,13 +1271,8 @@ class Trainer:
     def load(self, path: str, strict: bool = True) -> None:
         """Load a training checkpoint.
 
-        Notes:
-            - This restores policy weights and training counters.
-            - Hall-of-fame CRNs are stored in Trainer._loaded_hof for inspection.
-              (Re-inserting into ParallelEnvironments may depend on RL4CRN internals.)
-
         Args:
-            path: File path to load (passed to torch.load).
+            path: File path to load.
             strict: Passed through to policy.load_state_dict.
 
         Raises:
@@ -984,27 +1284,35 @@ class Trainer:
         with open(path, "rb") as f:
             payload = cloudpickle.load(f)
 
-        # Restore training counters
         self.state.epoch = int(payload.get("epoch", 0))
         self.state.history = payload.get("history", [])
 
-        # Restore weights
         self.s.agent.policy.load_state_dict(payload["policy_state_dict"], strict=strict)
 
-        # Restore RNGs
         if "torch_rng" in payload:
             torch.set_rng_state(payload["torch_rng"])
         if "numpy_rng" in payload:
             np.random.set_state(payload["numpy_rng"])
 
-        # HOF (kept for inspection unless you implement reinsertion)
-        self._loaded_hof = payload.get("hall_of_fame_crns", None)
+        # --- Restore HoF into the live mult_env ---
+        hof_crns = payload.get("hall_of_fame_crns", []) or []
 
-        # If you *want* to restore cfg (including functions) into the session:
-        # NOTE: This won't automatically rebuild session objects; it just gives you the cfg back.
+        class _HOFItem:
+            """Minimal wrapper so code can use `env.state`."""
+            def __init__(self, state):
+                self.state = state
+
+        self.s.mult_env.hall_of_fame = [_HOFItem(crn) for crn in hof_crns]
+
+        # Keep copies for debugging/inspection
+        self._loaded_hof = hof_crns
         self._loaded_cfg = payload.get("config", None)
 
-        print(f"Loaded checkpoint: {path} (epoch={self.state.epoch})")
+        print(
+            f"Loaded checkpoint: {path} (epoch={self.state.epoch}) | "
+            f"restored_hof={len(self.s.mult_env.hall_of_fame)}"
+        )
+
 
     def loaded_hof(self) -> Optional[List[Any]]:
         """Return hall-of-fame CRNs loaded from a checkpoint.
@@ -1015,10 +1323,7 @@ class Trainer:
         return self._loaded_hof
 
 
-def make_session_and_trainer(
-    cfg: Config,
-    device: str = "auto",
-) -> Tuple[Session, Trainer]:
+def make_session_and_trainer(cfg: Config, device: str = "auto") -> Tuple[Session, Trainer]:
     """Convenience function to build a session and trainer.
 
     Args:
