@@ -32,8 +32,6 @@ plugins:
             show_root_heading: true
             show_root_toc_entry: true
             show_signature_annotations: false
-            show_docstring_types: false
-
 
 nav:
   - Home: index.md

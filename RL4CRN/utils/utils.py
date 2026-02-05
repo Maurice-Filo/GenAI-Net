@@ -344,14 +344,16 @@ def oscillation_metrics(y_list, t, t0, f_list=None, mean_list=None):
     r1 = np.mean(r1_list) if len(r1_list) else 0.0
     return frequency_error, mean_error, damping, r1, peaks_flag
 
-def compute_frequency(y_list, t, t0):
+def compute_frequency_damping(y_list, t, t0):
     """ Computes the fundamental frequencies of oscillations in the output signals.
     Args:
     - y_list: A list of outputs, each of shape (1, time_steps).
     - t: A 1D numpy array representing the time vector.
     - t0: A float representing the time after which to start considering peaks.
     Returns:
-    - estimated_frequencies: A numpy array of estimated frequencies, shape (list_length, 1)."""
+    - estimated_frequencies: A numpy array of estimated frequencies, shape (list_length, 1).
+    - damping_metrics: A numpy array of damping metrics, shape (list_length, 1).
+    """
     
     # Check if dimensions match
     if 1 != y_list[0].shape[0]:
@@ -387,5 +389,11 @@ def compute_frequency(y_list, t, t0):
             avg_period = np.mean(periods)
             estimated_frequencies.append(1.0 / avg_period if avg_period > 0 else 0.0)
 
+            peak_heights = y[0, peaks_indices]
+            decrements = peak_heights[:-1] / peak_heights[1:]
+            avg_decrement = np.mean(decrements)
+            damping_metrics.append(avg_decrement)
     estimated_frequencies = np.array(estimated_frequencies).reshape(-1, 1)  # shape (list_length, 1)
-    return estimated_frequencies
+    damping_metrics = np.array(damping_metrics).reshape(-1, 1)  # shape (list_length, 1)
+
+    return estimated_frequencies, damping_metrics
