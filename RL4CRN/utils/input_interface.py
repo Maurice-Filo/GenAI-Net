@@ -24,6 +24,9 @@ import cloudpickle
 import numpy as np
 import torch
 
+from RL4CRN.iocrns.reaction_library import ReactionLibrary
+from RL4CRN.iocrns.iocrn import IOCRN
+
 
 # ----------------------------
 # Small general utilities
@@ -84,7 +87,10 @@ class TaskSpec: # CHECKED ___ OK
     """Fully materialized task description used by environments.
 
     Attributes:
-        name: Task name/kind (e.g., "logic", "tracking", "oscillator", ...).
+        template_crn: Compiled IOCRN template.
+        library_components: Tuple (library, M, K, masks).
+        species_labels: Species labels used by the task.
+        kind: Task kind (e.g., "logic", "tracking", "oscillator", ...).
         time_horizon: 1D array of time points.
         u_list: List of input vectors (each shape (p,), float32).
         ic: RL4CRN IC object.
@@ -92,14 +98,22 @@ class TaskSpec: # CHECKED ___ OK
             and return either:
             - float loss, or
             - (float loss, dict info)
+        t_f: Final simulation time.
+        n_t: Number of time points.
         render_mode: Optional rendering configuration.
     """
-    name: str
+    template_crn: IOCRN
+    library_components: tuple[ReactionLibrary, int, int, dict[str, Any]]
+    species_labels: List[str]
+    kind: str
     time_horizon: np.ndarray
     u_list: List[np.ndarray]
     ic: Any
     compute_reward: Callable[[Any], Union[float, Tuple[float, Dict[str, Any]]]]
+    t_f: float
+    n_t: int
     render_mode: Optional[dict] = "transients"
+    
 
 
 def make_time_grid(t_f: float = 100.0, n_t: int = 1000) -> np.ndarray: # CHECKED ___ OK
@@ -119,7 +133,6 @@ def build_u_list(
     kind: str,
     *,
     n_inputs: Optional[int] = None,
-    p: Optional[int] = None,
     u_values: Optional[List[float]] = None,
     dose_range: Optional[Tuple[float, float, int]] = None,
     u_spec: Optional[tuple] = None,
@@ -128,8 +141,7 @@ def build_u_list(
 
     Args:
         kind: Task kind.
-        n_inputs: Number of input channels for "logic" tasks.
-        p: Number of input channels for non-logic tasks (CRN template inputs).
+        n_inputs: Number of input channels.
         u_values: Values to enumerate for grid tasks.
         dose_range: (u_min, u_max, n) for "dose_response" tasks.
         u_spec: Optional escape hatch specifying exact input generation:
@@ -142,34 +154,29 @@ def build_u_list(
     """
     if u_spec is not None:
         tag, *args = u_spec
-        if tag == "custom":
+        if tag == "custom": # take input list as-is
             return args[0]
-        if tag == "grid":
+        if tag == "grid": # cartesian product over specified values
             values = args[0]
-            dim = p if p is not None else n_inputs
+            dim = n_inputs
             if dim is None:
-                raise ValueError("u_spec=('grid', ...) needs p or n_inputs.")
+                raise ValueError("u_spec=('grid', ...) needs n_inputs.")
             return [np.array(u, dtype=np.float32) for u in product(values, repeat=dim)]
-        if tag == "linspace":
+        if tag == "linspace": # 1D linspace inputs
             u_min, u_max, n = args
             return [np.array([u], dtype=np.float32) for u in np.linspace(u_min, u_max, n)]
         raise ValueError(f"Unknown u_spec: {u_spec}")
 
     if kind == "logic":
-        if n_inputs is None:
-            raise ValueError("logic task needs n_inputs.")
         return [np.array(u, dtype=np.float32) for u in product([0.0, 1.0], repeat=n_inputs)]
 
-    if kind in ("tracking", "oscillator", "ssa_tracking", "ssa_robust"):
-        if p is None:
-            raise ValueError(f"{kind} task needs p.")
-        values = u_values if u_values is not None else [1.0]
-        return [np.array(u, dtype=np.float32) for u in product(values, repeat=p)]
+    if kind in ("tracking", "oscillator_mean", "oscillator_freq", "ssa_tracking", "ssa_robust"):
+        return [np.array(u, dtype=np.float32) for u in product(u_values, repeat=n_inputs)]
 
     if kind == "dose_response":
-        u_min, u_max, n = dose_range if dose_range is not None else (0.0, 10.0, 10)
+        u_min, u_max, n = dose_range
         return [np.array([u], dtype=np.float32) for u in np.linspace(u_min, u_max, n)]
-
+    
     raise ValueError(f"Unknown task kind: {kind}")
 
 
@@ -242,22 +249,9 @@ def build_weights(q: int, n_t: int, w_spec: Union[str, tuple]) -> np.ndarray: # 
 
     raise ValueError(f"Unknown w_spec: {w_spec}")
 
-
-def _reward_to_tuple(reward_out: Union[float, Tuple[float, Dict[str, Any]]]) -> Tuple[float, Dict[str, Any]]:
-    """Normalize reward outputs to (loss, info).
-
-    Args:
-        reward_out: Either a float loss or (float loss, info dict).
-
-    Returns:
-        Tuple (loss, info).
-    """
-    if isinstance(reward_out, tuple) and len(reward_out) == 2 and isinstance(reward_out[1], dict):
-        return float(reward_out[0]), reward_out[1]
-    return float(reward_out), {}
-
-
 def make_task(
+    template_crn: IOCRN,
+    library_components: tuple[ReactionLibrary, int, int, dict[str, Any]],   
     kind: str,
     species_labels: List[str],
     *,
@@ -266,7 +260,6 @@ def make_task(
     n_t: int = 1000,
     # inputs
     n_inputs: Optional[int] = None,
-    p: Optional[int] = None,
     u_values: Optional[List[float]] = None,
     dose_range: Optional[Tuple[float, float, int]] = None,
     u_spec: Optional[tuple] = None,
@@ -323,15 +316,31 @@ def make_task(
 
     Raises:
         ValueError: If kind is unknown or required knobs are missing.
-    """
+    from RL4CRN.iocrns.iocrn import IOCRN
+"""
     from RL4CRN.rewards.deterministic import dynamic_tracking_error, oscillation_error
     from RL4CRN.rewards.stochastic import dynamic_tracking_error_SSA, robust_tracking_loss_SSA
 
+    
+
     time_horizon = make_time_grid(t_f, n_t)
     u_list = build_u_list(
-        kind, n_inputs=n_inputs, p=p, u_values=u_values, dose_range=dose_range, u_spec=u_spec
+        kind, n_inputs=n_inputs, u_values=u_values, dose_range=dose_range, u_spec=u_spec
     )
     ic_obj = build_ic(species_labels, ic)
+
+    task = TaskSpec(
+        template_crn=template_crn,
+        library_components=library_components,
+        species_labels=species_labels,
+        kind=kind,
+        time_horizon=time_horizon,
+        u_list=u_list,
+        ic=ic_obj,
+        compute_reward=None,
+        t_f=t_f,
+        n_t=n_t,
+    )
 
     if kind == "logic":
         if logic_fn is None:
@@ -344,11 +353,9 @@ def make_task(
             out = dynamic_tracking_error(
                 state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4
             )
-            return _reward_to_tuple(out)
+            return out
 
-        return TaskSpec("logic", time_horizon, u_list, ic_obj, compute_reward)
-
-    if kind == "tracking":
+    elif kind == "tracking":
         if target == "copy_input0":
             r_list = [np.array([u[0]], dtype=np.float32) for u in u_list]
         elif isinstance(target, (int, float)):
@@ -362,11 +369,9 @@ def make_task(
             out = dynamic_tracking_error(
                 state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4
             )
-            return _reward_to_tuple(out)
+            return out
 
-        return TaskSpec("tracking", time_horizon, u_list, ic_obj, compute_reward)
-
-    if kind == "dose_response":
+    elif kind == "dose_response":
         if target_fn is None:
             raise ValueError("dose_response needs target_fn(u)->y*.")
         w = build_weights(q=1, n_t=n_t, w_spec=weights)
@@ -377,13 +382,11 @@ def make_task(
             out = dynamic_tracking_error(
                 state, u_list, x0_list, time_horizon, r_list, w, norm=1, LARGE_NUMBER=1e4
             )
-            return _reward_to_tuple(out)
-
-        return TaskSpec("dose_response", time_horizon, u_list, ic_obj, compute_reward)
-
-    if kind == "oscillator":
+            return out
+    
+    elif kind == "oscillator_mean":
         mean_list = [np.array([u[0]], dtype=np.float32) for u in u_list]
-        w_local = osc_w if osc_w is not None else [0.4, 0.0, 0.2, 0.4]
+        w_local = osc_w
 
         def compute_reward(state: Any) -> Tuple[float, Dict[str, Any]]:
             x0_list = ic_obj.get_ic(state)
@@ -398,11 +401,28 @@ def make_task(
                 t0=t0,
                 LARGE_NUMBER=1e4,
             )
-            return _reward_to_tuple(out)
+            return out
+    
+    elif kind == "oscillator_freq":
+        f_list = [np.array([u[0]], dtype=np.float32) for u in u_list]
+        w_local = osc_w
 
-        return TaskSpec("oscillator", time_horizon, u_list, ic_obj, compute_reward)
+        def compute_reward(state: Any) -> Tuple[float, Dict[str, Any]]:
+            x0_list = ic_obj.get_ic(state)
+            out = oscillation_error(
+                state,
+                u_list,
+                x0_list,
+                time_horizon,
+                f_list=f_list,
+                mean_list=None,
+                w=w_local,
+                t0=t0,
+                LARGE_NUMBER=1e4,
+            )
+            return out
 
-    if kind == "ssa_tracking":
+    elif kind == "ssa_tracking":
         if target == "copy_input0":
             r_list = [np.array([u[0]], dtype=np.float32) for u in u_list]
         else:
@@ -425,11 +445,9 @@ def make_task(
                 LARGE_NUMBER=1e4,
                 LARGE_PENALTY=1e4,
             )
-            return _reward_to_tuple(out)
+            return out
 
-        return TaskSpec("ssa_tracking", time_horizon, u_list, ic_obj, compute_reward)
-
-    if kind == "ssa_robust":
+    elif kind == "ssa_robust":
         if target == "copy_input0":
             r_list = [np.array([u[0]], dtype=np.float32) for u in u_list]
         else:
@@ -454,11 +472,14 @@ def make_task(
                 cv_weight=cv_weight,
                 rpa_weight=rpa_weight,
             )
-            return _reward_to_tuple(out)
+            return out
 
-        return TaskSpec("ssa_robust", time_horizon, u_list, ic_obj, compute_reward)
+    else:
+        raise ValueError(f"Unknown task kind: {kind}")
 
-    raise ValueError(f"Unknown kind: {kind}")
+    task.compute_reward = compute_reward
+    return task
+
 
 
 # ----------------------------
@@ -614,7 +635,7 @@ class Config:
         policy: Policy configuration.
         agent: Agent configuration.
     """
-    task: TaskCfg = field(default_factory=TaskCfg)
+    task: TaskCfg = field(default_factory=TaskCfg) # TODO 
     solver: SolverCfg = field(default_factory=SolverCfg)
     train: TrainCfg = field(default_factory=TrainCfg)
     library: LibraryCfg = field(default_factory=LibraryCfg)
@@ -722,105 +743,6 @@ class Configurator:
 # ----------------------------
 # RL4CRN wiring helpers
 # ----------------------------
-
-def build_template_crn(
-    n_inputs: int,
-    include_dilution: bool = False,
-    solver: SolverCfg = SolverCfg(),
-    n_support_species: int = 0,
-    dilution_rate: float = 0.05,
-):
-    """Build and compile the template IO-CRN.
-
-    Args:
-        n_inputs: Number of inputs.
-        include_dilution: Whether to include dilution reactions.
-        solver: Solver configuration.
-        n_support_species: Number of support species to include.
-        dilution_rate: Dilution rate for species.
-
-    Returns:
-        Tuple (crn_template, species_labels).
-    """
-    from RL4CRN.iocrns.iocrn import IOCRN
-    from RL4CRN.iocrns.reactions import MassAction
-
-    productions = []
-    dilutions = []
-    species_labels = [f"X_{i+1}" for i in range(n_inputs)]
-
-    for i, s in enumerate(species_labels):
-        productions.append(
-            MassAction(
-                reactant_labels=[],
-                product_labels=[s],
-                input_channels=[f"u_{i+1}"],
-                params=[1.0],
-                params_controllability=[True],
-            )
-        )
-        if include_dilution:
-            dilutions.append(
-                MassAction(
-                    reactant_labels=[s],
-                    product_labels=[],
-                    input_channels=[None],
-                    params=[dilution_rate],
-                    params_controllability=[True],
-                )
-            )
-
-    for j in range(n_support_species):
-        support_label = f"S_{j+1}"
-        species_labels.append(support_label)
-        if include_dilution:
-            dilutions.append(
-                MassAction(
-                    reactant_labels=[support_label],
-                    product_labels=[],
-                    input_channels=[None],
-                    params=[dilution_rate],
-                    params_controllability=[True],
-                )
-            )
-
-    species_labels.append("OUT")
-
-    crn_template = IOCRN(
-        productions + dilutions,
-        output_labels=["OUT"],
-        solver=solver.algorithm,
-        rtol=solver.rtol,
-        atol=solver.atol,
-    )
-    crn_template.compile()
-    return crn_template, species_labels
-
-
-def build_MAK_library(crn_template: Any, species_labels: List[str], order: int):
-    """Construct and attach a mass-action reaction library.
-
-    Args:
-        crn_template: Compiled IOCRN template.
-        species_labels: Species labels used by the library.
-        order: Reaction order.
-
-    Returns:
-        Tuple (library, M, K, masks).
-    """
-    from RL4CRN.iocrns.reaction_library import construct_mass_action_library
-
-    library = construct_mass_action_library(species_labels=species_labels, order=order)
-    crn_template.set_library_context(library)
-
-    M = len(library.reactions)
-    K = library.get_num_parameters()
-    masks = {
-        "continuous": library.get_parameter_mask(mode="continuous"),
-        "discrete": library.get_parameter_mask(mode="discrete"),
-        "logit": library.get_logit_mask(),
-    }
-    return library, M, K, masks
 
 
 def build_envs(
@@ -1046,14 +968,10 @@ class Session:
         batch_size = cfg.train.batch_size or (cfg.train.batch_multiplier * n_cpus)
 
         # Template CRN + species labels
-        crn_template, species_labels = build_template_crn(
-            n_inputs=cfg.task.n_inputs,
-            include_dilution=cfg.library.include_dilution,
-            solver=cfg.solver,
-        )
+        crn_template, species_labels = cfg.task.template_crn, cfg.task.species_labels
 
         # Library
-        library, M, K, masks = build_MAK_library(crn_template, species_labels, order=cfg.library.order)
+        library, M, K, masks = cfg.task.library_components
         p = crn_template.num_inputs
 
         # Task (end-of-file task API)
@@ -1063,7 +981,6 @@ class Session:
             t_f=cfg.task.t_f,
             n_t=cfg.task.N_t,
             n_inputs=cfg.task.n_inputs,
-            p=p,
             ic=("constant", cfg.task.ic_value),
             weights=cfg.task.weights,
             logic_fn=cfg.task.logic_fn if cfg.task.kind == "logic" else None,
@@ -1337,3 +1254,26 @@ def make_session_and_trainer(cfg: Config, device: str = "auto") -> Tuple[Session
     session = Session.from_config(cfg, device=dev)
     trainer = Trainer(session)
     return session, trainer
+
+
+#### HELPERS for printing and reward smoke tests ####
+def print_task_summary(task, max_preview=3):
+    """Compact TaskSpec summary."""
+    print("Task:", task.kind)
+    print("time_horizon:", task.time_horizon.shape, f"[0..{task.time_horizon[-1]}]")
+    print("num scenarios:", len(task.u_list))
+    if len(task.u_list) > 0:
+        print(f"first {min(max_preview, len(task.u_list))} u:", task.u_list[:max_preview])
+    print()
+
+
+def run_smoke_reward(task, state, label=""):
+    """Call task.compute_reward on a given state and print normalized output."""
+    out = task.compute_reward(state)
+    if isinstance(out, tuple):
+        loss, info = out
+    else:
+        loss, info = out, {}
+    print(f"[reward smoke{(' - ' + label) if label else ''}] loss={float(loss):.6g} | info_keys={list(info.keys())[:10]}")
+    return out
+
