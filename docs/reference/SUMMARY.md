@@ -50,6 +50,7 @@
         * [generate_initial_conditions.py](reference/utils/generate_initial_conditions.md)
         * [hall_of_fame.py](reference/utils/hall_of_fame.md)
         * [ic.py](reference/utils/ic.md)
+        * [input_interface.py](reference/utils/input_interface.md)
         * [stochastic.py](reference/utils/stochastic.md)
         * [stochastic_visualizations.py](reference/utils/stochastic_visualizations.md)
         * [utils.py](reference/utils/utils.md)

@@ -67,7 +67,7 @@ else:
 # add dilution and production reactions for all species
 productions = []
 dilutions = []
-n_inputs = 3
+n_inputs = 8
 species_labels = [f'X_{i+1}' for i in range(n_inputs)] 
 for i,s in enumerate(species_labels):
     productions.append(MassAction(reactant_labels=[], product_labels=[s], input_channels=[f'u_{i+1}'], params=[1.], params_controllability=[True]))
@@ -88,7 +88,7 @@ print("Template CRN:")
 print(crn_template)
 
 # Construct the library of possible reactions
-library = construct_hill_production_library(species_labels=species_labels, max_product_order=2, max_num_regulators=1)
+library = construct_hill_production_library(species_labels=species_labels, max_product_order=1, max_num_regulators=2)
 library.add_reactions(productions+dilutions) # add the production reactions to the library
 library.prepare_lookup_tables()
 
