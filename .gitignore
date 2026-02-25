@@ -4,6 +4,7 @@
 *.gif
 *.json
 *.pkl
+.env
 debate_trainscript*.txt
 
 # Byte-compiled / optimized / DLL files

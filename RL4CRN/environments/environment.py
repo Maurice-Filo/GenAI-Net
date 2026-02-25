@@ -455,3 +455,66 @@ class Environment():
                         plt.close(fig)
                     except ValueError:
                         pass
+
+            case {'style': 'logger', 'task': 'habituation'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        fig, _ = self.state.plot_transient_response_piecewise()
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID} Habituation Response, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} Habituation", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} Habituation')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                    except ValueError:
+                        pass
+
+            case {'style': 'logger', 'task': 'habituation_gap'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        fig, _ = self.state.plot_transient_response_piecewise(gap=True)
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID} Habituation Response, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} Habituation", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} Habituation')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                    except ValueError:
+                        pass
+
+            case {'style': 'logger', 'task': 'sensitization_gap'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        fig, _ = self.state.plot_transient_response_piecewise(gap=True)
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID} Sensitization Response, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} Sensitization", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} Sensitization')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                    except ValueError:
+                        pass

@@ -1535,3 +1535,215 @@ def plot_truth_table(u_list, r_list, title='Truth Table for Target Logic Functio
 
     # return the figure for further use if needed
     return fig
+
+
+import numpy as np
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import matplotlib.patches as patches
+
+def plot_truth_table_transposed_nature(
+    u_list,
+    actual_outputs,
+    logic_function,
+    title="Truth table",
+    figsize=(2.2, 1.2),
+    silent=True,
+):
+    """
+    Nature Methods–style transposed truth table (Refined):
+    - Font size 6 for data.
+    - First column (labels) colored to match sections (Green/Red).
+    - Shading intensity reduced (pastel/lighter).
+    """
+
+    rc = {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+        "font.size": 6,
+        "axes.titlesize": 9,
+        "axes.titleweight": "bold",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "figure.dpi": 150,
+        "savefig.dpi": 600,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.02,
+    }
+
+    def make_gradient_cmap(base_color):
+        base_rgb = mcolors.to_rgb(base_color)
+        return mcolors.LinearSegmentedColormap.from_list(
+            f"grad_{base_color}", ["#FFFFFF", mcolors.to_hex(base_rgb)], N=256
+        )
+
+    def to_cell_color(val, cmap, vmin=0.0, vmax=1.0):
+        if np.isnan(val):
+            return (0.97, 0.97, 0.97, 1.0) # very light grey for NaNs
+        t = (val - vmin) / (vmax - vmin + 1e-12)
+        t = float(np.clip(t, 0.0, 1.0))
+        
+        # REDUCED INTENSITY:
+        # Map 0.0 -> 0.05 (almost white)
+        # Map 1.0 -> 0.60 (pastel, not full saturation)
+        t = 0.05 + 0.55 * t 
+        return cmap(t)
+
+    def best_text_color(rgba):
+        r, g, b = rgba[:3]
+        lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        return "#111111" if lum > 0.6 else "#FFFFFF"
+
+    with mpl.rc_context(rc):
+        # ----- Data prep -----
+        u_matrix = np.array(u_list, dtype=float)
+        if u_matrix.ndim == 1:
+            u_matrix = u_matrix.reshape(-1, 1)
+        n_samples, n_inputs = u_matrix.shape
+
+        targets = []
+        for row in u_matrix:
+            try:
+                targets.append(float(logic_function(row)))
+            except Exception:
+                targets.append(np.nan)
+        targets = np.array(targets, dtype=float)
+
+        actuals = np.array(actual_outputs, dtype=float).flatten()
+        if actuals.size != n_samples:
+             actuals = np.resize(actuals, n_samples) 
+
+        # ----- Colormaps (Pastel/Lighter Base) -----
+        # Using lighter hex codes for base colors to keep shading gentle
+        base_green = "#74c476"  # Pastel Green
+        base_red   = "#709cd6"  # Pastel Red
+        
+        cmap_input = make_gradient_cmap(base_green)
+        cmap_output = make_gradient_cmap(base_red)
+
+        # Background colors for the label column (static light shades)
+        # We pick a very light version of the base colors for the labels
+        label_bg_input = mcolors.to_rgba("#e5f5e0") # Very pale green
+        label_bg_output = mcolors.to_rgba("#d2e9fe") # Very pale red
+
+        # ----- Build table data -----
+        row_labels = [f"$\\bf{{u_{{{i+1}}}}}$" for i in range(n_inputs)] + ["Target", "Output"]
+        cell_text, cell_colors = [], []
+
+        # 1. Inputs
+        for i in range(n_inputs):
+            vals = u_matrix[:, i]
+            cell_text.append([f"{x:g}" for x in vals])
+            cell_colors.append([to_cell_color(x, cmap_input) for x in vals])
+
+        # 2. Target
+        cell_text.append([("—" if np.isnan(t) else f"{t:.2f}") for t in targets])
+        cell_colors.append([to_cell_color(t, cmap_output) for t in targets])
+
+        # 3. Output
+        cell_text.append([f"{a:.2f}" for a in actuals])
+        cell_colors.append([to_cell_color(a, cmap_output) for a in actuals])
+
+        # ----- Figure -----
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.axis("off")
+
+        top_margin = 0.16
+        fig.subplots_adjust(top=1 - top_margin)
+        bbox = [0.0, 0.0, 1.0, 1.0]
+
+        tbl = ax.table(
+            cellText=cell_text,
+            cellColours=cell_colors,
+            rowLabels=row_labels,
+            cellLoc="center",
+            loc="center",
+            bbox=bbox,
+        )
+
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(6)
+
+        # ----- Styling -----
+        grid_col = "#D9D9D9"
+        outer_col = "#A6A6A6"
+        label_edge = "#B7C0D1"
+        label_text = "#111111"
+
+        idx_target = n_inputs
+        idx_output = n_inputs + 1
+
+        for (row, col), cell in tbl.get_celld().items():
+            cell.set_edgecolor(grid_col)
+            cell.set_linewidth(0.4)
+
+            # --- Row Labels (First Column) ---
+            if col == -1:
+                # Apply specific shading based on row type
+                if row < n_inputs:
+                    cell.set_facecolor(label_bg_input)
+                else:
+                    cell.set_facecolor(label_bg_output)
+                
+                cell.set_edgecolor(label_edge)
+                cell.set_linewidth(0.6)
+                cell.set_text_props(color=label_text, weight="bold", ha="right")
+                cell.set_fontsize(7) # Slightly larger for labels
+            
+            # --- Data Cells ---
+            else:
+                tc = best_text_color(cell.get_facecolor())
+                weight = "bold" if row == idx_output else "normal"
+                cell.set_text_props(color=tc, weight=weight)
+                cell.set_fontsize(6)
+
+        # ----- Separation line (black) -----
+        total_rows = len(row_labels)
+        row_h = bbox[3] / total_rows
+        y_sep = bbox[1] + bbox[3] - (n_inputs * row_h)
+
+        ax.add_line(
+            plt.Line2D(
+                [bbox[0], bbox[0] + bbox[2]],
+                [y_sep, y_sep],
+                transform=ax.transAxes,
+                color="#000000",
+                linewidth=0.9,
+                zorder=10,
+            )
+        )
+
+        # ----- Outer border -----
+        ax.add_patch(
+            patches.Rectangle(
+                (bbox[0], bbox[1]),
+                bbox[2],
+                bbox[3],
+                transform=ax.transAxes,
+                fill=False,
+                edgecolor=outer_col,
+                linewidth=0.8,
+                zorder=10,
+            )
+        )
+
+        if not silent:
+            plt.show()
+
+        return fig, ax
+    
+def get_outputs(iocrn):
+    """
+    Helper function to extract the final output values from an IOCRN's last_task_info.
+    Assumes outputs are stored in `iocrn.last_task_info['outputs']` as a list of arrays,
+    where the last element of the first array corresponds to the final output values.
+
+    Args:
+        iocrn : object
+            An IOCRN object with a `last_task_info` attribute containing 'outputs'.
+    Returns:
+        list
+            A list of final output values extracted from the IOCRN's last_task_info.
+    """
+    return [o[0][-1] for o in iocrn.last_task_info['outputs']]

@@ -2,9 +2,11 @@ from RL4CRN.utils.input_interface import SolverCfg
 
 def build_simple_IOCRN(
     species: list,
-    input_map: dict,
-    dilution_map: dict,
+    production_input_map: dict,
     output_species: str,
+    degradation_input_map: dict = None,
+    dilution_map: dict = None,
+    production_map: dict = None,
     solver: SolverCfg = SolverCfg(),
 ):
     """Helper to build and compile a starter IO-CRN.
@@ -14,6 +16,7 @@ def build_simple_IOCRN(
         input_map: Dict mapping input species indices to input channel names.
         dilution_map: Dict mapping species labels to their dilution rates.
         output_species: Label of the output species.
+        production_map: Dict mapping species labels to their production rates.
         solver: Solver configuration.
 
     Returns:
@@ -26,7 +29,7 @@ def build_simple_IOCRN(
     dilutions = []
     species_labels = species
 
-    for input_species, input_name in input_map.items():
+    for input_species, input_name in production_input_map.items():
         productions.append(
             MassAction(
                 reactant_labels=[],
@@ -36,8 +39,19 @@ def build_simple_IOCRN(
                 params_controllability=[True],
             )
         )
+
+    for disturbance_species, disturbance_name in (degradation_input_map or {}).items():
+        dilutions.append(
+            MassAction(
+                reactant_labels=[],
+                product_labels=[disturbance_species],
+                input_channels=[disturbance_name],
+                params=[1.0],
+                params_controllability=[True],
+            )
+        )
     
-    for species_label, dilution_rate in dilution_map.items():
+    for species_label, dilution_rate in (dilution_map or {}).items():
         dilutions.append(
             MassAction(
                 reactant_labels=[species_label],
@@ -48,9 +62,20 @@ def build_simple_IOCRN(
             )
         )
 
+    for species_label, production_rate in (production_map or {}).items():
+        dilutions.append(
+            MassAction(
+                reactant_labels=[],
+                product_labels=[species_label],
+                input_channels=[None],
+                params=[production_rate],
+                params_controllability=[True],
+            )
+        )
+
     crn_template = IOCRN(
         productions + dilutions,
-        output_labels=[output_species],
+        output_labels=[output_species] if not isinstance(output_species, list) else output_species,
         solver=solver.algorithm,
         rtol=solver.rtol,
         atol=solver.atol,
