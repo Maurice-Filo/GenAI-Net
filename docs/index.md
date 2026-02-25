@@ -21,7 +21,7 @@ At a high level, GenAI-Net follows this loop:
 
 ### GenAI-Net system overview
 
-![GenAI-Net Figure 1](/site/assets/Overview.png)
+![GenAI-Net Figure 1](/assets/Overview.png)
 
 **The end-to-end GenAI-Net pipeline.** a policy generates CRN edits (topology + parameters), the candidate is evaluated in simulation under a user-defined task objective, and learning shifts the proposal distribution toward better-performing and diverse networks.
 
