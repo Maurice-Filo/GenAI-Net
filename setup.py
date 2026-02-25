@@ -25,7 +25,6 @@ setuptools.setup(
         'scikit-sundae',
         'python-louvain',
         'cloudpickle',
-        'stochasticSimulations @ git+https://github.com/redsnic/stochasticApproaches.git',
     ],
     packages=setuptools.find_packages(),
     extras_require={
@@ -40,6 +39,9 @@ setuptools.setup(
             "mkdocs-section-index==0.3.10",
             "mkdocstrings==1.0.2",
             "mkdocstrings-python==2.0.1",
+        ],
+        "SSA": [
+            'stochasticSimulations @ git+https://github.com/redsnic/stochasticApproaches.git',
         ],
     },
 )
