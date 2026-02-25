@@ -1,6 +1,8 @@
 site_name: GenAI-Net (RL4CRN)
 docs_dir: docs
-site_url: https://maurice-filo.github.io/CRN-GenerativeAI/
+site_url: https://maurice-filo.github.io/GenAI-Net/
+repo_url: https://github.com/Maurice-Filo/GenAI-Net
+repo_name: Maurice-Filo/GenAI-Net
 use_directory_urls: true  # optional, but common
 
 theme:
