@@ -112,7 +112,7 @@ You can compile the documentation for this project by collecting the necessary d
 pip install .[docs]
 ```
 
-and running
+and running 
 
 ```
 python docs/gen_ref_pages.py & mkdocs serve 
