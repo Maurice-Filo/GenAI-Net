@@ -1,0 +1,79 @@
+site_name: GenAI-Net (RL4CRN)
+docs_dir: docs
+site_url: https://maurice-filo.github.io/CRN-GenerativeAI/
+use_directory_urls: true  # optional, but common
+
+theme:
+  name: material
+
+markdown_extensions:
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.details
+  - admonition
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            docstring_section_style: spacy
+            show_source: false
+            show_root_heading: true
+            show_root_toc_entry: true
+            show_signature_annotations: false
+
+nav:
+  - Home: index.md
+  - Reference:
+      - agent2env_interface:
+          - abstract_actuator: reference/agent2env_interface/abstract_actuator.md
+          - abstract_stepper: reference/agent2env_interface/abstract_stepper.md
+          - iocrn_stepper: reference/agent2env_interface/iocrn_stepper.md
+          - library_actuator: reference/agent2env_interface/library_actuator.md
+      - agents:
+          - abstract_agent: reference/agents/abstract_agent.md
+          - reinforce_agent: reference/agents/reinforce_agent.md
+      - policies:
+          - add_reaction_by_index: reference/policies/add_reaction_by_index.md
+          - add_reaction_by_ordered_index: reference/policies/add_reaction_by_ordered_index.md
+          - parameter_generator_from_distribution: reference/policies/parameter_generator_from_distribution.md
+      - rewards:
+          - deterministic: reference/rewards/deterministic.md
+          - stochastic: reference/rewards/stochastic.md
+      - utils:
+          - ffnn: reference/utils/ffnn.md
+          - generate_initial_conditions: reference/utils/generate_initial_conditions.md
+          - hall_of_fame: reference/utils/hall_of_fame.md
+          - ic: reference/utils/ic.md
+          - stochastic: reference/utils/stochastic.md
+          - stochastic_visualizations: reference/utils/stochastic_visualizations.md
+          - utils: reference/utils/utils.md
+          - visualizations: reference/utils/visualizations.md
+      - distributions:
+          - categorical: reference/distributions/categorical.md
+          - lognormal: reference/distributions/lognormal.md
+      - env2agent_interface:
+          - abstract_observer: reference/env2agent_interface/abstract_observer.md
+          - abstract_tensorizer: reference/env2agent_interface/abstract_tensorizer.md
+          - explicit_observer: reference/env2agent_interface/explicit_observer.md
+          - explicit_tensorizer: reference/env2agent_interface/explicit_tensorizer.md
+      - environments:
+          - abstract_multi_environments: reference/environments/abstract_multi_environments.md
+          - environment: reference/environments/environment.md
+          - parallel_environments: reference/environments/parallel_environments.md
+          - serial_environments: reference/environments/serial_environments.md
+      - iocrns:
+          - iocrn: reference/iocrns/iocrn.md
+          - reaction_library: reference/iocrns/reaction_library.md
+          - reactions: reference/iocrns/reactions.md

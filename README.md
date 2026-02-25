@@ -103,3 +103,19 @@ export CXX=/usr/bin/g++
 # install with
 python -m pip install --no-cache-dir --no-build-isolation pycuda
 ```
+
+## Compiling the docs
+
+You can compile the documentation for this project by collecting the necessary dependencies:
+
+```
+pip install .[docs]
+```
+
+and running
+
+```
+python docs/gen_ref_pages.py & mkdocs serve 
+```
+
+which will create the documentation and serve it on the localhost:8000 port.
