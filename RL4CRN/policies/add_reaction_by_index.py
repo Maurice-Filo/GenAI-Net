@@ -85,7 +85,7 @@ class AddReactionByIndex(torch.nn.Module):
     """
     def __init__(self, num_reactions, num_parameters, num_inputs, 
                  encoder_attributes, deep_layer_size, structure_head_attributes, parameter_head_attributes, 
-                 input_influence_head_attributes, masks=None,
+                 input_influence_head_attributes, masks=None, zero_reaction_idx=None, stop_flag=False,
                  continuous_distribution={"type": 'lognormal'}, 
                  discrete_distribution={"type": 'categorical', "categories": torch.tensor([1, 2])}, # TODO: generalize to different categories per dimension
                  entropy_weights_per_head=None,
@@ -118,6 +118,10 @@ class AddReactionByIndex(torch.nn.Module):
                 - 'discrete'  : float mask of shape (M, max_num_discrete_params)
                 - 'logit'     : bool mask of shape (M, total_num_discrete_combinations)
                 These masks are used to ensure only existing parameters/logits are used for each reaction.
+            zero_reaction_idx : int or None
+                If provided, the policy will be allowed to resample the “zero reaction” more than once.
+            stop_flag : bool
+                If True, the policy will stop adding reactions when the “zero reaction” is selected.
             continuous_distribution : dict
                 Continuous parameter distribution spec passed to ParameterGeneratorFromDistribution
                 (e.g. {"type": "lognormal", ...}). The policy sets `dim` automatically from masks.
@@ -153,6 +157,8 @@ class AddReactionByIndex(torch.nn.Module):
         self.M = num_reactions                                              # Total number of reactions
         self.K = num_parameters                                             # Total number of parameters (continuous + discrete) across all reactions
         self.p = num_inputs                                                 # Number of inputs in the IOCRN
+        self.zero_reaction_idx = zero_reaction_idx                          # If provided, the index of the “zero reaction” in the library (allows resampling and/or stopping) 
+        self.stop_flag = stop_flag                                          # If True, the policy will stop adding reactions when the “zero reaction” is selected (only relevant if zero_reaction_idx is provided)
 
         # Record the neural network attributes
         self.encoder_attributes = encoder_attributes
@@ -312,6 +318,16 @@ class AddReactionByIndex(torch.nn.Module):
 
             # Mask out already existing reactions in the IOCRN
             masked_reaction_structure_logits = reaction_structure_logits.masked_fill(state[:,:self.M].bool(), float('-inf')) # shape: (N, M)
+
+            # Unmask the zero reaction if zero_reaction_idx is provided, allowing it to be resampled multiple times
+            if self.zero_reaction_idx is not None:
+                masked_reaction_structure_logits[:, self.zero_reaction_idx] = reaction_structure_logits[:, self.zero_reaction_idx]
+
+            # Mask out all reactions except the zero reaction if stop_flag is True and the zero reaction is present in the IOCRN, forcing the policy to select the zero reaction and stop adding meaningful reactions
+            if self.stop_flag and self.zero_reaction_idx is not None:
+                rows = (state[:, self.zero_reaction_idx] == 1) # shape: (N,), bool tensor 
+                masked_reaction_structure_logits[rows, :] = float('-inf')
+                masked_reaction_structure_logits[rows, self.zero_reaction_idx] = reaction_structure_logits[rows, self.zero_reaction_idx]
 
             # Apply temperature to the logits
             if structure_temp is not None:

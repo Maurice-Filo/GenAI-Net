@@ -606,18 +606,18 @@ class HillProduction(Reaction):
         for i in range(self.num_activators):
             Ka = self.activator_dissociation_constants[i]
             na = 1
-            activation_term *= (x_activators[i]**na) / (Ka**na + x_activators[i]**na) if Ka is not None and na is not None else 1.0
+            activation_term *= (x_activators[i]**na) / ((Ka*u[2 + i])**na + x_activators[i]**na) if Ka is not None and na is not None else 1.0
 
         # Compute the repression term
         repression_term = 1.0
         for i in range(self.num_repressors):
             Kr = self.repressor_dissociation_constants[i]
             nr = 1
-            repression_term *= Kr**nr / (Kr**nr + x_repressors[i]**nr) if Kr is not None and nr is not None else 1.0
+            repression_term *= (Kr*u[2 + self.num_activators + i])**nr / ((Kr*u[2 + self.num_activators + i])**nr + x_repressors[i]**nr) if Kr is not None and nr is not None else 1.0
 
         # Compute the propensity using Hill kinetics
         # return self.basal_rate + (self.maximal_rate - self.basal_rate) * activation_term * repression_term 
-        return self.basal_rate + self.maximal_rate * activation_term * repression_term 
+        return self.basal_rate*u[0] + self.maximal_rate*u[1] * activation_term * repression_term 
     
     def __str__(self):
         """Human-readable string representation."""
@@ -709,5 +709,181 @@ class HillProduction(Reaction):
         hill_def = f"hill({', '.join(args)})"
         
         return f"emptyset -- {hill_def} -> {rhs};"
+    
+class ActiveDegradation(Reaction):
+    def __init__(self, substrate_label, enzyme_label, input_channels=[None], params=[None], params_controllability=[True]):
+        r"""Active degradation reaction (Hill coefficients fixed to 1).
+
+        This reaction represents regulated degradation of a substrate species by an enzyme:
+
+        $$\text{substrate} \rightarrow \emptyset$$
+
+        with a propensity of the form:
+
+        $$
+            a(x) = a D\;\frac{x}{K_D + x},$$
+
+        where:
+        - $a$ is the maximal degradation rate per degradation enzyme,
+        - $D$ is the degradation enzyme concentration (picked from the species),
+        - $K$ is the Michaelis constant for degradation,
+        - Hill coefficients are fixed to 1 in this implementation.
+
+        Parameter layout (after sorting activator/repressor labels):
+            ``params = [a, K]``
+
+        Note:
+            Each parameter slot may be associated with an ``input_channel`` label.
+            In the current implementation, the input vector `u` is collected but not
+            applied inside `propensity`. This is a placeholder for future
+            extensions where parameters may be modulated by inputs.
+
+        Args:
+            substrate_label: Substrate species label (non-empty).
+            enzyme_label: Enzyme species label (non-empty).
+            input_channels: Input channel list aligned with `params` (may contain None).
+            params: Parameter list aligned with `input_channels` (may contain None).
+            params_controllability: Controllability flags aligned with `params`.
+
+        Attributes:
+            maximal_rate: Maximal rate `a`.
+            michaelis_constant: Michaelis constant `K`.
+            signature: Structural signature independent of parameter values.
+            num_continuous_parameters: `2`.
+            num_discrete_parameters: 0 (Hill coefficients fixed to 1 here).
+            num_unknown_params: Number of unknown parameters (`None` entries).
+        """
+        
+        # Ensure the number of parameters is correct (2)
+        assert len(params) == 2, "ActiveDegradation reaction must have exactly 2 parameters (the maximal rate and the Michaelis constant)."
+
+        # Record the enzyme and substrate labels
+        assert len(enzyme_label) == 1, "ActiveDegradation reaction must have exactly one enzyme species label."
+        self.enzyme_label = enzyme_label
+        assert len(substrate_label) == 1, "ActiveDegradation reaction must have exactly one substrate species label."
+        self.substrate_label = substrate_label
+
+        # Call the parent constructor
+        super().__init__(substrate_label, [], input_channels, params, params_controllability)
+
+        # Create the reaction signature: depends on the reaction structure only, not on the parameters or inputs
+        # Signature format: ('ActiveDeg', substrate_label, enzyme_label)
+        self.signature = str(('ActiveDeg', self.substrate_label, self.enzyme_label))
+
+        # Record the maximal rate and the Michaelis constant
+        self.maximal_rate = self.params[0]                                                 # float or None
+        self.michaelis_constant = self.params[1]                                           # float or None
+        self.num_continuous_parameters = 2                            # maximal rate and Michaelis constant
+        self.num_discrete_parameters = 0                                  
+        self.num_unknown_params = self.get_num_unknown_params()   
+
+    def set_parameters(self, params):
+        """Set the full parameter vector.
+
+        Layout:
+            ``[a, K]``
+
+        Args:
+            params: Parameter vector matching the layout above.
+
+        Raises:
+            AssertionError: If the provided vector has the wrong length.
+        """
+
+        # Ensure the number of parameters is correct (2)
+        assert len(params) ==  2 , "ActiveDegradation reaction must have exactly 2 parameters (the maximal rate and the Michaelis constant)."
+
+        # Set the maximal rate and the Michaelis constant
+        self.maximal_rate = params[0]                                                 # float or None
+        self.michaelis_constant = params[1]                                           # float or None
+
+        # Update the params list
+        self.params = params
+
+    def get_involved_species(self):
+        """Return sorted unique species involved (substrate ∪ enzyme)."""
+        species = list(set(self.substrate_label + self.enzyme_label))
+        species.sort()
+        return species
+    
+    def get_involved_inputs(self):
+        """ Returns a list of all inputs involved in the reaction. 
+        Returns:
+        - input_labels: list of strings representing the labels of the involved inputs. """
+
+        return self.input_labels
+    
+    def get_stoichiometry_dict(self):
+        """Return stoichiometry coefficients as a dictionary (reactant only).
+
+        Returns:
+            dict[str, int]: Mapping reactant label -> stoichiometric coefficient.
+        """
+
+        stoich = {self.reactant_labels[0]: -1} 
+        return stoich
+    
+    def set_crn_context(self, crn):
+        """Precompute indices for fast propensity evaluation.
+
+        Args:
+            crn: IOCRN instance providing label->index maps.
+        """
+
+        super().set_crn_context(crn)
+        self.substrate_idx = crn.species_label_to_idx(self.substrate_label) # single index or list of indices
+        self.enzyme_idx = crn.species_label_to_idx(self.enzyme_label) # single index or list of indices
+        self.input_idx = crn.input_label_to_idx(self.input_channels) # single index or list of indices
+
+    def propensity(self, x, u):
+        """Compute Active Degradation propensity.
+
+        Args:
+            x: Full species state vector of the parent IOCRN.
+            u: Full input vector of the parent IOCRN.
+
+        Returns:
+            float: Reaction propensity.
+        """
+    
+        # Extract relevant species and inputs
+        x_enzyme = x[self.enzyme_idx] if self.enzyme_idx else np.array([]) 
+        x_substrate = x[self.substrate_idx] if self.substrate_idx else np.array([])       
+        u = np.array([u[i] if i is not None else 1 for i in self.input_idx])
+
+        # Compute the propensity
+        a = self.maximal_rate
+        K = self.michaelis_constant
+        D = x_enzyme[0] 
+        S = x_substrate[0]
+        return a*u[0] * D * S / (K*u[1] + S)
+    
+    def __str__(self):
+        """Human-readable string representation."""
+        
+        try:
+            species_str = f"{self.substrate_label} : {self.substrate_idx}, {self.enzyme_label} : {self.enzyme_idx}, {self.input_channels} : {self.input_idx}"
+        except:
+            species_str = "unset"
+            
+        reactants_str = ' + '.join(self.substrate_label) if self.substrate_label else '∅'
+        products_str = '∅'
+        
+        # Construct parameters string
+        # Enzyme
+        params_str = f"E = {self.enzyme_label},    "
+        # Maximal rate
+        if self.input_channels[0] is None:
+            params_str += f"a = {self.maximal_rate},    "
+        else:
+            params_str += f"a = {self.maximal_rate}{self.input_channels[0]},    "
+
+        # Enzyme
+        if self.input_channels[1] is None:
+            params_str += f"K = {self.michaelis_constant}"
+        else:
+            params_str += f"K = {self.michaelis_constant}{self.input_channels[1]}"
+    
+        return f"{reactants_str} ----> {products_str};  [ActiveDeg({params_str})]"
 
 

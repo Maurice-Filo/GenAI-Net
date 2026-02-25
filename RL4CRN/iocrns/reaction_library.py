@@ -19,7 +19,7 @@ The library is designed to be used in:
 - policies that need fixed-size parameter layouts.
 """
 
-from RL4CRN.iocrns.reactions import Reaction, MassAction, HillProduction
+from RL4CRN.iocrns.reactions import ActiveDegradation, Reaction, MassAction, HillProduction
 from itertools import combinations_with_replacement, combinations, product, accumulate
 import numpy as np
 from RL4CRN.utils.utils import cartesian_prod
@@ -399,6 +399,17 @@ class ReactionLibrary:
 
         # Prepare lookup tables for efficient parameter access
         self.prepare_lookup_tables()
+
+    def find_zero_reaction(self):
+        r"""Find the ID of the zero reaction (∅ → ∅) if it exists.
+
+        Returns:
+            The integer ID of the zero reaction if found, otherwise None.
+        """
+        for reaction in self.reactions:
+            if reaction.reactant_labels == [] and reaction.product_labels == []:
+                return reaction.ID
+        return None
     
 
 def construct_mass_action_library(species_labels, order = 2, order_reactants=None, order_products=None):
@@ -573,6 +584,57 @@ def construct_hill_production_library(species_labels, max_product_order=2, max_n
                         params_controllability = [True] * num_params
                         reaction = HillProduction(product_labels=products, activator_labels=activators, repressor_labels=repressors,input_channels=input_channels, params=params, params_controllability=params_controllability)
                         reaction_library.add_reactions(reaction)
+
+    # Prepare lookup tables for efficient parameter access
+    reaction_library.prepare_lookup_tables()
+
+    return reaction_library
+
+def construct_active_degradation_library(species_labels):
+    r"""Construct a library of active degradation reactions.
+
+    Generates reactions of the form:
+
+    $$\text{species} \rightarrow \emptyset,$$
+
+    regulated by a degradation enzyme.
+
+    For each reactant species (substrate), this function constructs one `ActiveDegradation`
+    reaction per distinct choice of degradation enzyme.
+
+    Args:
+        species_labels: List of species labels usable as substrates or degradation enzymes.
+
+    Returns:
+        A `ReactionLibrary` populated with `ActiveDegradation` reactions.
+
+    Notes:
+        This constructor uses a parameter layout consistent with the current
+        implementation:
+
+        - parameter vector length: `2`
+        - parameters are initialized to `None`
+        - all parameters are marked controllable (`params_controllability=True`)
+
+        A rough count of generated reactions is:
+
+        $$n \cdot (n-1),$$
+
+        where `n = len(species_labels)`.
+    """
+
+    reaction_library = ReactionLibrary()
+
+    # Loop over each species as a substrate
+    for substrate in species_labels:
+        # Loop over each species as a potential degradation enzyme
+        for enzyme in species_labels:
+            if enzyme != substrate:
+                params = [None, None]
+                input_channels = [None, None]
+                params_controllability = [True, True]
+                reaction = ActiveDegradation([substrate], [enzyme], input_channels, params, params_controllability)
+                reaction_library.add_reactions(reaction)
 
     # Prepare lookup tables for efficient parameter access
     reaction_library.prepare_lookup_tables()

@@ -344,7 +344,7 @@ def oscillation_metrics(y_list, t, t0, f_list=None, mean_list=None):
     r1 = np.mean(r1_list) if len(r1_list) else 0.0
     return frequency_error, mean_error, damping, r1, peaks_flag
 
-def compute_frequency_damping(y_list, t, t0):
+def compute_oscillation_specs(y_list, t, t0):
     """ Computes the fundamental frequencies of oscillations in the output signals.
     Args:
     - y_list: A list of outputs, each of shape (1, time_steps).
@@ -353,6 +353,9 @@ def compute_frequency_damping(y_list, t, t0):
     Returns:
     - estimated_frequencies: A numpy array of estimated frequencies, shape (list_length, 1).
     - damping_metrics: A numpy array of damping metrics, shape (list_length, 1).
+    - amplitude: A numpy array of amplitudes, shape (list_length, 1).
+    - mean: A numpy array of mean values, shape (list_length, 1).
+    - periodicity_index: A numpy array of periodicity indices, shape (list_length, 1).
     """
     
     # Check if dimensions match
@@ -377,11 +380,13 @@ def compute_frequency_damping(y_list, t, t0):
     # Compute the frequencies from the peaks
     estimated_frequencies = []
     damping_metrics = []
+    amplitude = []
     peaks_flag = True
     for peaks_indices, y in zip(peaks_indices_list, y_list):
         if len(peaks_indices) < 2:
             estimated_frequencies.append(0.0)
             damping_metrics.append(0.0)
+            amplitude.append(0.0)
             peaks_flag = False
         else:
             peak_times = t[peaks_indices]
@@ -393,7 +398,56 @@ def compute_frequency_damping(y_list, t, t0):
             decrements = peak_heights[:-1] / peak_heights[1:]
             avg_decrement = np.mean(decrements)
             damping_metrics.append(avg_decrement)
+            avg_amplitude = np.mean(peak_heights)
+            amplitude.append(avg_amplitude)
+
+    # Compute the mean and periodicity index
+    periodicity_index = []
+    mean = []
+    for y in y_list:
+        mean.append(np.mean(np.squeeze(y)))
+        x = np.squeeze(y) - np.mean(y)
+        if np.allclose(x, 0.0, atol=1e-2):
+            periodicity_index.append(0.0)
+            continue
+
+        R_full = np.correlate(x, x, mode='full')
+        mid = len(R_full) // 2
+
+        if R_full[mid] <= 0:
+            periodicity_index.append(0.0)
+            continue
+
+        R = R_full[mid:] / R_full[mid]  # normalize so R[0] = 1
+
+        # Find first nonzero-lag local maximum
+        if len(R) < 3:
+            periodicity_index.append(0.0)
+            continue
+
+        # Ignore lag=0
+        R_search = R[1:]
+        if len(R_search) < 3:
+            periodicity_index.append(0.0)
+            continue
+        
+        # Find indices where R[i-1] < R[i] > R[i+1]
+        candidates = np.where((R_search[1:-1] > R_search[:-2]) &
+                            (R_search[1:-1] > R_search[2:]))[0] + 1
+        if len(candidates) == 0:
+            periodicity_index.append(0.0)
+            continue
+
+        # Choose the first such peak
+        tau1 = candidates[0] + 1
+        r1 = R[tau1]
+        periodicity_index.append(r1)
+
+
     estimated_frequencies = np.array(estimated_frequencies).reshape(-1, 1)  # shape (list_length, 1)
     damping_metrics = np.array(damping_metrics).reshape(-1, 1)  # shape (list_length, 1)
+    amplitude = np.array(amplitude).reshape(-1, 1)  # shape (list_length, 1)
+    mean = np.array(mean).reshape(-1, 1)  # shape (list_length, 1)
+    periodicity_index = np.array(periodicity_index).reshape(-1, 1)  # shape (list_length, 1)
 
-    return estimated_frequencies, damping_metrics
+    return estimated_frequencies, damping_metrics, amplitude, mean, periodicity_index
