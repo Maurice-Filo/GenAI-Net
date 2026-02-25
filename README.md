@@ -104,6 +104,14 @@ export CXX=/usr/bin/g++
 python -m pip install --no-cache-dir --no-build-isolation pycuda
 ```
 
+## Enabling SSA simulations
+
+To run SSA simulations you need a cuda capable GPU. You can install the required dependencies via
+
+```
+pip install .[SSA]
+```
+
 ## Compiling the docs
 
 You can compile the documentation for this project by collecting the necessary dependencies:

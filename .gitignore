@@ -1,6 +1,5 @@
 *.pth
 *.pt
-*.png
 *.gif
 *.json
 *.pkl
