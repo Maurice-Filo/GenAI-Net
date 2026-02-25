@@ -38,6 +38,8 @@ import copy
 from scipy.integrate import solve_ivp
 import pandas as pd
 
+from RL4CRN.utils.plotting_style import _merge_cfg, _apply_axes_style, _maybe_legend, _maybe_save, _ensure_axes_list, _DEFAULT_PLOT_CFG, paper_rc_context
+
 class IOCRN:
     """Input-Output Chemical Reaction Network.
 
@@ -441,6 +443,41 @@ class IOCRN:
         return np.matmul(self.S, self.propensity_function(x, u))
     
 
+    def dose_response(self, u_dose, u_list, initial_guess):
+        """
+        Computes the dose response of the IOCRN given a list of input doses, a list of input scenarios, and an initial guess for the concentrations.
+        If the CRN dose response has been simulated and stored before, it returns the stored results instead of recomputing them.
+        The results are stored in the last_task_info dictionary for future reference.
+        Arguments:
+        - u_dose: numpy array of shape (num_doses,) representing the input doses to the IOCRN.
+        - u_list: A list of numpy arrays, each of shape (p,) representing the constant inputs to the IOCRN for each scenario.
+        The first element of each input array corresponds to the dose, and the rest correspond to other inputs.
+        - initial_guess: numpy array of shape (n,) representing the initial guess for the concentrations of the species.
+        Returns a tupple containing:
+            - x_list: A list of numpy arrays of shape (n, num_doses) representing the state for each input scenario.
+            - y_list: A list of numpy arrays of shape (q, num_doses) representing the output for each input scenario.
+        """    
+        # Do the simulation for each input scenario and store the results in lists
+        x_list = []
+        y_list = []
+        num_doses = len(u_dose)
+        for u_e in u_list:
+            x = np.zeros((self.num_species, num_doses), dtype=np.float64) # numpy array of shape (n, num_doses)
+            y = np.zeros((self.num_outputs, num_doses), dtype=np.float64) # numpy array of shape (q, num_doses)
+            x_0 = initial_guess
+            for i in range(num_doses):
+                u = np.concatenate(([u_dose[i]], u_e))
+                x[:,i] = fsolve(lambda x, u: self.rate_function(0, x, u), x_0, args=(u,))
+                y[:,i] = x[self.num_outputs - 1, i] 
+                x_0 = x[:,i]  
+            # Append the states and outputs to the lists
+            x_list.append(x) 
+            y_list.append(y) 
+
+        # Store and return the last task information
+        return x_list, y_list
+    
+
     def transient_response_SSA(self, u_list, x0_list, time_horizon, n_trajectories=100, max_threads=10000, max_value=1e6):
         """Compute stochastic transient responses via SSA (mean ± std).
 
@@ -809,7 +846,7 @@ class IOCRN:
         return time_horizon, x_list, y_list, self.last_task_info
 
 
-    def transient_response_piecewise(self, u_nested_list, x0_list, nested_time_horizon, LARGE_NUMBER=1e4):
+    def transient_response_piecewise(self, u_nested_list, x0_list, nested_time_horizon, LARGE_NUMBER=1e4 ,force=False):
         """Compute deterministic transient responses with piecewise-constant inputs.
 
         This method generalizes `transient_response` to *input sequences*.
@@ -874,7 +911,7 @@ class IOCRN:
 
         # 2. Check Cache (Simplified for brevity, assumes inputs match if lengths match)
         if (self.last_task_info.get('type') == 'transient response' and 
-            len(self.last_task_info.get('trajectories', [])) == len(u_nested_list) * len(x0_list)):
+            len(self.last_task_info.get('trajectories', [])) == len(u_nested_list) * len(x0_list)) and not force:
             return self.last_task_info['time_horizon'], self.last_task_info['trajectories'], self.last_task_info['outputs'], self.last_task_info
         
         if self.num_unknown_params > 0:
@@ -996,335 +1033,1203 @@ class IOCRN:
         return full_time_horizon, x_list, y_list, self.last_task_info
 
     # ------------------------ Plotting Methods ------------------------
-    def plot_transient_response(self, fig=None, axes=None, alpha=0.1):
-        """Plot cached transient response trajectories for each output.
+    # def plot_transient_response(self, fig=None, axes=None, alpha=0.1):
+    #     """Plot cached transient response trajectories for each output.
 
-        This method visualizes the output trajectories stored by
-        `transient_response` or `transient_response_piecewise`.
+    #     This method visualizes the output trajectories stored by
+    #     `transient_response` or `transient_response_piecewise`.
+
+    #     Args:
+    #         fig: Optional matplotlib figure to plot into. If None, a new figure is
+    #             created.
+    #         axes: Optional axes list/array. If None, new axes are created with one
+    #             subplot per output species.
+    #         alpha: Line transparency for overlaid trajectories.
+
+    #     Returns:
+    #         Tuple `(fig, axes)` where `axes` is a list-like of length `num_outputs`.
+
+    #     Raises:
+    #         ValueError: If no deterministic transient response is cached in
+    #             `last_task_info` (i.e., `type != 'transient response'`).
+    #     """
+
+    #     # Check if transient response data is available
+    #     if self.last_task_info.get('type') != 'transient response':
+    #         raise ValueError("No transient response data available. Run transient_response() first.")
+        
+    #     # If no figure or axes are provided, create a new figure and axes
+    #     if fig is None and axes is None:
+    #         fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
+    #         if not isinstance(axes, (list, np.ndarray)):
+    #             axes = [axes]
+        
+    #     # Plot the transient response for each output species and return the figure and axes
+    #     for i in range(self.num_outputs):
+    #         for j in range(len(self.last_task_info['outputs'])):
+    #             axes[i].plot(self.last_task_info['time_horizon'], self.last_task_info['outputs'][j][i,:], alpha=alpha)
+    #             axes[i].set_title(f"Transient Response of Output Species {self.species_labels[self.output_idx[i]]}")
+    #             axes[i].set_xlabel("Time")
+    #             axes[i].set_ylabel("Concentration")
+    #     plt.tight_layout()
+    #     return fig, axes
+
+    # def plot_transient_response_piecewise(self, fig=None, axes=None, alpha=1.0,
+    #                                     input_color="red", shade_on=True,
+    #                                     pulse_lw=1.0, pulse_ls="--", gap=False):
+    #     """
+    #     Multi-frequency aware plotting:
+    #     - If self.last_task_info contains 'freq_runs' (list of runs), plot one block per frequency,
+    #         stacked vertically, and for each block plot all outputs (one row per output).
+    #     - Otherwise fallback to single-run behavior.
+
+    #     Expects either:
+    #     A) Single-run (legacy):
+    #         last_task_info['time_horizon'], last_task_info['outputs'], last_task_info['input_intervals'], last_task_info['input_pulse']
+    #     B) Multi-frequency:
+    #         last_task_info['freq_runs'] = [
+    #             {'pulse_shape': (t_on,t_off),
+    #             'time_horizon': t,
+    #             'outputs': outputs,
+    #             'input_intervals': seg_intervals,
+    #             'input_pulse': u_pulse}, ...
+    #         ]
+    #     """
+
+    #     if self.last_task_info.get("type") != "transient response":
+    #         raise ValueError("No transient response data available. Run transient_response_piecewise() first.")
+
+    #     freq_runs = self.last_task_info.get("freq_runs", None)
+
+    #     # ---------- MULTI-FREQUENCY MODE ----------
+    #     if isinstance(freq_runs, list) and len(freq_runs) > 0:
+    #         n_freq = len(freq_runs)
+    #         n_rows = self.num_outputs * n_freq
+
+    #         if fig is None and axes is None:
+    #             fig, axes = plt.subplots(n_rows, 1, figsize=(10, 3.5 * n_rows), sharex=False)
+    #         if not isinstance(axes, (list, np.ndarray)):
+    #             axes = [axes]
+    #         axes = list(np.ravel(axes))
+    #         if len(axes) != n_rows:
+    #             raise ValueError(f"Expected {n_rows} axes for {n_freq} frequencies x {self.num_outputs} outputs, got {len(axes)}")
+
+    #         ax_idx = 0
+    #         for f_idx, run in enumerate(freq_runs):
+    #             t = np.asarray(run["time_horizon"], dtype=float)
+    #             outputs = run["outputs"]
+
+    #             seg_intervals = run.get("input_intervals", None)
+    #             u_pulse = run.get("input_pulse", None)
+    #             have_input = (seg_intervals is not None) and (u_pulse is not None)
+
+    #             boundaries = step_values = seg_values = gap_bounds = None
+    #             if have_input:
+    #                 boundaries, step_values, seg_values, gap_bounds = _pulse_step_and_shading_from_intervals(
+    #                     seg_intervals, u_pulse, gap=gap
+    #                 )
+
+    #             pulse_shape = run.get("pulse_shape", None)
+    #             if pulse_shape is not None:
+    #                 t_on, t_off = float(pulse_shape[0]), float(pulse_shape[1])
+    #                 period = t_on + t_off
+    #                 freq_title = f"Pulse shape (t_on={t_on:g}, t_off={t_off:g})  period={period:g}"
+    #             else:
+    #                 freq_title = f"Frequency run {f_idx+1}"
+
+    #             for out_i in range(self.num_outputs):
+    #                 ax = axes[ax_idx]
+    #                 ax_idx += 1
+
+    #                 species_name = self.species_labels[self.output_idx[out_i]]
+    #                 title = f"{freq_title}  |  Output: {species_name} (Δy from y₀)"
+
+    #                 _plot_one_frequency(
+    #                     ax=ax,
+    #                     t=t,
+    #                     outputs=outputs,
+    #                     out_i=out_i,
+    #                     title=title,
+    #                     alpha=alpha,
+    #                     have_input=have_input,
+    #                     boundaries=boundaries,
+    #                     step_values=step_values,
+    #                     seg_values=seg_values,
+    #                     gap_bounds=gap_bounds,
+    #                     input_color=input_color,
+    #                     shade_on=shade_on,
+    #                     pulse_lw=pulse_lw,
+    #                     pulse_ls=pulse_ls,
+    #                 )
+
+    #         axes[-1].set_xlabel("Time")
+    #         plt.tight_layout()
+    #         return fig, axes
+
+    #     # ---------- SINGLE-RUN FALLBACK ----------
+    #     t = np.asarray(self.last_task_info["time_horizon"], dtype=float)
+    #     outputs = self.last_task_info["outputs"]
+
+    #     if fig is None and axes is None:
+    #         fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 4 * self.num_outputs), sharex=True)
+    #     if not isinstance(axes, (list, np.ndarray)):
+    #         axes = [axes]
+
+    #     seg_intervals = self.last_task_info.get("input_intervals", None)
+    #     u_pulse = self.last_task_info.get("input_pulse", None)
+    #     have_input = (seg_intervals is not None) and (u_pulse is not None)
+
+    #     boundaries = step_values = seg_values = gap_bounds = None
+    #     if have_input:
+    #         boundaries, step_values, seg_values, gap_bounds = _pulse_step_and_shading_from_intervals(
+    #             seg_intervals, u_pulse, gap=gap
+    #         )
+
+    #     for out_i in range(self.num_outputs):
+    #         ax = axes[out_i]
+    #         species_name = self.species_labels[self.output_idx[out_i]]
+    #         title = f"Transient Response of {species_name} (Δy from y₀)"
+
+    #         _plot_one_frequency(
+    #             ax=ax,
+    #             t=t,
+    #             outputs=outputs,
+    #             out_i=out_i,
+    #             title=title,
+    #             alpha=alpha,
+    #             have_input=have_input,
+    #             boundaries=boundaries,
+    #             step_values=step_values,
+    #             seg_values=seg_values,
+    #             gap_bounds=gap_bounds,
+    #             input_color=input_color,
+    #             shade_on=shade_on,
+    #             pulse_lw=pulse_lw,
+    #             pulse_ls=pulse_ls,
+    #         )
+
+    #     axes[-1].set_xlabel("Time")
+    #     plt.tight_layout()
+    #     return fig, axes
+
+        
+    # def plot_phase_portrait(self, fig=None, axis=None, alpha=0.1):
+    #     """Plot a phase portrait from cached transient response trajectories.
+
+    #     For two species, plots $x_1(t)$ vs $x_2(t)$.
+    #     For three species, plots a 3D trajectory.
+
+    #     Args:
+    #         fig: Optional matplotlib figure. If None, a new figure is created.
+    #         axis: Optional matplotlib axis (2D or 3D). If None, a new axis is
+    #             created depending on the number of species.
+    #         alpha: Line transparency for overlaid trajectories.
+
+    #     Returns:
+    #         Tuple `(fig, axis)`.
+
+    #     Raises:
+    #         ValueError: If no deterministic transient response is cached
+    #             (`type != 'transient response'`).
+    #         ValueError: If `num_species` is not 2 or 3.
+    #     """
+
+    #     # Check if transient response data is available
+    #     if self.last_task_info.get('type') != 'transient response':
+    #         raise ValueError("No transient response data available. Run transient_response() first.")
+        
+    #     # If no figure or axes are provided, create a new figure and axes
+    #     if fig is None and axis is None:
+    #         if self.num_species == 2:
+    #             fig, axis = plt.subplots(figsize=(10, 10))
+    #         elif self.num_species == 3:
+    #             fig = plt.figure(figsize=(10, 10))
+    #             axis = fig.add_subplot(111, projection='3d')
+    #         else:
+    #             raise ValueError("Phase portrait can only be plotted for 2 or 3 species.")
+        
+    #     # Plot the phase portrait and return the figure and axes
+    #     if self.num_species == 2:
+    #         for j in range(len(self.last_task_info['trajectories'])):
+    #             axis.plot(self.last_task_info['trajectories'][j][0,:], self.last_task_info['trajectories'][j][1,:], alpha=alpha)
+    #         axis.set_xlabel(f"Species {self.species_labels[0]}")
+    #         axis.set_ylabel(f"Species {self.species_labels[1]}")
+    #         axis.set_title("Phase Portrait")
+    #     elif self.num_species == 3:
+    #         for j in range(len(self.last_task_info['trajectories'])):
+    #             axis.plot(self.last_task_info['trajectories'][j][0,:], self.last_task_info['trajectories'][j][1,:], self.last_task_info['trajectories'][j][2,:], alpha=alpha)
+    #         axis.set_xlabel(f"Species {self.species_labels[0]}")
+    #         axis.set_ylabel(f"Species {self.species_labels[1]}")
+    #         axis.set_zlabel(f"Species {self.species_labels[2]}")
+    #         axis.set_title("Phase Portrait")
+    #     plt.tight_layout()
+    #     return fig, axis
+
+
+
+    
+    def plot_logic_response(
+        self,
+        *,
+        u_list=None,
+        target_fn=None,
+        title="Truth table",
+        figsize=(2.2, 1.2),
+        silent=False,
+    ):
+        """
+        Plot a truth-table style view of the CRN's logic behavior.
+
+        This expects the CRN to have cached a deterministic multi-scenario simulation in
+        `self.last_task_info` (e.g., produced by a reward function that calls
+        `transient_response(...)` and stores its results).
 
         Args:
-            fig: Optional matplotlib figure to plot into. If None, a new figure is
-                created.
-            axes: Optional axes list/array. If None, new axes are created with one
-                subplot per output species.
-            alpha: Line transparency for overlaid trajectories.
+            u_list: Optional list of input vectors used for the scenarios. If None, tries
+                to read `self.last_task_info['u_list']`.
+            target_fn: Optional callable mapping u (np.ndarray) -> {0,1} (or bool).
+                If None, tries to read `self.last_task_info['logic_fn']`.
+            title: Plot title.
+            figsize: Matplotlib figure size.
+            silent: If True, does not call plt.show().
 
         Returns:
-            Tuple `(fig, axes)` where `axes` is a list-like of length `num_outputs`.
+            (fig, ax) from plot_truth_table_transposed_nature.
 
         Raises:
-            ValueError: If no deterministic transient response is cached in
-                `last_task_info` (i.e., `type != 'transient response'`).
+            ValueError: If required cached information is missing.
         """
+        # 1) Make sure we have cached outputs
+        if "outputs" not in self.last_task_info:
+            raise ValueError(
+                "No cached outputs found in last_task_info. "
+                "Run a reward/transient_response that stores last_task_info['outputs'] first."
+            )
 
-        # Check if transient response data is available
-        if self.last_task_info.get('type') != 'transient response':
-            raise ValueError("No transient response data available. Run transient_response() first.")
-        
-        # If no figure or axes are provided, create a new figure and axes
-        if fig is None and axes is None:
-            fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
-            if not isinstance(axes, (list, np.ndarray)):
-                axes = [axes]
-        
-        # Plot the transient response for each output species and return the figure and axes
-        for i in range(self.num_outputs):
-            for j in range(len(self.last_task_info['outputs'])):
-                axes[i].plot(self.last_task_info['time_horizon'], self.last_task_info['outputs'][j][i,:], alpha=alpha)
-                axes[i].set_title(f"Transient Response of Output Species {self.species_labels[self.output_idx[i]]}")
-                axes[i].set_xlabel("Time")
-                axes[i].set_ylabel("Concentration")
-        plt.tight_layout()
-        return fig, axes
+        # 2) Get u_list
+        if u_list is None:
+            u_list = self.last_task_info.get("u_list", None)
+            if u_list is None:
+                raise ValueError(
+                    "u_list not provided and not found in last_task_info['u_list'].\n"
+                    "Fix: pass u_list=task.u_list, or store it into last_task_info when computing rewards."
+                )
+
+        # 3) Decide the target / logic function
+        logic_fn = target_fn if target_fn is not None else self.last_task_info.get("logic_fn", None)
+        if logic_fn is None:
+            raise ValueError(
+                "No target_fn provided and no logic_fn found in last_task_info['logic_fn'].\n"
+                "Fix: call plot_logic_response(target_fn=...) or store the logic function in last_task_info."
+            )
+
+        # 4) Extract actual outputs: one scalar per scenario
+        # Uses output species 0, last timepoint by default.
+        try:
+            actual_outputs = [o[0][-1] for o in self.last_task_info["outputs"]]
+        except Exception as e:
+            raise ValueError(
+                "Could not parse last_task_info['outputs'] for truth table plotting. "
+                "Expected a list where each element has shape (num_outputs, n_t)."
+            ) from e
+
+        # 5) Import plotting helper (avoid top-level import cycles)
+        from RL4CRN.utils.visualizations import plot_truth_table_transposed_nature
+
+        fig, ax = plot_truth_table_transposed_nature(
+            u_list=u_list,
+            actual_outputs=actual_outputs,
+            logic_function=logic_fn,
+            title=title,
+            figsize=figsize,
+            silent=silent,
+        )
+        return fig, ax
+
     
-    def plot_phase_portrait(self, fig=None, axis=None, alpha=0.1):
-        """Plot a phase portrait from cached transient response trajectories.
+    # def plot_dose_response(self, fig=None, axes=None, alpha=0.5):
+    #     """Plot dose-response curves from cached simulation data.
 
-        For two species, plots $x_1(t)$ vs $x_2(t)$.
+    #     Two modes are supported depending on the cached task:
+    #         - If `last_task_info['type'] == 'dose response'`, uses precomputed
+    #           dose-response data (if present in the cache).
+    #         - If `last_task_info['type'] == 'transient response'`, constructs a
+    #           dose-response by taking the final-time output value for each input
+    #           scenario and plotting it versus the input dose (currently assumes
+    #           a single scalar dose per scenario, typically `u[0]`).
+
+    #     Args:
+    #         fig: Optional matplotlib figure. If None, a new figure is created.
+    #         axes: Optional axes list. If None, new axes are created (one per output).
+    #         alpha: Line transparency for plotted curves.
+
+    #     Returns:
+    #         Tuple `(fig, axes)`.
+
+    #     Raises:
+    #         ValueError: If neither dose-response nor transient-response data is
+    #             present in `last_task_info`.
+    #     """
+
+    #     # Check if dose response data is available
+    #     if self.last_task_info.get('type') != 'dose response' and self.last_task_info.get('type') != 'transient response':
+    #         raise ValueError("No dose response data available. Run dose_response() or transient_response() first.")
+        
+    #     # If no figure or axes are provided, create a new figure and axes
+    #     if fig is None and axes is None:
+    #         fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
+    #         if not isinstance(axes, (list, np.ndarray)):
+    #             axes = [axes]
+        
+    #     # Plot the dose responses for each output species and return the figure and axes #TODO: generalize for multiple inputs and implement dose response algebraically
+    #     if self.last_task_info['type'] == 'dose response':
+    #         u_dose = self.last_task_info['input doses']
+    #         for i in range(self.num_outputs):
+    #             for j in range(len(self.last_task_info['input scenarios'])):
+    #                 axes[i].plot(u_dose, self.last_task_info['outputs'][j][i,:], alpha=alpha)
+    #                 axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.o[i]-1]}")
+    #                 axes[i].set_xlabel("Input Dose")
+    #                 axes[i].set_ylabel("Concentration")
+    #         plt.tight_layout()
+
+    #     # elif self.last_task_info['type'] == 'transient response': # TODO: generalize for multiple inputs
+    #     #     u_list = self.last_task_info['inputs']
+    #     #     for i in range(self.num_outputs):
+    #     #         u_dose = np.array([u[0] for u in u_list])
+    #     #         y_dose = np.array([y[i,-1] for y in self.last_task_info['outputs']])
+    #     #         axes[i].plot(u_dose, y_dose, alpha=alpha)
+    #     #         axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.output_idx[i]]}")
+    #     #         axes[i].set_xlabel("Input Dose")
+    #     #         axes[i].set_ylabel("Concentration")
+    #     #     plt.tight_layout()
+
+    #     elif self.last_task_info['type'] == 'transient response': # TODO: Now generalized
+    #         u_list = self.last_task_info['inputs']
+    #         x0_list = self.last_task_info['initial_conditions']
+
+    #         step = len(self.last_task_info['outputs']) // len(x0_list)
+
+    #         for i in range(self.num_outputs):
+    #             for k,_ in enumerate(x0_list):
+    #                 u_dose = np.array([u[0] for u in u_list])
+    #                 y_dose = np.array([y[i,-1] for y in self.last_task_info['outputs'][step*(k):step*(k+1)]])
+    #                 axes[i].plot(u_dose, y_dose, alpha=alpha)
+    #                 axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.output_idx[i]]}")
+    #                 axes[i].set_xlabel("Input Dose")
+    #                 axes[i].set_ylabel("Concentration")
+    #         plt.tight_layout()
+
+    #     return fig, axes
+    
+    # def plot_frequency_content(self, fig=None, axes=None, alpha=0.1, t0=0.0):
+    #     """Plot Fourier magnitude spectra of outputs from cached transient responses.
+
+    #     For each cached transient response trajectory, this method:
+    #         1) truncates the signal to times `t >= t0`,
+    #         2) subtracts the mean,
+    #         3) computes a one-sided FFT magnitude spectrum,
+    #         4) normalizes magnitudes by their maximum (per trajectory),
+    #         5) overlays spectra for all scenarios.
+
+    #     Args:
+    #         fig: Optional matplotlib figure. If None, a new figure is created.
+    #         axes: Optional axes list. If None, new axes are created (one per output).
+    #         alpha: Line transparency for overlaid spectra.
+    #         t0: Time threshold; only samples with time >= t0 are used.
+
+    #     Returns:
+    #         Tuple `(fig, axes)`.
+
+    #     Raises:
+    #         ValueError: If no deterministic transient response is cached.
+    #         ValueError: If fewer than two samples exist after `t0`.
+    #         ValueError: If a non-positive sampling interval is inferred.
+    #     """
+
+    #     # Check if transient response data is available
+    #     if self.last_task_info.get('type') != 'transient response':
+    #         raise ValueError("No transient response data available. Run transient_response() first.")
+        
+    #     # If no figure or axes are provided, create a new figure and axes
+    #     if fig is None and axes is None:
+    #         fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
+    #         if not isinstance(axes, (list, np.ndarray)):
+    #             axes = [axes]
+
+    #     # Truncate time vector and determine valid indices for t >= t0
+    #     time = np.asarray(self.last_task_info['time_horizon'])
+    #     mask = time >= t0
+    #     if mask.sum() < 2:
+    #         raise ValueError("Not enough data points after t0 to compute a Fourier transform.")
+
+    #     # Infer (assumed uniform) sampling interval from the truncated time vector
+    #     dt = float(np.mean(np.diff(time[mask])))
+    #     if dt <= 0:
+    #         raise ValueError("Non-positive sampling interval inferred from time_horizon.")  
+
+    #     # Plot Fourier magnitude spectra for each output species
+    #     N = int(mask.sum())
+    #     freqs = np.fft.rfftfreq(N, d=dt)
+
+    #     for i in range(self.num_outputs):
+    #         ax = axes[i]
+    #         for j in range(len(self.last_task_info['outputs'])):
+    #             # Extract the i-th output trace from the j-th run, truncated at t0
+    #             y = np.asarray(self.last_task_info['outputs'][j][i, :])[mask]
+
+    #             # Remove mean to emphasize oscillatory content
+    #             y = y - np.mean(y)
+
+    #             # Compute one-sided FFT magnitude
+    #             Y = np.fft.rfft(y)
+    #             mag = np.abs(Y) 
+    #             mag = mag / (np.max(mag) + 1e-12) # simple magnitude normalization
+
+    #             ax.plot(freqs, mag, alpha=alpha)
+
+    #         ax.set_title(
+    #             f"Frequency Content of Output Species {self.species_labels[self.output_idx[i]]} (t ≥ {t0})"
+    #         )
+    #         ax.set_xlabel("Frequency (1 / time unit)")
+    #         ax.set_ylabel("Magnitude")
+
+    #     plt.tight_layout()
+    #     return fig, axes
+    
+    # # ------------------------ stochastic simulation methods ------------------------
+
+    # def plot_SSA_transient_response(self, fig=None, axes=None, alpha=0.2):
+    #     r"""Plot cached SSA transient responses (mean ± std) for each output.
+
+    #     This method visualizes the stochastic results produced by
+    #     `transient_response_SSA`, plotting the mean trajectory and a shaded
+    #     band corresponding to $\pm 1$ standard deviation:
+
+    #     $$ y(t) \pm \sigma(t). $$
+        
+    #     Args:
+    #         fig: Optional matplotlib figure. If None, a new figure is created.
+    #         axes: Optional axes list. If None, new axes are created (one per output).
+    #         alpha: Transparency for the standard deviation shading.
+
+    #     Returns:
+    #         Tuple `(fig, axes)`.
+
+    #     Raises:
+    #         ValueError: If no SSA transient response is cached in `last_task_info`
+    #             (i.e., `type != 'transient response SSA'`).
+    #     """
+
+    #     # 1. Validation
+    #     if self.last_task_info.get('type') != 'transient response SSA':
+    #         raise ValueError("No stochastic transient response data available. Run transient_response_SSA() first.")
+        
+    #     # 2. Setup Figure/Axes
+    #     if fig is None and axes is None:
+    #         fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
+    #         # Ensure axes is iterable even if there's only one output
+    #         if not isinstance(axes, (list, np.ndarray)):
+    #             axes = [axes]
+    #     elif not isinstance(axes, (list, np.ndarray)):
+    #          axes = [axes]
+        
+    #     # 3. Retrieve Data
+    #     time = self.last_task_info['time_horizon']
+    #     mean_data = self.last_task_info['outputs']      # List of (n_outputs, n_time)
+    #     std_data = self.last_task_info['outputs_std']   # List of (n_outputs, n_time)
+    #     inputs = self.last_task_info.get('inputs', [])
+
+    #     # 4. Plotting Loop
+    #     for i in range(self.num_outputs):
+    #         ax = axes[i]
+    #         species_idx = self.output_idx[i]
+    #         species_name = self.species_labels[species_idx]
+
+    #         # Iterate through each input/initial condition scenario
+    #         for j in range(len(mean_data)):
+                
+    #             # Extract mean and std for the i-th output species in the j-th scenario
+    #             y_mean = mean_data[j][i, :]
+    #             y_std = std_data[j][i, :]
+                
+    #             # Create label based on input if available
+    #             label = f"Scenario {j}"
+    #             if inputs and j < len(inputs):
+    #                 # concise string representation of input
+    #                 label = f"u={np.array2string(np.array(inputs[j]), precision=2, separator=',')}"
+
+    #             # Plot Mean Line
+    #             line, = ax.plot(time, y_mean, label=label, linewidth=2)
+                
+    #             # Plot Standard Deviation Shading
+    #             # We use the color of the line to match the shading
+    #             ax.fill_between(time, 
+    #                             y_mean - y_std, 
+    #                             y_mean + y_std, 
+    #                             color=line.get_color(), 
+    #                             alpha=alpha)
+
+    #         ax.set_title(f"Stochastic Response: {species_name} (Mean $\pm$ Std)")
+    #         ax.set_xlabel("Time")
+    #         ax.set_ylabel("Count / Concentration")
+    #         ax.grid(True, alpha=0.3)
+            
+    #         # Only add legend if there aren't too many scenarios to avoid clutter
+    #         if len(mean_data) <= 10:
+    #             ax.legend(fontsize='small')
+
+    #     # if fig:
+    #     #     plt.tight_layout()
+            
+    #     return fig, axes
+        
+    # ---- New plotting methods ----
+
+    # ---------------------------------------------------------------------------
+    # Methods below are intended to live as instance methods on your IOCRN class.
+    # Keep their original signatures, only adding `plot_cfg=None` as trailing kwarg.
+    # ---------------------------------------------------------------------------
+
+    def plot_transient_response(self, fig=None, axes=None, alpha=0.1, plot_cfg=None):
+        """Plot cached deterministic transient response trajectories.
+
+        This method visualizes trajectories stored by a call that cached
+        `last_task_info['type'] == 'transient response'`, typically produced by
+        `transient_response(...)` or `transient_response_piecewise(...)`.
+
+        Paper-ready styling can be controlled through `plot_cfg`, which may override
+        default rcParams and common cosmetics (grid/spines/legend) while preserving
+        the original method API.
+
+        Args:
+            fig: Optional matplotlib Figure to draw into. If None and `axes` is None,
+                a new Figure is created.
+            axes: Optional axes list/array. If None and `fig` is None, new axes are
+                created with one subplot per output.
+            alpha: Line transparency for overlaid trajectories (default: 0.1).
+            plot_cfg: Optional dict controlling paper-ready styling. Supported keys:
+                - rc: dict of matplotlib rcParams overrides
+                - figsize: tuple (w,h) for figure size
+                - constrained_layout: bool
+                - tight_layout: bool
+                - grid: bool
+                - grid_kwargs: dict passed to ax.grid(...)
+                - despine: bool (hide top/right spines)
+                - spine_lw: float
+                - alpha: override alpha passed in args
+                - lw: line width override
+                - title/xlabel/ylabel: override strings (title can be per-axis via None)
+                - legend: "auto" | True | False
+                - legend_kwargs: dict passed to ax.legend(...)
+                - save: dict like {"path": "...pdf", "dpi": 600}
+
+        Returns:
+            Tuple[Figure, List[Axes]]: (fig, axes) where axes has length num_outputs.
+
+        Raises:
+            ValueError: If no cached deterministic transient response is present.
+        """
+        if self.last_task_info.get("type") != "transient response":
+            raise ValueError("No transient response data available. Run transient_response() first.")
+
+        cfg = _merge_cfg(_DEFAULT_PLOT_CFG, plot_cfg)
+
+        with paper_rc_context(cfg.get("rc")):
+            if fig is None and axes is None:
+                figsize = cfg.get("figsize") or (2.8, 1.6 * self.num_outputs)
+                fig, axes = plt.subplots(
+                    self.num_outputs, 1, figsize=figsize, sharex=True,
+                    constrained_layout=bool(cfg.get("constrained_layout", False)),
+                )
+            axes = _ensure_axes_list(axes, self.num_outputs)
+
+            t = np.asarray(self.last_task_info["time_horizon"], dtype=float)
+            outs = self.last_task_info["outputs"]  # list of (q,T)
+
+            a = cfg["alpha"] if cfg["alpha"] is not None else alpha
+            lw = cfg["lw"]
+
+            for i in range(self.num_outputs):
+                ax = axes[i]
+                n_series = 0
+                for j in range(len(outs)):
+                    y = np.asarray(outs[j], dtype=float)
+                    yi = y[i, :] if y.ndim == 2 else y
+                    ax.plot(t, yi, alpha=a, linewidth=lw)
+                    n_series += 1
+
+                species = self.species_labels[self.output_idx[i]]
+                ax.set_title(cfg.get("title") or f"{species}", pad=cfg.get("title_pad", 3.0))
+                ax.set_ylabel(cfg.get("ylabel") or "Concentration")
+                _apply_axes_style(ax, cfg)
+                _maybe_legend(ax, n_series, cfg)
+
+            axes[-1].set_xlabel(cfg.get("xlabel") or "Time")
+
+            if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                fig.tight_layout()
+
+            _maybe_save(fig, cfg)
+            return fig, axes
+
+
+    def plot_transient_response_piecewise(
+        self, fig=None, axes=None, alpha=1.0,
+        input_color="red", shade_on=True, trj_color="green",
+        pulse_lw=1.0, pulse_ls="--", gap=False,
+        plot_cfg=None,
+        is_main=True,
+        normalize=False,   # <- NEW
+        y_label=None,
+        legend_label = None,
+    ):
+        """Plot cached deterministic piecewise transient responses.
+
+        If `is_main=False`, this acts as a follower plotter:
+        - plots only trajectories
+        - uses the provided `alpha`
+        - skips pulse overlays, shading, titles, and styling extras
+
+        If `normalize=True`, all trajectories are divided by a single global peak
+        (max value across all cached conditions/scenarios/outputs in this object).
+        """
+        if self.last_task_info.get("type") != "transient response":
+            raise ValueError("No transient response data available. Run transient_response_piecewise() first.")
+
+        cfg = _merge_cfg(_DEFAULT_PLOT_CFG, plot_cfg)
+        follower_alpha = alpha
+
+        # ------------------------------------------------------------------
+        # Compute ONE normalization factor across all cached conditions
+        # ------------------------------------------------------------------
+        norm_factor = 1.0
+        if normalize:
+            freq_runs = self.last_task_info.get("freq_runs", None)
+
+            peaks = []
+            if isinstance(freq_runs, list) and len(freq_runs) > 0:
+                # multi-frequency cache
+                for run in freq_runs:
+                    for y in run.get("outputs", []):
+                        arr = np.asarray(y, dtype=float)
+                        if arr.size > 0:
+                            peaks.append(np.nanmax(arr))
+            else:
+                # single-run cache
+                for y in self.last_task_info.get("outputs", []):
+                    arr = np.asarray(y, dtype=float)
+                    if arr.size > 0:
+                        peaks.append(np.nanmax(arr))
+
+            if len(peaks) == 0:
+                norm_factor = 1.0
+            else:
+                norm_factor = float(np.nanmax(peaks))
+                # avoid division by zero / weird degenerate cases
+                if (not np.isfinite(norm_factor)) or (norm_factor == 0.0):
+                    norm_factor = 1.0
+
+        with paper_rc_context(cfg.get("rc")):
+            freq_runs = self.last_task_info.get("freq_runs", None)
+
+            # ---------- MULTI-FREQUENCY MODE ----------
+            if isinstance(freq_runs, list) and len(freq_runs) > 0:
+                n_freq = len(freq_runs)
+                n_rows = self.num_outputs * n_freq
+
+                if fig is None and axes is None:
+                    figsize = cfg.get("figsize") or (3.3, 1.25 * n_rows)
+                    fig, axes = plt.subplots(
+                        n_rows, 1, figsize=figsize, sharex=False,
+                        constrained_layout=bool(cfg.get("constrained_layout", False)),
+                    )
+                axes = _ensure_axes_list(axes, n_rows)
+
+                a = (cfg["alpha"] if (cfg["alpha"] is not None and is_main) else follower_alpha)
+
+                ax_idx = 0
+                for f_idx, run in enumerate(freq_runs):
+                    t = np.asarray(run["time_horizon"], dtype=float)
+
+                    # Normalize trajectories with ONE shared factor
+                    outputs = [
+                        np.asarray(y, dtype=float) / norm_factor if normalize else np.asarray(y, dtype=float)
+                        for y in run["outputs"]
+                    ]
+
+                    # Only main figures get input pulse/shading info
+                    boundaries = step_values = seg_values = gap_bounds = None
+                    have_input = False
+                    if is_main:
+                        seg_intervals = run.get("input_intervals", None)
+                        u_pulse = run.get("input_pulse", None)
+                        have_input = (seg_intervals is not None) and (u_pulse is not None)
+                        if have_input:
+                            boundaries, step_values, seg_values, gap_bounds = _pulse_step_and_shading_from_intervals(
+                                seg_intervals, u_pulse, gap=gap
+                            )
+
+                    pulse_shape = run.get("pulse_shape", None)
+                    if pulse_shape is not None:
+                        t_on, t_off = float(pulse_shape[0]), float(pulse_shape[1])
+                        period = t_on + t_off
+                        freq_title = cfg.get("title") or f"t_on={t_on:g}, t_off={t_off:g} (T={period:g})"
+                    else:
+                        freq_title = cfg.get("title") or f"Run {f_idx+1}"
+
+                    for out_i in range(self.num_outputs):
+                        ax = axes[ax_idx]
+                        ax_idx += 1
+
+                        species_name = self.species_labels[self.output_idx[out_i]]
+                        title = f"{freq_title} | {species_name}" if is_main else None
+
+                        _plot_one_frequency(
+                            ax=ax,
+                            t=t,
+                            outputs=outputs,                   # <- normalized if requested
+                            out_i=out_i,
+                            title=title,
+                            alpha=a,
+                            have_input=have_input,
+                            boundaries=boundaries,
+                            step_values=step_values,
+                            seg_values=seg_values,
+                            gap_bounds=gap_bounds,
+                            input_color=input_color,
+                            trj_color=trj_color,
+                            shade_on=(shade_on and is_main),
+                            pulse_lw=pulse_lw,
+                            pulse_ls=pulse_ls,
+                            y_label = "Δ Concentration" if y_label is None else y_label,
+                            legend_label = legend_label,
+                        )
+
+                        if is_main:
+                            _apply_axes_style(ax, cfg)
+                            ax.set_ylabel(cfg.get("ylabel") or ("Δy / peak" if normalize else "Δy"))
+
+                if is_main:
+                    axes[-1].set_xlabel(cfg.get("xlabel") or "Time")
+                    if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                        fig.tight_layout()
+                    _maybe_save(fig, cfg)
+
+                return fig, axes
+
+            # ---------- SINGLE-RUN FALLBACK ----------
+            t = np.asarray(self.last_task_info["time_horizon"], dtype=float)
+            outputs = [
+                np.asarray(y, dtype=float) / norm_factor if normalize else np.asarray(y, dtype=float)
+                for y in self.last_task_info["outputs"]
+            ]
+
+            if fig is None and axes is None:
+                figsize = cfg.get("figsize") or (3.3, 1.55 * self.num_outputs)
+                fig, axes = plt.subplots(
+                    self.num_outputs, 1, figsize=figsize, sharex=True,
+                    constrained_layout=bool(cfg.get("constrained_layout", False)),
+                )
+            axes = _ensure_axes_list(axes, self.num_outputs)
+
+            boundaries = step_values = seg_values = gap_bounds = None
+            have_input = False
+            if is_main:
+                seg_intervals = self.last_task_info.get("input_intervals", None)
+                u_pulse = self.last_task_info.get("input_pulse", None)
+                have_input = (seg_intervals is not None) and (u_pulse is not None)
+
+                if have_input:
+                    boundaries, step_values, seg_values, gap_bounds = _pulse_step_and_shading_from_intervals(
+                        seg_intervals, u_pulse, gap=gap
+                    )
+
+            a = (cfg["alpha"] if (cfg["alpha"] is not None and is_main) else follower_alpha)
+
+            for out_i in range(self.num_outputs):
+                ax = axes[out_i]
+                species_name = self.species_labels[self.output_idx[out_i]]
+                title = (cfg.get("title") or f"{species_name}") if is_main else None
+
+                _plot_one_frequency(
+                    ax=ax,
+                    t=t,
+                    outputs=outputs,                        # <- normalized if requested
+                    out_i=out_i,
+                    title=title,
+                    alpha=a,
+                    have_input=have_input,
+                    boundaries=boundaries,
+                    step_values=step_values,
+                    seg_values=seg_values,
+                    gap_bounds=gap_bounds,
+                    input_color=input_color,
+                    trj_color=trj_color,
+                    shade_on=(shade_on and is_main),
+                    pulse_lw=pulse_lw,
+                    pulse_ls=pulse_ls,
+                    legend_label = legend_label,
+                )
+
+                if is_main:
+                    _apply_axes_style(ax, cfg)
+                    ax.set_ylabel(cfg.get("ylabel") or ("Δy / peak" if normalize else "Δy"))
+
+            if is_main:
+                axes[-1].set_xlabel(cfg.get("xlabel") or "Time")
+                if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                    fig.tight_layout()
+                _maybe_save(fig, cfg)
+
+            return fig, axes
+
+
+    def plot_phase_portrait(self, fig=None, axis=None, alpha=0.1, plot_cfg=None):
+        """Plot a phase portrait from cached deterministic transient trajectories.
+
+        For two species, plots x1(t) vs x2(t).
         For three species, plots a 3D trajectory.
 
         Args:
-            fig: Optional matplotlib figure. If None, a new figure is created.
-            axis: Optional matplotlib axis (2D or 3D). If None, a new axis is
-                created depending on the number of species.
+            fig: Optional matplotlib Figure.
+            axis: Optional matplotlib Axis (2D or 3D).
             alpha: Line transparency for overlaid trajectories.
+            plot_cfg: Optional dict controlling paper-ready styling. Supported keys
+                are the same as in plot_transient_response.
 
         Returns:
-            Tuple `(fig, axis)`.
+            Tuple[Figure, Axes]: (fig, axis).
 
         Raises:
-            ValueError: If no deterministic transient response is cached
-                (`type != 'transient response'`).
-            ValueError: If `num_species` is not 2 or 3.
+            ValueError: If no cached deterministic transient response is present.
+            ValueError: If num_species is not 2 or 3.
         """
-
-        # Check if transient response data is available
-        if self.last_task_info.get('type') != 'transient response':
+        if self.last_task_info.get("type") != "transient response":
             raise ValueError("No transient response data available. Run transient_response() first.")
-        
-        # If no figure or axes are provided, create a new figure and axes
-        if fig is None and axis is None:
+
+        cfg = _merge_cfg(_DEFAULT_PLOT_CFG, plot_cfg)
+
+        with paper_rc_context(cfg.get("rc")):
+            if fig is None and axis is None:
+                if self.num_species == 2:
+                    figsize = cfg.get("figsize") or (2.2, 2.2)
+                    fig, axis = plt.subplots(
+                        figsize=figsize,
+                        constrained_layout=bool(cfg.get("constrained_layout", False)),
+                    )
+                elif self.num_species == 3:
+                    figsize = cfg.get("figsize") or (2.6, 2.6)
+                    fig = plt.figure(figsize=figsize)
+                    axis = fig.add_subplot(111, projection="3d")
+                else:
+                    raise ValueError("Phase portrait can only be plotted for 2 or 3 species.")
+
+            trajs = self.last_task_info["trajectories"]
+            a = cfg["alpha"] if cfg["alpha"] is not None else alpha
+            lw = cfg["lw"]
+
             if self.num_species == 2:
-                fig, axis = plt.subplots(figsize=(10, 10))
-            elif self.num_species == 3:
-                fig = plt.figure(figsize=(10, 10))
-                axis = fig.add_subplot(111, projection='3d')
+                for j in range(len(trajs)):
+                    tr = np.asarray(trajs[j], dtype=float)
+                    axis.plot(tr[0, :], tr[1, :], alpha=a, linewidth=lw)
+
+                axis.set_xlabel(cfg.get("xlabel") or self.species_labels[0])
+                axis.set_ylabel(cfg.get("ylabel") or self.species_labels[1])
+                axis.set_title(cfg.get("title") or "Phase portrait", pad=cfg.get("title_pad", 3.0))
+                axis.set_aspect("equal", adjustable="box")
+                _apply_axes_style(axis, cfg)
             else:
-                raise ValueError("Phase portrait can only be plotted for 2 or 3 species.")
-        
-        # Plot the phase portrait and return the figure and axes
-        if self.num_species == 2:
-            for j in range(len(self.last_task_info['trajectories'])):
-                axis.plot(self.last_task_info['trajectories'][j][0,:], self.last_task_info['trajectories'][j][1,:], alpha=alpha)
-            axis.set_xlabel(f"Species {self.species_labels[0]}")
-            axis.set_ylabel(f"Species {self.species_labels[1]}")
-            axis.set_title("Phase Portrait")
-        elif self.num_species == 3:
-            for j in range(len(self.last_task_info['trajectories'])):
-                axis.plot(self.last_task_info['trajectories'][j][0,:], self.last_task_info['trajectories'][j][1,:], self.last_task_info['trajectories'][j][2,:], alpha=alpha)
-            axis.set_xlabel(f"Species {self.species_labels[0]}")
-            axis.set_ylabel(f"Species {self.species_labels[1]}")
-            axis.set_zlabel(f"Species {self.species_labels[2]}")
-            axis.set_title("Phase Portrait")
-        plt.tight_layout()
-        return fig, axis
-    
-    def plot_dose_response(self, fig=None, axes=None, alpha=0.5):
+                for j in range(len(trajs)):
+                    tr = np.asarray(trajs[j], dtype=float)
+                    axis.plot(tr[0, :], tr[1, :], tr[2, :], alpha=a, linewidth=lw)
+
+                axis.set_xlabel(self.species_labels[0])
+                axis.set_ylabel(self.species_labels[1])
+                axis.set_zlabel(self.species_labels[2])
+                axis.set_title(cfg.get("title") or "Phase portrait", pad=cfg.get("title_pad", 3.0))
+
+            if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                fig.tight_layout()
+            _maybe_save(fig, cfg)
+            return fig, axis
+
+
+    def plot_dose_response(self, fig=None, axes=None, alpha=0.5, plot_cfg=None):
         """Plot dose-response curves from cached simulation data.
 
-        Two modes are supported depending on the cached task:
-            - If `last_task_info['type'] == 'dose response'`, uses precomputed
-              dose-response data (if present in the cache).
-            - If `last_task_info['type'] == 'transient response'`, constructs a
-              dose-response by taking the final-time output value for each input
-              scenario and plotting it versus the input dose (currently assumes
-              a single scalar dose per scenario, typically `u[0]`).
+        Two cache modes are supported:
+
+        1) Dose-response cache:
+        - last_task_info['type'] == 'dose response'
+        - last_task_info['input doses'] : array-like
+        - last_task_info['outputs'] : list of arrays shaped (q, n_doses) or similar
+
+        2) Transient-response-derived dose response:
+        - last_task_info['type'] == 'transient response'
+        - last_task_info['inputs'] : list of u vectors (assumes scalar dose is u[0])
+        - last_task_info['initial_conditions'] : list of x0 vectors
+        - last_task_info['outputs'] : list of arrays shaped (q, T) for each (ic,u) scenario
+        The method groups outputs by IC block and plots final-time output vs u[0].
+
+        Paper-ready styling can be controlled via plot_cfg.
 
         Args:
-            fig: Optional matplotlib figure. If None, a new figure is created.
-            axes: Optional axes list. If None, new axes are created (one per output).
-            alpha: Line transparency for plotted curves.
+            fig: Optional matplotlib Figure.
+            axes: Optional axes list/array. If None, new axes are created (one per output).
+            alpha: Line transparency for curves (default: 0.5).
+            plot_cfg: Optional dict controlling paper-ready styling (see plot_transient_response).
 
         Returns:
-            Tuple `(fig, axes)`.
+            Tuple[Figure, List[Axes]]: (fig, axes).
 
         Raises:
-            ValueError: If neither dose-response nor transient-response data is
-                present in `last_task_info`.
+            ValueError: If neither dose-response nor transient-response cache is present.
+            KeyError: If required cache keys are missing.
         """
-
-        # Check if dose response data is available
-        if self.last_task_info.get('type') != 'dose response' and self.last_task_info.get('type') != 'transient response':
+        ttype = self.last_task_info.get("type")
+        if ttype not in ("dose response", "transient response"):
             raise ValueError("No dose response data available. Run dose_response() or transient_response() first.")
-        
-        # If no figure or axes are provided, create a new figure and axes
-        if fig is None and axes is None:
-            fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
-            if not isinstance(axes, (list, np.ndarray)):
-                axes = [axes]
-        
-        # Plot the dose responses for each output species and return the figure and axes #TODO: generalize for multiple inputs and implement dose response algebraically
-        if self.last_task_info['type'] == 'dose response':
-            u_dose = self.last_task_info['input doses']
-            for i in range(self.num_outputs):
-                for j in range(len(self.last_task_info['input scenarios'])):
-                    axes[i].plot(u_dose, self.last_task_info['outputs'][j][i,:], alpha=alpha)
-                    axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.o[i]-1]}")
-                    axes[i].set_xlabel("Input Dose")
-                    axes[i].set_ylabel("Concentration")
-            plt.tight_layout()
 
-        # elif self.last_task_info['type'] == 'transient response': # TODO: generalize for multiple inputs
-        #     u_list = self.last_task_info['inputs']
-        #     for i in range(self.num_outputs):
-        #         u_dose = np.array([u[0] for u in u_list])
-        #         y_dose = np.array([y[i,-1] for y in self.last_task_info['outputs']])
-        #         axes[i].plot(u_dose, y_dose, alpha=alpha)
-        #         axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.output_idx[i]]}")
-        #         axes[i].set_xlabel("Input Dose")
-        #         axes[i].set_ylabel("Concentration")
-        #     plt.tight_layout()
+        cfg = _merge_cfg(_DEFAULT_PLOT_CFG, plot_cfg)
 
-        elif self.last_task_info['type'] == 'transient response': # TODO: Now generalized
-            u_list = self.last_task_info['inputs']
-            x0_list = self.last_task_info['initial_conditions']
+        with paper_rc_context(cfg.get("rc")):
+            if fig is None and axes is None:
+                figsize = cfg.get("figsize") or (2.8, 1.6 * self.num_outputs)
+                fig, axes = plt.subplots(
+                    self.num_outputs, 1, figsize=figsize, sharex=False,
+                    constrained_layout=bool(cfg.get("constrained_layout", False)),
+                )
+            axes = _ensure_axes_list(axes, self.num_outputs)
 
-            step = len(self.last_task_info['outputs']) // len(x0_list)
+            a = cfg["alpha"] if cfg["alpha"] is not None else alpha
+            lw = cfg["lw"]
 
-            for i in range(self.num_outputs):
-                for k,_ in enumerate(x0_list):
-                    u_dose = np.array([u[0] for u in u_list])
-                    y_dose = np.array([y[i,-1] for y in self.last_task_info['outputs'][step*(k):step*(k+1)]])
-                    axes[i].plot(u_dose, y_dose, alpha=alpha)
-                    axes[i].set_title(f"Dose Response of Output Species {self.species_labels[self.output_idx[i]]}")
-                    axes[i].set_xlabel("Input Dose")
-                    axes[i].set_ylabel("Concentration")
-            plt.tight_layout()
+            if ttype == "dose response":
+                u_dose = np.asarray(self.last_task_info["input doses"], dtype=float)
+                outs = self.last_task_info["outputs"]
 
-        return fig, axes
-    
-    def plot_frequency_content(self, fig=None, axes=None, alpha=0.1, t0=0.0):
-        """Plot Fourier magnitude spectra of outputs from cached transient responses.
+                for i in range(self.num_outputs):
+                    ax = axes[i]
+                    n_series = 0
+                    for j in range(len(outs)):
+                        y = np.asarray(outs[j], dtype=float)
+                        yi = y[i, :] if y.ndim == 2 else y
+                        ax.plot(u_dose, yi, alpha=a, linewidth=lw)
+                        n_series += 1
 
-        For each cached transient response trajectory, this method:
-            1) truncates the signal to times `t >= t0`,
-            2) subtracts the mean,
-            3) computes a one-sided FFT magnitude spectrum,
-            4) normalizes magnitudes by their maximum (per trajectory),
-            5) overlays spectra for all scenarios.
+                    species = self.species_labels[self.output_idx[i]]
+                    ax.set_title(cfg.get("title") or f"{species}", pad=cfg.get("title_pad", 3.0))
+                    ax.set_xlabel(cfg.get("xlabel") or "Dose")
+                    ax.set_ylabel(cfg.get("ylabel") or "Response")
+                    _apply_axes_style(ax, cfg)
+                    _maybe_legend(ax, n_series, cfg)
+
+            else:
+                u_list = self.last_task_info["inputs"]
+                x0_list = self.last_task_info["initial_conditions"]
+                outs = self.last_task_info["outputs"]
+
+                # In your current code: outputs are ordered such that for each IC block
+                # you have a sweep over u. Infer step size.
+                if len(x0_list) == 0:
+                    raise ValueError("initial_conditions is empty; cannot build dose-response grouping.")
+                step = len(outs) // len(x0_list)
+                if step <= 0:
+                    raise ValueError("Could not infer IC grouping step for dose-response.")
+
+                u_dose = np.array([np.asarray(u).reshape(-1)[0] for u in u_list], dtype=float)
+
+                for i in range(self.num_outputs):
+                    ax = axes[i]
+                    n_series = 0
+                    for k in range(len(x0_list)):
+                        block = outs[step * k : step * (k + 1)]
+                        y_dose = np.array([np.asarray(y)[i, -1] for y in block], dtype=float)
+                        ax.plot(u_dose, y_dose, alpha=a, linewidth=lw, label=(f"IC {k}" if len(x0_list) <= 10 else None))
+                        n_series += 1
+
+                    species = self.species_labels[self.output_idx[i]]
+                    ax.set_title(cfg.get("title") or f"{species}", pad=cfg.get("title_pad", 3.0))
+                    ax.set_xlabel(cfg.get("xlabel") or "Dose (u₁)")
+                    ax.set_ylabel(cfg.get("ylabel") or "Final output")
+                    _apply_axes_style(ax, cfg)
+                    _maybe_legend(ax, n_series, cfg)
+
+            if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                fig.tight_layout()
+            _maybe_save(fig, cfg)
+            return fig, axes
+
+
+    def plot_frequency_content(self, fig=None, axes=None, alpha=0.1, t0=0.0, plot_cfg=None):
+        """Plot normalized one-sided FFT magnitude spectra from cached transients.
+
+        For each cached trajectory:
+        1) keep samples with time >= t0,
+        2) subtract mean to remove DC component,
+        3) compute one-sided FFT magnitudes,
+        4) normalize each spectrum by its maximum,
+        5) overlay spectra across scenarios.
 
         Args:
-            fig: Optional matplotlib figure. If None, a new figure is created.
-            axes: Optional axes list. If None, new axes are created (one per output).
+            fig: Optional matplotlib Figure.
+            axes: Optional axes list/array. If None, new axes are created (one per output).
             alpha: Line transparency for overlaid spectra.
-            t0: Time threshold; only samples with time >= t0 are used.
+            t0: Time cutoff; only samples with time >= t0 are used.
+            plot_cfg: Optional dict controlling paper-ready styling (see plot_transient_response).
 
         Returns:
-            Tuple `(fig, axes)`.
+            Tuple[Figure, List[Axes]]: (fig, axes).
 
         Raises:
-            ValueError: If no deterministic transient response is cached.
-            ValueError: If fewer than two samples exist after `t0`.
-            ValueError: If a non-positive sampling interval is inferred.
+            ValueError: If no cached deterministic transient response is present.
+            ValueError: If insufficient points exist after t0.
+            ValueError: If inferred sampling interval is non-positive.
         """
-
-        # Check if transient response data is available
-        if self.last_task_info.get('type') != 'transient response':
+        if self.last_task_info.get("type") != "transient response":
             raise ValueError("No transient response data available. Run transient_response() first.")
-        
-        # If no figure or axes are provided, create a new figure and axes
-        if fig is None and axes is None:
-            fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
-            if not isinstance(axes, (list, np.ndarray)):
-                axes = [axes]
 
-        # Truncate time vector and determine valid indices for t >= t0
-        time = np.asarray(self.last_task_info['time_horizon'])
-        mask = time >= t0
-        if mask.sum() < 2:
-            raise ValueError("Not enough data points after t0 to compute a Fourier transform.")
+        cfg = _merge_cfg(_DEFAULT_PLOT_CFG, plot_cfg)
 
-        # Infer (assumed uniform) sampling interval from the truncated time vector
-        dt = float(np.mean(np.diff(time[mask])))
-        if dt <= 0:
-            raise ValueError("Non-positive sampling interval inferred from time_horizon.")  
+        with paper_rc_context(cfg.get("rc")):
+            if fig is None and axes is None:
+                figsize = cfg.get("figsize") or (2.8, 1.6 * self.num_outputs)
+                fig, axes = plt.subplots(
+                    self.num_outputs, 1, figsize=figsize, sharex=False,
+                    constrained_layout=bool(cfg.get("constrained_layout", False)),
+                )
+            axes = _ensure_axes_list(axes, self.num_outputs)
 
-        # Plot Fourier magnitude spectra for each output species
-        N = int(mask.sum())
-        freqs = np.fft.rfftfreq(N, d=dt)
+            time = np.asarray(self.last_task_info["time_horizon"], dtype=float)
+            mask = time >= float(t0)
+            if int(mask.sum()) < 2:
+                raise ValueError("Not enough data points after t0 to compute Fourier transform.")
 
-        for i in range(self.num_outputs):
-            ax = axes[i]
-            for j in range(len(self.last_task_info['outputs'])):
-                # Extract the i-th output trace from the j-th run, truncated at t0
-                y = np.asarray(self.last_task_info['outputs'][j][i, :])[mask]
+            dt = float(np.mean(np.diff(time[mask])))
+            if dt <= 0:
+                raise ValueError("Non-positive sampling interval inferred from time_horizon.")
 
-                # Remove mean to emphasize oscillatory content
-                y = y - np.mean(y)
+            N = int(mask.sum())
+            freqs = np.fft.rfftfreq(N, d=dt)
 
-                # Compute one-sided FFT magnitude
-                Y = np.fft.rfft(y)
-                mag = np.abs(Y) 
-                mag = mag / (np.max(mag) + 1e-12) # simple magnitude normalization
+            outs = self.last_task_info["outputs"]
+            a = cfg["alpha"] if cfg["alpha"] is not None else alpha
+            lw = cfg["lw"]
 
-                ax.plot(freqs, mag, alpha=alpha)
+            for i in range(self.num_outputs):
+                ax = axes[i]
+                n_series = 0
+                for j in range(len(outs)):
+                    y = np.asarray(outs[j], dtype=float)
+                    yi = y[i, :] if y.ndim == 2 else y
+                    yi = yi[mask]
+                    yi = yi - np.mean(yi)
+                    Y = np.fft.rfft(yi)
+                    mag = np.abs(Y)
+                    mag = mag / (np.max(mag) + 1e-12)
+                    ax.plot(freqs, mag, alpha=a, linewidth=lw)
+                    n_series += 1
 
-            ax.set_title(
-                f"Frequency Content of Output Species {self.species_labels[self.output_idx[i]]} (t ≥ {t0})"
-            )
-            ax.set_xlabel("Frequency (1 / time unit)")
-            ax.set_ylabel("Magnitude")
+                species = self.species_labels[self.output_idx[i]]
+                ax.set_title(cfg.get("title") or f"{species}", pad=cfg.get("title_pad", 3.0))
+                ax.set_xlabel(cfg.get("xlabel") or "Frequency")
+                ax.set_ylabel(cfg.get("ylabel") or "Normalized |FFT|")
+                _apply_axes_style(ax, cfg)
+                _maybe_legend(ax, n_series, cfg)
 
-        plt.tight_layout()
-        return fig, axes
-    
-    # ------------------------ stochastic simulation methods ------------------------
+            if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                fig.tight_layout()
+            _maybe_save(fig, cfg)
+            return fig, axes
 
-    def plot_SSA_transient_response(self, fig=None, axes=None, alpha=0.2):
-        r"""Plot cached SSA transient responses (mean ± std) for each output.
 
-        This method visualizes the stochastic results produced by
-        `transient_response_SSA`, plotting the mean trajectory and a shaded
-        band corresponding to $\pm 1$ standard deviation:
+    def plot_SSA_transient_response(self, fig=None, axes=None, alpha=0.2, plot_cfg=None):
+        r"""Plot cached SSA transient responses as mean ± std bands.
 
-        $$ y(t) \pm \sigma(t). $$
-        
+        Expects stochastic cache produced by `transient_response_SSA(...)`:
+        - last_task_info['type'] == 'transient response SSA'
+        - last_task_info['time_horizon'] : np.ndarray
+        - last_task_info['outputs'] : List[np.ndarray] mean trajectories (q, T)
+        - last_task_info['outputs_std'] : List[np.ndarray] std trajectories (q, T)
+        - optionally last_task_info['inputs'] : List[u] for labeling
+
         Args:
-            fig: Optional matplotlib figure. If None, a new figure is created.
-            axes: Optional axes list. If None, new axes are created (one per output).
-            alpha: Transparency for the standard deviation shading.
+            fig: Optional matplotlib Figure.
+            axes: Optional axes list/array. If None, new axes are created (one per output).
+            alpha: Transparency for std shading (default: 0.2).
+            plot_cfg: Optional dict controlling paper-ready styling (see plot_transient_response).
+                Note: plot_cfg["alpha"] (if set) overrides the *line* alpha, while
+                the std-band alpha defaults to the method argument `alpha` unless
+                plot_cfg includes "band_alpha".
+
+                Additional supported key:
+                - band_alpha: float to override std-band transparency
 
         Returns:
-            Tuple `(fig, axes)`.
+            Tuple[Figure, List[Axes]]: (fig, axes).
 
         Raises:
-            ValueError: If no SSA transient response is cached in `last_task_info`
-                (i.e., `type != 'transient response SSA'`).
+            ValueError: If no SSA cache is present.
+            KeyError: If required cache keys are missing.
         """
-
-        # 1. Validation
-        if self.last_task_info.get('type') != 'transient response SSA':
+        if self.last_task_info.get("type") != "transient response SSA":
             raise ValueError("No stochastic transient response data available. Run transient_response_SSA() first.")
-        
-        # 2. Setup Figure/Axes
-        if fig is None and axes is None:
-            fig, axes = plt.subplots(self.num_outputs, 1, figsize=(10, 5 * self.num_outputs))
-            # Ensure axes is iterable even if there's only one output
-            if not isinstance(axes, (list, np.ndarray)):
-                axes = [axes]
-        elif not isinstance(axes, (list, np.ndarray)):
-             axes = [axes]
-        
-        # 3. Retrieve Data
-        time = self.last_task_info['time_horizon']
-        mean_data = self.last_task_info['outputs']      # List of (n_outputs, n_time)
-        std_data = self.last_task_info['outputs_std']   # List of (n_outputs, n_time)
-        inputs = self.last_task_info.get('inputs', [])
 
-        # 4. Plotting Loop
-        for i in range(self.num_outputs):
-            ax = axes[i]
-            species_idx = self.output_idx[i]
-            species_name = self.species_labels[species_idx]
+        cfg = _merge_cfg(_DEFAULT_PLOT_CFG, plot_cfg)
 
-            # Iterate through each input/initial condition scenario
-            for j in range(len(mean_data)):
-                
-                # Extract mean and std for the i-th output species in the j-th scenario
-                y_mean = mean_data[j][i, :]
-                y_std = std_data[j][i, :]
-                
-                # Create label based on input if available
-                label = f"Scenario {j}"
-                if inputs and j < len(inputs):
-                    # concise string representation of input
-                    label = f"u={np.array2string(np.array(inputs[j]), precision=2, separator=',')}"
+        with paper_rc_context(cfg.get("rc")):
+            if fig is None and axes is None:
+                figsize = cfg.get("figsize") or (2.8, 1.6 * self.num_outputs)
+                fig, axes = plt.subplots(
+                    self.num_outputs, 1, figsize=figsize, sharex=True,
+                    constrained_layout=bool(cfg.get("constrained_layout", False)),
+                )
+            axes = _ensure_axes_list(axes, self.num_outputs)
 
-                # Plot Mean Line
-                line, = ax.plot(time, y_mean, label=label, linewidth=2)
-                
-                # Plot Standard Deviation Shading
-                # We use the color of the line to match the shading
-                ax.fill_between(time, 
-                                y_mean - y_std, 
-                                y_mean + y_std, 
-                                color=line.get_color(), 
-                                alpha=alpha)
+            time = np.asarray(self.last_task_info["time_horizon"], dtype=float)
+            mean_data = self.last_task_info["outputs"]
+            std_data = self.last_task_info["outputs_std"]
+            inputs = self.last_task_info.get("inputs", [])
 
-            ax.set_title(f"Stochastic Response: {species_name} (Mean $\pm$ Std)")
-            ax.set_xlabel("Time")
-            ax.set_ylabel("Count / Concentration")
-            ax.grid(True, alpha=0.3)
-            
-            # Only add legend if there aren't too many scenarios to avoid clutter
-            if len(mean_data) <= 10:
-                ax.legend(fontsize='small')
+            line_alpha = cfg["alpha"] if cfg["alpha"] is not None else 1.0
+            lw = cfg["lw"]
+            band_alpha = cfg.get("band_alpha", alpha)
 
-        # if fig:
-        #     plt.tight_layout()
-            
-        return fig, axes
-        
+            for i in range(self.num_outputs):
+                ax = axes[i]
+                species_name = self.species_labels[self.output_idx[i]]
+
+                n_series = 0
+                for j in range(len(mean_data)):
+                    y_mean = np.asarray(mean_data[j], dtype=float)[i, :]
+                    y_std = np.asarray(std_data[j], dtype=float)[i, :]
+
+                    label = None
+                    if inputs and j < len(inputs) and len(mean_data) <= 10:
+                        label = f"u={np.array2string(np.asarray(inputs[j]), precision=2, separator=',')}"
+
+                    line, = ax.plot(time, y_mean, alpha=line_alpha, linewidth=lw, label=label)
+                    ax.fill_between(
+                        time,
+                        y_mean - y_std,
+                        y_mean + y_std,
+                        color=line.get_color(),
+                        alpha=band_alpha,
+                        linewidth=0.0,
+                    )
+                    n_series += 1
+
+                ax.set_title(cfg.get("title") or f"{species_name}", pad=cfg.get("title_pad", 3.0))
+                ax.set_xlabel(cfg.get("xlabel") or "Time")
+                ax.set_ylabel(cfg.get("ylabel") or "Count / Concentration")
+                _apply_axes_style(ax, cfg)
+                _maybe_legend(ax, n_series, cfg)
+
+            if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                fig.tight_layout()
+            _maybe_save(fig, cfg)
+            return fig, axes
+
 
     
     # ------------------------ CVODE Solver Method ------------------------
@@ -1431,3 +2336,106 @@ def _make_rhs(rate_function, u):
     return rhsfn
 
 
+def _pulse_step_and_shading_from_intervals(
+    seg_intervals,
+    u_pulse,
+    *,
+    gap: bool,
+):
+    """
+    Build (boundaries, step_values, seg_values, gap_bounds) from legacy seg_intervals and u_pulse.
+
+    seg_intervals: [(0,T0),(0,T1),...]
+    u_pulse: array-like, first element used as ON amplitude
+    gap: if True, longest segment is treated as a GAP (forced LOW) and pulse phase restarts after it.
+
+    Returns:
+    boundaries: (K+1,)
+    step_values: (K+1,) suitable for ax.step(..., where="post")
+    seg_values: (K,) per-segment values (useful for shading)
+    gap_bounds: None or (t_start, t_end) for the gap segment
+    """
+    durations = np.array([float(iv[1]) for iv in seg_intervals], dtype=float)
+    boundaries = np.cumsum(np.concatenate([[0.0], durations]))  # length K+1
+    K = int(durations.size)
+
+    on_value = float(np.asarray(u_pulse).reshape(-1)[0])
+
+    gap_bounds = None
+
+    if gap and K > 0:
+        gap_idx = int(np.argmax(durations))
+        gap_bounds = (float(boundaries[gap_idx]), float(boundaries[gap_idx + 1]))
+
+        seg_values = np.zeros(K, dtype=float)
+
+        # before gap: ON on even indices (original convention)
+        for k in range(0, gap_idx):
+            seg_values[k] = on_value if (k % 2 == 0) else 0.0
+
+        # gap: forced low
+        seg_values[gap_idx] = 0.0
+
+        # after gap: restart phase (first segment after gap is ON)
+        phase = 0
+        for k in range(gap_idx + 1, K):
+            seg_values[k] = on_value if (phase % 2 == 0) else 0.0
+            phase += 1
+    else:
+        seg_values = np.array([on_value if (k % 2 == 0) else 0.0 for k in range(K)], dtype=float)
+
+    # Drop at end without adding extra segment duration
+    step_values = np.concatenate([seg_values, [0.0]])  # length K+1 for where="post"
+    return boundaries, step_values, seg_values, gap_bounds
+
+
+def _plot_one_frequency(
+    *,
+    ax,
+    t,
+    outputs,
+    out_i: int,
+    title: str,
+    alpha: float,
+    have_input: bool,
+    boundaries,
+    step_values,
+    seg_values,
+    gap_bounds,
+    input_color: str,
+    trj_color: str,
+    shade_on: bool,
+    pulse_lw: float,
+    pulse_ls: str,
+    y_label: str,
+    legend_label: str,
+):
+    """Plot a single output channel for one frequency on a provided axis."""
+    # trajectories
+    for scen in range(len(outputs)):
+        y = np.asarray(outputs[scen], dtype=float)
+        y_i = y[out_i, :] if y.ndim == 2 else y
+        if legend_label:
+            ax.plot(t, y_i - y_i[0], alpha=alpha, color=trj_color, label=legend_label)
+        else:
+            ax.plot(t, y_i - y_i[0], alpha=alpha, color=trj_color)
+
+    ax.set_title(title)
+    ax.set_ylabel(y_label)
+    ax.grid(True, alpha=0.2)
+
+    if have_input and boundaries is not None:
+        ax2 = ax.twinx()
+        ax2.step(boundaries, step_values, where="post",
+                color=input_color, linewidth=pulse_lw, linestyle=pulse_ls, alpha=0.)
+        ax2.set_ylabel("Input u₁", color=input_color)
+        ax2.tick_params(axis="y", labelcolor=input_color)
+
+        if shade_on:
+            for k in range(len(seg_values)):
+                if seg_values[k] > 0:
+                    ax.axvspan(boundaries[k], boundaries[k + 1], color=input_color, alpha=0.15)
+
+        if gap_bounds is not None:
+            ax.axvline(gap_bounds[0], alpha=0.25)
+            ax.axvline(gap_bounds[1], alpha=0.25)

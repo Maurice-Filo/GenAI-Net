@@ -508,6 +508,66 @@ class AbstractMultiEnvironments:
                         else:
                             raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
                         plt.close(fig)
+
+                    case {'style': 'logger', 'task': 'habituation'}:
+                        fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
+                        if not isinstance(axes, (list, np.ndarray)):
+                            axes = [axes]
+                        for i in top_k:
+                            fig, axes = self.envs[i].state.plot_transient_response_piecewise(fig, axes)
+
+                        # fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f'CRN Distribution {self.rendering_iteration}')
+                        
+                        # Apply bounds if provided
+                        bounds = mode.get('bounds')
+                        if bounds is not None:  
+                            for a, b in zip(axes, bounds):
+                                a.set_ylim([0, b])
+
+                        # Logging
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} (Top {(1.-disregarded_percentage)*100}%)', figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration}')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+
+                    # case {'style': 'logger', 'task': 'habituation_gap'}:
+                    #     fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
+                    #     if not isinstance(axes, (list, np.ndarray)):
+                    #         axes = [axes]
+                    #     for i in top_k:
+                    #         fig, axes = self.envs[i].state.plot_transient_response_piecewise(fig, axes, gap=True)
+
+                    #     # fig.tight_layout(rect=[0, 0, 1, 0.95])
+                    #     fig.suptitle(f'CRN Distribution {self.rendering_iteration}')
+                        
+                    #     # Apply bounds if provided
+                    #     bounds = mode.get('bounds')
+                    #     if bounds is not None:  
+                    #         for a, b in zip(axes, bounds):
+                    #             a.set_ylim([0, b])
+
+                    #     # Logging
+                    #     if mode['format'] == 'figure':
+                    #         self.logger.log_figure(figure_name=f'CRN Distribution {self.rendering_iteration} (Top {(1.-disregarded_percentage)*100}%)', figure=fig)
+                    #     elif mode['format'] == 'image':
+                    #         buf = BytesIO()
+                    #         fig.savefig(buf, format='png')
+                    #         buf.seek(0)
+                    #         self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration}')
+                    #         buf.close()
+                    #     else:
+                    #         raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                    #     plt.close(fig)
+
+                    
                     
         toc_step = time.time()
         if self.logger is not None:

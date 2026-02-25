@@ -92,6 +92,314 @@ def dynamic_tracking_error(crn, u_list, x0_list, time_horizon, r_list, w, norm=1
     return performance, crn.last_task_info
 
 
+import numpy as np
+from typing import List, Sequence, Tuple, Union, Optional
+
+def habituation_error_piecewise(
+    crn,
+    u_nested_list,
+    x0_list,
+    nested_time_horizon,
+    w,
+    LARGE_NUMBER: float = 1e4,
+    min_peak: float = 0.1,
+    max_peak: float = 2.0,
+):
+    """Compute a habituation cost for a piecewise protocol using peak ratios.
+
+    This function simulates the CRN under a piecewise-constant input protocol and
+    evaluates "habituation" as a change in peak response across repeated stimulus
+    windows.
+
+    Convention used here:
+      - `nested_time_horizon` defines K segments with time grids t_0, t_1, ..., t_{K-1}.
+      - We treat *even-indexed* segments (0, 2, 4, ...) as "stimulus" windows.
+        Peaks are measured in those windows for each scenario output trajectory.
+      - A habituation score is computed from ratios of consecutive stimulus peaks:
+            ratio_k = peak_{k+1} / peak_k
+        (Lower ratios indicate stronger habituation.)
+
+    The function also enforces peak bounds. If any measured peak is outside
+    [min_peak, max_peak], it returns `LARGE_NUMBER`.
+
+    Args:
+        crn: IOCRN
+            IOCRN-like object implementing:
+            `transient_response_piecewise(u_nested_list, x0_list, nested_time_horizon, LARGE_NUMBER=...)`.
+        u_nested_list: list[list[np.ndarray]]
+            List of input protocols. Each protocol is a list of input vectors (p,)
+            applied segment-wise. The inner list length must match
+            `len(nested_time_horizon)`.
+        x0_list: list[np.ndarray]
+            List of initial conditions (n,).
+        nested_time_horizon: list[np.ndarray]
+            List of time grids, one per segment. These will be stitched by the simulator.
+        w: Union[float, Sequence[float], np.ndarray]
+            Weights applied to each peak ratio term. If a scalar, the same weight is
+            applied to all ratios. If a sequence, it should have length equal to the
+            number of ratios (n_peaks - 1).
+        LARGE_NUMBER: float, default=1e4
+            Penalty returned if simulation diverges or peak constraints fail.
+        min_peak: float, default=0.1
+            Minimum acceptable peak value. Peaks below this are considered invalid.
+        max_peak: float, default=2.0
+            Maximum acceptable peak value. Peaks above this are considered invalid.
+
+    Returns:
+        Tuple[float, dict]:
+            - performance: Scalar habituation cost (lower is better).
+            - last_task_info: `crn.last_task_info` updated with metadata:
+                - 'reward': performance
+                - 'min_peak', 'max_peak'
+                - 'initial_conditions'
+                - 'reward type': 'habituation_error_piecewise'
+    """
+    t, x_list, y_list, last_task_info = crn.transient_response_piecewise(
+        u_nested_list, x0_list, nested_time_horizon, LARGE_NUMBER=LARGE_NUMBER
+    )
+
+    # Convert each segment's time grid to (start, end) interval
+    intervals = [(float(t_k[0]), float(t_k[-1])) for t_k in nested_time_horizon]
+
+    if len(crn.output_labels) == 0 or len(crn.output_labels) > 1:
+        raise ValueError("habituation_error_piecewise currently supports exactly one output species.")
+
+    # we assume the IC dictates a base for the peaks
+    ss_offset = x0_list[0][crn.species_idx_dict[crn.output_labels[0]]]
+
+    min_peak += ss_offset
+    max_peak += ss_offset
+
+    # comupute steady state values for each off segment and check they match
+    durations = np.array([float(tk[-1] - tk[0]) for tk in nested_time_horizon], dtype=float)
+    starts = np.cumsum(np.concatenate([[0.0], durations[:-1]]))
+    ends = starts + durations
+    abs_intervals = list(zip(starts, ends))
+    off_intervals = [(0.,0.)] + abs_intervals[1::2]
+
+    # For each scenario, check OFF steady state is invariant
+    # (assuming u_nested_list length == number of scenarios)
+    _ok = True
+    for s in range(len(x_list)):
+        # Determine OFF input for this scenario (single input)
+        # Here: assume the protocol alternates and off is the second segment value if provided,
+        # otherwise 0.
+        if len(u_nested_list[s]) > 1:
+            u_off = np.asarray(u_nested_list[s][1], dtype=np.float64).reshape(-1)
+        else:
+            u_off = np.array([0.0], dtype=np.float64)
+
+        ok, _ = check_off_ss_invariant(crn, t, x_list[s], off_intervals, u_off,
+                                    ss_tol_abs=1e-4, ss_tol_rel=1e-3)
+        
+        if not ok:
+            _ok = False
+            break
+    
+    if _ok:
+        performance = habituation_metric(
+            intervals=intervals,
+            t=t,
+            y_list=y_list,
+            w=w,
+            min_peak=min_peak,
+            max_peak=max_peak,
+            base_valley=ss_offset,
+            LARGE_NUMBER=LARGE_NUMBER
+        )
+    else:
+        performance = float(LARGE_NUMBER)
+
+    crn.last_task_info["reward"] = performance
+    crn.last_task_info["min_peak"] = float(min_peak)
+    crn.last_task_info["max_peak"] = float(max_peak)
+    crn.last_task_info["initial_conditions"] = x0_list
+    crn.last_task_info["reward type"] = "habituation_error_piecewise"
+    # save input info for pulse plotting
+    if len(u_nested_list) == 1: # plotting is supported only for a single input 
+        crn.last_task_info["input_intervals"] = intervals
+        crn.last_task_info["input_pulse"] = u_nested_list[0][0]
+
+    return performance, crn.last_task_info
+
+import numpy as np
+from scipy.optimize import fsolve
+
+def state_at_time(t, x, t_query):
+    # x shape (n, T). Take nearest time index.
+    idx = int(np.argmin(np.abs(t - t_query)))
+    return x[:, idx]
+
+def check_off_ss_invariant(crn, t, x, off_intervals, u_off,
+                           ss_tol_abs=1e-4, ss_tol_rel=1e-3,
+                           xtol=1e-9, maxfev=2000):
+    """
+    x: full state trajectory, shape (n, T)
+    off_intervals: list of (start,end) absolute
+    u_off: input vector for OFF
+    """
+
+    ss_solutions = []
+    for (_, end) in off_intervals:
+        x_guess = state_at_time(t, x, end)
+        x_ss, ok, _ = fsolve_ss(crn, u_off, x_guess, xtol=xtol, maxfev=maxfev)
+        if not ok:
+            return False, None
+        ss_solutions.append(x_ss)
+
+    ref = ss_solutions[0]
+    for sol in ss_solutions[1:]:
+        diff = np.linalg.norm(sol - ref, ord=np.inf)
+        scale = max(1.0, np.linalg.norm(ref, ord=np.inf))
+        if diff > ss_tol_abs and diff > ss_tol_rel * scale:
+            return False, ss_solutions
+    return True, ss_solutions
+
+
+def fsolve_ss(crn, u, x0, xtol=1e-9, maxfev=2000):
+    u = np.asarray(u, dtype=np.float64).reshape(-1)
+    x0 = np.asarray(x0, dtype=np.float64).reshape(-1)
+
+    sol, infodict, ier, msg = fsolve(
+        lambda x: crn.rate_function(0.0, x, u),
+        x0,
+        full_output=True,
+        xtol=xtol,
+        maxfev=maxfev,
+    )
+    sol = np.asarray(sol, dtype=np.float64)
+    success = (ier == 1) and np.all(np.isfinite(sol))
+    return sol, success, msg
+
+def habituation_metric(
+    intervals: Sequence[Tuple[float, float]],
+    t: np.ndarray,
+    y_list: Sequence[np.ndarray],
+    w: Union[float, Sequence[float], np.ndarray],
+    min_peak: float = 0.1,
+    max_peak: float = 2.0,
+    base_valley: float = 0.0,
+    LARGE_NUMBER: float = 1e4,
+) -> float:
+    """Compute a habituation cost from output peaks across repeated stimulus windows.
+
+    This metric extracts peak amplitudes from specified time intervals and computes
+    ratios of consecutive stimulus peaks. By default, it assumes even-indexed
+    intervals (0, 2, 4, ...) correspond to repeated stimulus windows.
+
+    Steps:
+      1) For each scenario output trajectory in `y_list`, compute peaks in stimulus
+         windows (even intervals).
+      2) Enforce peak bounds: if any peak is outside [min_peak, max_peak], return
+         `LARGE_NUMBER`.
+      3) Compute peak ratios: ratio_k = peak_{k+1} / peak_k.
+      4) Return weighted mean of ratios (lower implies stronger habituation).
+
+    Notes:
+      - If there are fewer than 2 stimulus windows, this metric cannot form a ratio
+        and returns `LARGE_NUMBER`.
+      - If any peak is zero or extremely small, division can blow up; we guard with
+        a small epsilon.
+
+    Args:
+        intervals: Sequence[Tuple[float, float]]
+            Time intervals (start, end) defining protocol segments.
+        t: np.ndarray
+            Stitched time vector from the simulator, shape (T,).
+        y_list: Sequence[np.ndarray]
+            List of output trajectories, one per scenario.
+            Each element is typically shape (q, T) (q outputs).
+        w: Union[float, Sequence[float], np.ndarray]
+            Weights for each ratio term. If scalar, repeated. If sequence, must match
+            number of ratios (n_peaks - 1) or will be broadcast/clipped.
+        min_peak: float, default=0.1
+            Minimum acceptable peak amplitude.
+        max_peak: float, default=2.0
+            Maximum acceptable peak amplitude.
+        LARGE_NUMBER: float, default=1e4
+            Penalty returned if constraints fail or insufficient windows exist.
+
+    Returns:
+        float: Scalar habituation cost. Lower is better.
+    """
+    # Stimulus windows: even-indexed intervals
+    rep_len = intervals[1][1] + intervals[0][1]
+    stim_intervals = [intervals[i] for i in range(0, len(intervals), 2)]
+    stim_intervals = [(float(start) + i*rep_len, float(end) + i*rep_len) for i, (start, end) in enumerate(stim_intervals)]
+
+    off_intervals = [intervals[i] for i in range(1, len(intervals), 2)]
+    off_intervals = [(float(start) + i*rep_len + intervals[0][1], float(end) + i*rep_len + intervals[0][1]) for i, (start, end) in enumerate(off_intervals)]
+
+    if len(stim_intervals) < 2:
+        raise ValueError("At least two stimulus intervals are required to compute habituation.")
+
+    eps = 1e-12
+    all_ratios: List[float] = []
+
+    # Prepare weights for ratios
+    n_ratios = len(stim_intervals) - 1
+    if np.isscalar(w):
+        w_arr = np.full(n_ratios, float(w), dtype=np.float32)
+    else:
+        w_arr = np.asarray(list(w), dtype=np.float32).reshape(-1)
+        if w_arr.size < n_ratios:
+            # pad with last value
+            w_arr = np.pad(w_arr, (0, n_ratios - w_arr.size), mode="edge")
+        elif w_arr.size > n_ratios:
+            w_arr = w_arr[:n_ratios]
+
+    # For each scenario (each y), compute stimulus peaks and ratios
+    for y in y_list:
+        # y assumed shape (q, T). Use max over outputs q as a single "response amplitude".
+        # If you prefer a specific output channel, replace this with y[channel_idx, :].
+        stim_peaks: List[float] = []
+        for (start, end) in stim_intervals:
+            mask = (t >= start) & (t <= end)
+            if not np.any(mask):
+                stim_peaks.append(float(LARGE_NUMBER))
+                continue
+            y_seg = y[:, mask]  # (q, T_seg)
+            peak = float(np.max(y_seg))
+            stim_peaks.append(peak)
+
+        off_valleys = []
+        for (start, end) in off_intervals:
+            mask = (t >= start) & (t <= end)
+            if not np.any(mask):
+                off_valleys.append(float(LARGE_NUMBER))
+                continue
+            y_seg = y[:, mask]  # (q, T_seg)
+            valley = float(np.min(y_seg))
+            off_valleys.append(valley)
+
+        # Peak bounds check
+        peaks_ok = [(p <= max_peak) for p in stim_peaks]
+        if not all(peaks_ok):
+            return float(LARGE_NUMBER) # penalize if any peak is out of bounds (upper)
+        # otherwise, set size to min_peak if any peak is below min_peak
+        stim_peaks = [max(p, min_peak) for p in stim_peaks]
+
+        # check valleys 
+        # print(off_valleys)
+        # valleys_ok = [(base_valley <= p) for p in off_valleys]
+        # if not all(valleys_ok):
+        #     return float(LARGE_NUMBER)
+
+        # Ratios peak_{k+1}/peak_k
+        ratios = [
+            (stim_peaks[i + 1] / max(stim_peaks[i], eps))
+            for i in range(len(stim_peaks) - 1)
+        ]
+
+        # Weighted mean for this scenario
+        ratios = np.asarray(ratios, dtype=np.float32)
+        # scenario_score = float(np.mean(w_arr * ratios))
+        scenario_score = np.log(float(np.max(ratios)) + eps) # use log of max ratio to focus on worst habituation step
+        all_ratios.append(scenario_score)
+
+    return float(np.mean(all_ratios)) if all_ratios else float(LARGE_NUMBER)
+
+
 def dynamic_tracking_error_piecewise(crn, u_nested_list, x0_list, nested_time_horizon, r_list, w, norm=1, relative=False, LARGE_NUMBER=1e4):
     """
     Compute a dynamic tracking cost for piecewise-constant input protocols.
@@ -492,3 +800,114 @@ def track_relationship(crn, u_list, x0_list, time_horizon, w, species_names, rel
     crn.last_task_info['tracked_species'] = species_names
     
     return performance, crn.last_task_info
+
+
+# --- habituation with gap ---
+
+from typing import Sequence, Tuple, List, Dict, Any, Union
+
+
+
+def habituation_metric_with_gap(
+    *,
+    intervals: Sequence[Tuple[float, float]],  # legacy (0..Tk)
+    t: np.ndarray,
+    y_list: Sequence[np.ndarray],              # each (q,T)
+    w: Union[float, Sequence[float], np.ndarray],
+    n_repeats_pre: int,
+    n_repeats_post: int,
+    gap_weight: float = 5.0,
+    recovery_tol: float = 0.05,   # |pB1 - pA1| / pA1 <= 5%
+    dishabituate_rho: float = 1.0, # require pB1 >= rho * pA_last (rho=1 is minimal)
+    min_peak: float = 0.1,
+    max_peak: float = 2.0,
+    LARGE_NUMBER: float = 1e4,
+    sensitization: bool = False, # if True, reward increasing response instead of decreasing
+) -> float:
+    """
+    Returns: habituation loss + gap consistency penalty.
+    Keeps your "log(max ratio)" style for habituation.
+    """
+
+    # Build absolute intervals from legacy durations
+    durations = np.array([float(end - start) for (start, end) in intervals], dtype=float)  # start=0 legacy OK
+    starts = np.cumsum(np.concatenate([[0.0], durations[:-1]]))
+    ends = starts + durations
+    abs_intervals = list(zip(starts, ends))
+
+    # Segment layout:
+    # pre: [ON0, OFF0, ON1, OFF1, ...] => stim segments at indices 0,2,...,2*(n_pre-1)
+    # gap: one OFF segment at index 2*n_pre
+    # post: resumes with ON at index 2*n_pre+1, then OFF, etc.
+    gap_idx = 2 * n_repeats_pre
+    stim_pre_idx  = list(range(0, 2 * n_repeats_pre, 2))
+    stim_post_idx = list(range(gap_idx + 1, gap_idx + 1 + 2 * n_repeats_post, 2))
+
+    eps = 1e-12
+    all_scores: List[float] = []
+
+    # weights for ratios (pre-train only; you can extend to post too)
+    n_ratios = max(1, len(stim_pre_idx) - 1)
+    if np.isscalar(w):
+        w_arr = np.full(n_ratios, float(w), dtype=np.float32)
+    else:
+        w_arr = np.asarray(list(w), dtype=np.float32).reshape(-1)
+        if w_arr.size < n_ratios:
+            w_arr = np.pad(w_arr, (0, n_ratios - w_arr.size), mode="edge")
+        elif w_arr.size > n_ratios:
+            w_arr = w_arr[:n_ratios]
+
+    for y in y_list:
+        y0 = y[0] if y.ndim == 2 else y  # single output expected
+
+        # --- extract peaks in each stim segment ---
+        def seg_peak(seg_idx: int) -> float:
+            start, end = abs_intervals[seg_idx]
+            mask = (t >= start) & (t <= end)
+            if not np.any(mask):
+                return float(LARGE_NUMBER)
+            return float(np.max(y0[mask]))
+
+        peaks_pre  = [seg_peak(i) for i in stim_pre_idx]
+        peaks_post = [seg_peak(i) for i in stim_post_idx]
+
+        if any(p > max_peak for p in peaks_pre + peaks_post):
+            return float(LARGE_NUMBER)
+
+        peaks_pre  = [max(p, min_peak) for p in peaks_pre]
+        peaks_post = [max(p, min_peak) for p in peaks_post]
+
+        # --- habituation on pre train (your original max-ratio log) ---
+        if not sensitization:
+            ratios_pre = np.array(
+                [peaks_pre[i+1] / max(peaks_pre[i], eps) for i in range(len(peaks_pre) - 1)],
+                dtype=np.float32,
+            )
+            hab_score = float(np.log(float(np.median(ratios_pre)) + eps))
+        else:
+            ratios_pre = np.array(
+                [peaks_pre[i] / max(peaks_pre[i+1], eps) for i in range(len(peaks_pre) - 1)],
+                dtype=np.float32,
+            )
+            hab_score = float(np.log(float(np.median(ratios_pre)) + eps))
+
+        # --- gap dynamics check ---
+        # (1) recovery: first post peak close to first pre peak
+        pA1 = peaks_pre[0]
+        # pAlast = peaks_pre[-1]
+        pB1 = peaks_post[0]
+
+        rel_diff = abs(pB1 - pA1) / max(pA1, eps)
+        rec_pen = max(0.0, rel_diff - recovery_tol) / max(recovery_tol, eps)
+
+        # (2) dishabituation: first post peak should be == to the first pre peak
+        dis_pen = np.abs(pB1 - pA1) / max(pA1, eps)
+
+        gap_pen = rec_pen + dis_pen
+
+        scenario_score = hab_score + gap_weight * gap_pen
+        all_scores.append(float(scenario_score))
+
+    return float(np.mean(all_scores)) if all_scores else float(LARGE_NUMBER)
+
+
