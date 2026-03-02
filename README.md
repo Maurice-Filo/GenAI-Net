@@ -2,11 +2,13 @@
 
 Implementation of [**GenAI-Net**](https://www.arxiv.org/abs/2601.17582): a generative reinforcement-learning framework for designing **input–output chemical reaction networks (IO-CRNs)** by sequentially composing reactions from a library and optimizing performance objectives.
 
-**Documentation:** see the rendered docs in **`docs/`** (built with MkDocs) — start from the **Docs Home / Overview** page.
+**Documentation:** [maurice-filo.github.io/GenAI-Net/](https://maurice-filo.github.io/GenAI-Net/).
+
+> Please feel free to open a GitHub issue for any question related to the code, this will help us improving our method! 
 
 ---
 
-## What this repository contains
+## Overview
 
 GenAI-Net learns *policies over reaction-network edits* (e.g., “add reaction #j with these parameters”) and evaluates candidate IO-CRNs via deterministic and/or stochastic simulation, using task-specific reward functions (tracking, oscillation, logic, relationship constraints, etc.). The codebase is organized around:
 
@@ -19,38 +21,22 @@ GenAI-Net learns *policies over reaction-network edits* (e.g., “add reaction #
 
 ---
 
-## Method at a glance (Figure 1)
+### Method at a glance
 
-Figure 1 provides the high-level GenAI-Net loop: the agent observes an IO-CRN state, proposes a reaction edit (structure + parameters), the environment compiles the updated network and simulates it, and a reward drives learning toward functional designs.
+The high-level GenAI-Net loop: the agent observes an IO-CRN state, proposes a reaction edit (structure + parameters), the environment compiles the updated network and simulates it, and a reward drives learning toward functional designs.
 
-![GenAI-Net overview (Figure 1)](docs/assets/Overview.png)
-
-For a complete description (including Figure 2 and full method details), refer to the documentation.
-
----
-
-## Documentation
-
-- **Docs entry point:** `docs/index.md`
-- **Reference/API pages:** `docs/reference/` (auto-generated from docstrings via `mkdocstrings`)
-- **Build/preview locally:**
-  ```bash
-  mkdocs serve
-  ```
-  Then open the local URL printed in the terminal.
-
-If you change docstrings and want the reference pages updated, rebuild the docs (or just refresh if using `mkdocs serve`).
+![GenAI-Net overview](docs/assets/Overview.png)
 
 ---
 
 ## Installation
 
-Clone the repository and install in editable mode:
+Clone the repository and install:
 
 ```bash
 git clone <YOUR_REPO_URL>
 cd <YOUR_REPO_DIR>
-pip install -e .
+pip install .
 ```
 
 If you use a virtual environment (recommended):
@@ -69,11 +55,11 @@ pip install -e .
 A typical workflow is:
 
 1. Define / load a reaction library and IO-CRN environment.
-2. Choose an observer/tensorizer (environment → agent state).
-3. Choose an actuator/stepper (agent action → environment edit).
-4. Train an RL agent (e.g., PPO / REINFORCE) with a reward from `rewards/`.
+2. Define the objective of the task (loss/reward).
+3. Create a Trainer object, containing the hyperparameters for the RL loop.
+4. Train and evaluate the results.
 
-The docs provide the recommended starting points and examples.
+See the `apps` folder for 10 examples using GenAI-Net on different task. 
 
 ---
 
@@ -89,7 +75,7 @@ This repository accompanies the GenAI-Net method described in:
 
 ## License
 
-Add your license here (e.g., MIT/BSD-3/Apache-2.0).
+This work is licensed under GPL 3.0.
 
 ---
 
