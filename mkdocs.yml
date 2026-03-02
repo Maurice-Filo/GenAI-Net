@@ -62,6 +62,19 @@ nav:
           - stochastic_visualizations: reference/utils/stochastic_visualizations.md
           - utils: reference/utils/utils.md
           - visualizations: reference/utils/visualizations.md
+          - crn_builders: reference/utils/crn_builders.md
+          - input_interface: reference/utils/input_interface.md
+          - library_builders: reference/utils/library_builders.md
+          - plotting_style: reference/utils/plotting_style.md
+          - default_tasks:
+              - ClassificationTaskKind: reference/utils/default_tasks/ClassificationTaskKind.md
+              - DoseResponseTaskKind: reference/utils/default_tasks/DoseResponseTaskKind.md
+              - HabituationTaskKind: reference/utils/default_tasks/HabituationTaskKind.md
+              - LogicTaskKind: reference/utils/default_tasks/LogicTaskKind.md
+              - OscillatorFreqTaskKind: reference/utils/default_tasks/OscillatorFreqTaskKind.md
+              - OscillatorMeanTaskKind: reference/utils/default_tasks/OscillatorMeanTaskKind.md
+              - SSATrackingTaskKind: reference/utils/default_tasks/SSATrackingTaskKind.md
+              - TrackingTaskKind: reference/utils/default_tasks/TrackingTaskKind.md
       - distributions:
           - categorical: reference/distributions/categorical.md
           - lognormal: reference/distributions/lognormal.md
