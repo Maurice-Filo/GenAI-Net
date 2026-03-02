@@ -63,13 +63,20 @@ See the `apps` folder for 10 examples using GenAI-Net on different task.
 
 ---
 
-## Paper
+## Paper and citations
 
 This repository accompanies the GenAI-Net method described in:
 
 - https://www.arxiv.org/abs/2601.17582
 
-(Please cite the paper if you use this code in academic work; a BibTeX entry can be added here once finalized.)
+```
+@article{filo2026genai,
+  title={GenAI-Net: A Generative AI Framework for Automated Biomolecular Network Design},
+  author={Filo, Maurice and Rossi, Nicol{\`o} and Fang, Zhou and Khammash, Mustafa},
+  journal={arXiv preprint arXiv:2601.17582},
+  year={2026}
+}
+```
 
 ---
 
