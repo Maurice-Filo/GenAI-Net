@@ -128,6 +128,7 @@ class TaskSpec:
         max_threads: SSA max threads.
         cv_weight: Robust SSA CV weight.
         rpa_weight: Robust SSA RPA weight.
+        relative: Whether to use relative error in SSA rewards.
 
         # Reward constants
         norm: Norm used in tracking losses.
@@ -175,6 +176,7 @@ class TaskSpec:
     max_threads: int = 1024
     cv_weight: float = 1.0
     rpa_weight: float = 1.0
+    relative: bool = False
 
     # Reward constants
     norm: int = 1
@@ -525,6 +527,8 @@ class PolicyCfg:
         entropy_weights_per_head: Entropy coefficients per head.
         ordering_enabled: If True, uses ordered reaction addition policy.
         constraint_strength: Constraint strength for ordered policy.
+        zero_reaction_idx: If set, this reaction index is treated as a "no-op" action (allowing multiple re-samples).
+        stop_flag: Internal flag to indicate if calling a "zero_reaction" is a stopping condition (instead of a no-op).
     """
     width: int = 1024
     depth: int = 5
@@ -540,6 +544,10 @@ class PolicyCfg:
     )
     ordering_enabled: bool = False
     constraint_strength: float = float("inf")
+
+    # stopping condition 
+    zero_reaction_idx: Optional[int] = None             # If set, this reaction index is treated as a "no-op" action
+    stop_flag: bool = field(init=False, default=False)  # Internal flag to indicate if calling a "zero_reaction" is a stopping condition
 
 
 @dataclass
@@ -827,6 +835,9 @@ def build_policy(
             device=device,
             continuous_distribution=policy_cfg.continuous_distribution,
             entropy_weights_per_head=policy_cfg.entropy_weights_per_head,
+            # stopping_condition
+            zero_reaction_idx = policy_cfg.zero_reaction_idx,
+            stop_flag = policy_cfg.stop_flag if policy_cfg.zero_reaction_idx is not None else False
         )
 
     return policy

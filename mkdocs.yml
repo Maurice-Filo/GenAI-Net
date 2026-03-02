@@ -79,3 +79,79 @@ nav:
           - iocrn: reference/iocrns/iocrn.md
           - reaction_library: reference/iocrns/reaction_library.md
           - reactions: reference/iocrns/reactions.md
+
+  - Applications:
+      - DoseResponse:
+          - HF3:
+              - 1 added reactions:
+                  - 1 added reactions run0: Applications/DoseResponse/HF3/1_added_reactions/1_added_reactions_run0.md
+              - 2 added reactions:
+                  - 2 added reactions run0: Applications/DoseResponse/HF3/2_added_reactions/2_added_reactions_run0.md
+              - 3 added reactions:
+                  - 3 added reactions run0: Applications/DoseResponse/HF3/3_added_reactions/3_added_reactions_run0.md
+              - 4 added reactions:
+                  - 4 added reactions run0: Applications/DoseResponse/HF3/4_added_reactions/4_added_reactions_run0.md
+              - 5 added reactions:
+                  - hill response n=3 run0: Applications/DoseResponse/HF3/5_added_reactions/hill_response_n=3_run0.md
+                  - hill response n=3 run1: Applications/DoseResponse/HF3/5_added_reactions/hill_response_n=3_run1.md
+              - 6 added reactions:
+                  - 6 added reactions run0: Applications/DoseResponse/HF3/6_added_reactions/6_added_reactions_run0.md
+          - Ultra sensitivity:
+              - Ultra-sensitivity run0: Applications/DoseResponse/Ultra_sensitivity/Ultra-sensitivity_run0.md
+              - Ultra-sensitivity run1: Applications/DoseResponse/Ultra_sensitivity/Ultra-sensitivity_run1.md
+              - Ultra-sensitivity run2: Applications/DoseResponse/Ultra_sensitivity/Ultra-sensitivity_run2.md
+
+      - Habituation:
+          - Habituation h3 Task 3s 5r: Applications/Habituation/Habituation_h3_Task_3s_5r.md
+          - Habituation h3 Task sensitization 3s 5r: Applications/Habituation/Habituation_h3_Task_sensitization_3s_5r.md
+
+      - LogicCircuits:
+          - 3Inputs 5Reactions:
+              - LogicCircuit 5s 5r SIL run0: Applications/LogicCircuits/3Inputs_5Reactions/LogicCircuit_5s_5r_SIL_run0.md
+              - LogicCircuit 5s 5r SIL run1: Applications/LogicCircuits/3Inputs_5Reactions/LogicCircuit_5s_5r_SIL_run1.md
+          - 4Inputs 5Reactions:
+              - LogicCircuit 5s 5r SIL run0: Applications/LogicCircuits/4Inputs_5Reactions/LogicCircuit_5s_5r_SIL_run0.md
+              - LogicCircuit 5s 5r SIL run1: Applications/LogicCircuits/4Inputs_5Reactions/LogicCircuit_5s_5r_SIL_run1.md
+          - 4Inputs 6Reactions:
+              - LogicCircuit 5s 6r SIL run0: Applications/LogicCircuits/4Inputs_6Reactions/LogicCircuit_5s_6r_SIL_run0.md
+          - 4Inputs 6Reactions HF:
+              - logic 4inputs 1output 6species 6rxns run0: Applications/LogicCircuits/4Inputs_6Reactions_HF/logic_4inputs_1output_6species_6rxns_run0.md
+          - 4Inputs 6Reactions non zero IC:
+              - LogicCircuit 5s 6r SIL nonzeroIC run0: Applications/LogicCircuits/4Inputs_6Reactions_non_zero_IC/LogicCircuit_5s_6r_SIL_nonzeroIC_run0.md
+              - LogicCircuit 5s 6r SIL nonzeroIC run1: Applications/LogicCircuits/4Inputs_6Reactions_non_zero_IC/LogicCircuit_5s_6r_SIL_nonzeroIC_run1.md
+              - LogicCircuit 5s 6r SIL nonzeroIC run2: Applications/LogicCircuits/4Inputs_6Reactions_non_zero_IC/LogicCircuit_5s_6r_SIL_nonzeroIC_run2.md
+
+      - MultiStability:
+          - multistability 2species 6rxns run0: Applications/MultiStability/multistability_2species_6rxns_run0.md
+          - multistability 2species 6rxns run1: Applications/MultiStability/multistability_2species_6rxns_run1.md
+          - multistability 2species 6rxns run2: Applications/MultiStability/multistability_2species_6rxns_run2.md
+
+      - Oscillators:
+          - Frequency:
+              - oscillators freq 3species 6rxns run0: Applications/Oscillators/Frequency/oscillators_freq_3species_6rxns_run0.md
+              - oscillators freq 3species 6rxns run1: Applications/Oscillators/Frequency/oscillators_freq_3species_6rxns_run1.md
+              - oscillators freq 3species 6rxns run2: Applications/Oscillators/Frequency/oscillators_freq_3species_6rxns_run2.md
+          - Lift:
+              - oscillators lift 3species 6rxns run0: Applications/Oscillators/Lift/oscillators_lift_3species_6rxns_run0.md
+              - oscillators lift 3species 6rxns run1: Applications/Oscillators/Lift/oscillators_lift_3species_6rxns_run1.md
+              - oscillators lift 3species 6rxns run2: Applications/Oscillators/Lift/oscillators_lift_3species_6rxns_run2.md
+
+      - RPA:
+          - 2Species 4Reactions:
+              - RPA 2species 4rxns run0: Applications/RPA/2Species_4Reactions/RPA_2species_4rxns_run0.md
+              - RPA 2species 4rxns run1: Applications/RPA/2Species_4Reactions/RPA_2species_4rxns_run1.md
+              - RPA 2species 4rxns run2: Applications/RPA/2Species_4Reactions/RPA_2species_4rxns_run2.md
+              - RPA 2species 4rxns run3: Applications/RPA/2Species_4Reactions/RPA_2species_4rxns_run3.md
+          - 3Species 5Reactions:
+              - RPA 3species 5rxns run0: Applications/RPA/3Species_5Reactions/RPA_3species_5rxns_run0.md
+              - RPA 3species 5rxns run1: Applications/RPA/3Species_5Reactions/RPA_3species_5rxns_run1.md
+              - RPA 3species 5rxns run2: Applications/RPA/3Species_5Reactions/RPA_3species_5rxns_run2.md
+          - 3Species 8Reactions:
+              - RPA 6species 8rxns run0: Applications/RPA/3Species_8Reactions/RPA_6species_8rxns_run0.md
+              - RPA 6species 8rxns run1: Applications/RPA/3Species_8Reactions/RPA_6species_8rxns_run1.md
+              - RPA 6species 8rxns run2: Applications/RPA/3Species_8Reactions/RPA_6species_8rxns_run2.md
+
+      - RPA With CV Reduction:
+          - RPA stochastic 3species 6rxns run0: Applications/RPA_With_CV_Reduction/RPA_stochastic_3species_6rxns_run0.md
+          - RPA stochastic 3species 6rxns run1: Applications/RPA_With_CV_Reduction/RPA_stochastic_3species_6rxns_run1.md
+          - RPA stochastic 3species 6rxns run2: Applications/RPA_With_CV_Reduction/RPA_stochastic_3species_6rxns_run2.md
