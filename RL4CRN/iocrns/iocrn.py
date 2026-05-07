@@ -710,7 +710,7 @@ class IOCRN:
         
         return time_horizon, x_mean_list, y_mean_list, x_std_list, y_std_list, self.last_task_info
     
-    def transient_response(self, u_list, x0_list, time_horizon, LARGE_NUMBER=1e4):
+    def transient_response(self, u_list, x0_list, time_horizon, LARGE_NUMBER=1e4, force=False, mode="product"):
         r"""Compute deterministic transient responses (ODE integration).
 
         This method integrates the ODE dynamics:
@@ -736,6 +736,8 @@ class IOCRN:
                 evaluate/interpolate the solution.
             LARGE_NUMBER: Threshold used both as an instability detection bound
                 and as a fill value when integration fails.
+            force: avoid caching for this operation
+            mode: how to combine u_list and x0_list. "product" (default) takes Cartesian product, "zip" pairs them in order.
 
         Returns:
             Tuple `(time_horizon, x_list, y_list, last_task_info)`:
@@ -759,7 +761,7 @@ class IOCRN:
               interpolates the solver output onto `time_horizon`.
         """
         # If the CRN dynamics has been simulated and stored before, return the stored results
-        if self.last_task_info['type'] == 'transient response':
+        if self.last_task_info['type'] == 'transient response' and not force:
             return self.last_task_info['time_horizon'], self.last_task_info['trajectories'], self.last_task_info['outputs'], self.last_task_info
         
         # Check if the IOCRN has unknown rate constants
@@ -780,9 +782,12 @@ class IOCRN:
         x_list = []
         y_list = []
 
+        # merge or zip u_list and x0_list based on mode
+        assert mode in ["product", "zip"], "mode must be either 'product' or 'zip'"
+        u_x0_pairs = list(product(u_list, x0_list)) if mode == "product" else list(zip(u_list, x0_list))
         
         if self.solver == 'LSODA':
-            for u, x0 in product(u_list, x0_list):
+            for u, x0 in u_x0_pairs:
                 solution = solve_ivp(lambda t, x: self.rate_function(t, x, u), (time_horizon[0], time_horizon[-1]), x0, t_eval=time_horizon, method="LSODA", events=stop_if_unstable, atol=self.atol, rtol=self.rtol)
                 if solution.status == -1: # if the integration failed, return large numbers for all species and outputs
                     x = np.full((self.num_species, time_horizon.shape[0]), LARGE_NUMBER) # numpy array of shape (n, steps)
@@ -797,7 +802,7 @@ class IOCRN:
 
         elif self.solver == 'CVODE':
 
-            for u, x0 in product(u_list, x0_list):
+            for u, x0 in u_x0_pairs:
 
                 solution = self.solve_with_cvode(
                     x0,
@@ -1590,6 +1595,128 @@ class IOCRN:
     # Keep their original signatures, only adding `plot_cfg=None` as trailing kwarg.
     # ---------------------------------------------------------------------------
 
+    def plot_data_fit(
+        self,
+        fig=None,
+        axes=None,
+        alpha=1.0,
+        plot_cfg=None,
+        n_examples: int | None = None,
+        LARGE_NUMBER: float = 1e4,
+    ):
+        """
+        Plot model predictions against dataset observations stored in last_task_info.
+
+        Expected in self.last_task_info:
+            - 'type' == 'data fit'   (or reward type compatible with dataset fitting)
+            - 'dataset'
+            - 'time_horizon'
+        Optional:
+            - 'candidate_x0'  (fallback IC for candidate simulation)
+
+        The dataset samples are expected to contain:
+            - 'u'
+            - 't_obs'
+            - 'y_obs'
+            - optional 'y_clean'
+            - 'obs_labels'
+        """
+        if "dataset" not in self.last_task_info:
+            raise ValueError("No dataset found in last_task_info. Run a data-fit reward first.")
+
+        dataset = self.last_task_info["dataset"]
+        if dataset is None or len(dataset) == 0:
+            raise ValueError("Dataset in last_task_info is empty.")
+
+        time_horizon = np.asarray(
+            self.last_task_info.get("time_horizon", None), dtype=float
+        )
+        if time_horizon is None or time_horizon.size == 0:
+            raise ValueError("No time_horizon found in last_task_info.")
+
+        cfg = _merge_cfg(_DEFAULT_PLOT_CFG, plot_cfg)
+
+        n_examples = len(dataset) if n_examples is None else min(int(n_examples), len(dataset))
+        ncols = min(3, max(1, n_examples))
+        nrows = int(np.ceil(n_examples / ncols))
+
+        with paper_rc_context(cfg.get("rc")):
+            if fig is None and axes is None:
+                figsize = cfg.get("figsize") or (3.8 * ncols, 2.8 * nrows)
+                fig, axes = plt.subplots(
+                    nrows, ncols,
+                    figsize=figsize,
+                    squeeze=False,
+                    constrained_layout=bool(cfg.get("constrained_layout", False)),
+                )
+                axes = axes.ravel()
+            else:
+                axes = np.asarray(axes).ravel()
+
+            a = cfg["alpha"] if cfg["alpha"] is not None else alpha
+            lw = cfg["lw"]
+
+            dataset = self.last_task_info["dataset"]
+            time_horizon = np.asarray(self.last_task_info["time_horizon"], dtype=float)
+            x_list = self.last_task_info["trajectories"]
+            y_list = self.last_task_info["outputs"]
+            t_pred = self.last_task_info["time_horizon"]
+
+            for ax, sample, x_pred, y_pred in zip(axes[:n_examples], dataset[:n_examples], x_list[:n_examples], y_list[:n_examples]):
+
+                x_pred = np.asarray(x_pred, dtype=float)
+                y_pred = np.asarray(y_pred, dtype=float)
+
+                y_proj = extract_observed_trajectory_from_crn(
+                    crn=self,
+                    x_traj=x_pred,
+                    y_traj=y_pred,
+                    obs_labels=sample["obs_labels"],
+                )
+
+                q_obs = y_proj.shape[0]
+                for i in range(q_obs):
+                    label_model = "model prediction" if i == 0 else None
+                    label_clean = "clean teacher obs" if i == 0 and "y_clean" in sample else None
+                    label_noisy = "noisy obs" if i == 0 else None
+
+                    ax.plot(
+                        t_pred, y_proj[i],
+                        alpha=a, linewidth=lw,
+                        label=label_model,
+                    )
+
+                    if "y_clean" in sample:
+                        ax.plot(
+                            sample["t_obs"], np.asarray(sample["y_clean"], dtype=float)[i],
+                            alpha=0.9, linewidth=lw,
+                            label=label_clean,
+                        )
+
+                    ax.scatter(
+                        sample["t_obs"], np.asarray(sample["y_obs"], dtype=float)[i],
+                        s=12, alpha=0.8,
+                        label=label_noisy,
+                    )
+
+                u_str = np.array2string(np.asarray(sample["u"]), precision=2, separator=",")
+                obs_name = sample["obs_labels"][0] if len(sample["obs_labels"]) > 0 else "obs"
+                ax.set_title(cfg.get("title") or f"u={u_str}", pad=cfg.get("title_pad", 3.0))
+                ax.set_xlabel(cfg.get("xlabel") or "Time")
+                ax.set_ylabel(cfg.get("ylabel") or obs_name)
+                _apply_axes_style(ax, cfg)
+                # if cfg.get("legend", "auto") in ("auto", True):
+                #     ax.legend(**cfg.get("legend_kwargs", {}))
+
+            for ax in axes[n_examples:]:
+                ax.axis("off")
+
+            if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                fig.tight_layout()
+
+            _maybe_save(fig, cfg)
+            return fig, axes
+
     def plot_transient_response(self, fig=None, axes=None, alpha=0.1, plot_cfg=None):
         """Plot cached deterministic transient response trajectories.
 
@@ -1854,7 +1981,7 @@ class IOCRN:
                 _plot_one_frequency(
                     ax=ax,
                     t=t,
-                    outputs=outputs,                        # <- normalized if requested
+                    outputs=outputs,
                     out_i=out_i,
                     title=title,
                     alpha=a,
@@ -1868,7 +1995,8 @@ class IOCRN:
                     shade_on=(shade_on and is_main),
                     pulse_lw=pulse_lw,
                     pulse_ls=pulse_ls,
-                    legend_label = legend_label,
+                    y_label="Δ Concentration" if y_label is None else y_label,
+                    legend_label=legend_label,
                 )
 
                 if is_main:
@@ -2439,3 +2567,27 @@ def _plot_one_frequency(
         if gap_bounds is not None:
             ax.axvline(gap_bounds[0], alpha=0.25)
             ax.axvline(gap_bounds[1], alpha=0.25)
+
+
+
+# other utils
+from typing import List
+
+def extract_observed_trajectory_from_crn(
+    crn,
+    x_traj: np.ndarray,
+    y_traj: np.ndarray,
+    obs_labels: List[str],
+) -> np.ndarray:
+    output_label_to_idx = {lab: i for i, lab in enumerate(getattr(crn, "output_labels", []))}
+    species_label_to_idx = {lab: i for i, lab in enumerate(getattr(crn, "species_labels", []))}
+
+    obs = []
+    for lab in obs_labels:
+        if lab in output_label_to_idx:
+            obs.append(y_traj[output_label_to_idx[lab]])
+        elif lab in species_label_to_idx:
+            obs.append(x_traj[species_label_to_idx[lab]])
+        else:
+            raise ValueError(f"Observed label '{lab}' not found in candidate CRN.")
+    return np.vstack(obs)

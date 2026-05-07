@@ -83,6 +83,7 @@ def dynamic_tracking_error(crn, u_list, x0_list, time_horizon, r_list, w, norm=1
             - 'reward type': 'dynamic_tracking_error'
     """
 
+    print(u_list)
     t, x_list, y_list, last_task_info = crn.transient_response(u_list, x0_list, time_horizon, LARGE_NUMBER=LARGE_NUMBER)
     performance = performance_metric(r_list, y_list, w, norm=norm, relative=relative)
     crn.last_task_info['reward'] = performance
@@ -911,3 +912,231 @@ def habituation_metric_with_gap(
     return float(np.mean(all_scores)) if all_scores else float(LARGE_NUMBER)
 
 
+# Data Fit
+
+def piecewise_linear_trajectory_loss(
+    t_pred: np.ndarray,
+    y_pred: np.ndarray,
+    t_obs: np.ndarray,
+    y_obs: np.ndarray,
+    norm: int = 2,
+    relative: bool = False,
+    output_weights: np.ndarray | None = None,
+) -> float:
+    """
+    Exact time-averaged MAE/MSE between predicted and observed trajectories,
+    treating both as piecewise linear on their respective ordered time grids.
+
+    Args:
+        t_pred : np.ndarray
+            Prediction time grid with shape (T_pred,).
+        y_pred : np.ndarray
+            Predicted outputs with shape (q, T_pred).
+        t_obs : np.ndarray
+            Observation time grid with shape (T_obs,).
+        y_obs : np.ndarray
+            Observed outputs with shape (q, T_obs).
+        norm : int, default=2
+            1 -> MAE, 2 -> MSE.
+        relative : bool, default=False
+            If True, compute error relative to |y_obs| pointwise.
+        output_weights : np.ndarray | None, default=None
+            Optional weights over outputs with shape (q,).
+
+    Returns:
+        float
+            Scalar time-averaged loss, averaged over outputs.
+    """
+    t_pred = np.asarray(t_pred, dtype=np.float64)
+    y_pred = np.asarray(y_pred, dtype=np.float64)
+    t_obs = np.asarray(t_obs, dtype=np.float64)
+    y_obs = np.asarray(y_obs, dtype=np.float64)
+
+    if t_pred.ndim != 1 or t_obs.ndim != 1:
+        raise ValueError("t_pred and t_obs must be 1D arrays.")
+    if y_pred.ndim != 2 or y_obs.ndim != 2:
+        raise ValueError("y_pred and y_obs must have shape (q, T).")
+    if y_pred.shape[0] != y_obs.shape[0]:
+        raise ValueError("y_pred and y_obs must have the same output dimension q.")
+    if y_pred.shape[1] != t_pred.shape[0]:
+        raise ValueError("y_pred.shape[1] must equal len(t_pred).")
+    if y_obs.shape[1] != t_obs.shape[0]:
+        raise ValueError("y_obs.shape[1] must equal len(t_obs).")
+    if len(t_pred) < 2 or len(t_obs) < 2:
+        raise ValueError("Need at least two time points in both t_pred and t_obs.")
+    if not np.all(np.diff(t_pred) > 0):
+        raise ValueError("t_pred must be strictly increasing.")
+    if not np.all(np.diff(t_obs) > 0):
+        raise ValueError("t_obs must be strictly increasing.")
+
+    # Restrict comparison to overlapping time interval
+    t0 = max(t_pred[0], t_obs[0])
+    tf = min(t_pred[-1], t_obs[-1])
+    if tf <= t0:
+        raise ValueError("Prediction and observation time grids do not overlap.")
+
+    # Build merged ordered breakpoint grid on overlap
+    tp = t_pred[(t_pred >= t0) & (t_pred <= tf)]
+    to = t_obs[(t_obs >= t0) & (t_obs <= tf)]
+    grid = np.union1d(np.r_[t0, tp, tf], np.r_[t0, to, tf])
+
+    # Interpolate each output onto merged grid
+    yp = np.vstack([np.interp(grid, t_pred, y_pred_i) for y_pred_i in y_pred])  # (q, K)
+    yo = np.vstack([np.interp(grid, t_obs, y_obs_i) for y_obs_i in y_obs])      # (q, K)
+
+    err = yp - yo
+    if relative:
+        err = err / np.maximum(np.abs(yo), 1e-6)
+
+    a = err[:, :-1]          # error at left endpoints, shape (q, K-1)
+    b = err[:, 1:]           # error at right endpoints, shape (q, K-1)
+    dt = np.diff(grid)[None, :]  # shape (1, K-1)
+
+    if norm == 2:
+        # Exact integral of square of linear function over each interval:
+        # ∫ e(t)^2 dt = dt * (a^2 + ab + b^2)/3
+        interval_integrals = dt * (a * a + a * b + b * b) / 3.0
+
+    elif norm == 1:
+        # Exact integral of absolute value of linear function over each interval
+        same_sign = (a * b) >= 0
+        interval_integrals = np.empty_like(a, dtype=np.float64)
+
+        # No zero crossing: trapezoid on |e|
+        interval_integrals[same_sign] = (
+            0.5 * (np.abs(a[same_sign]) + np.abs(b[same_sign])) * dt.repeat(a.shape[0], axis=0)[same_sign]
+        )
+
+        # Zero crossing: split analytically
+        cross = ~same_sign
+        denom = np.abs(a[cross]) + np.abs(b[cross])
+        interval_integrals[cross] = (
+            0.5 * (a[cross] ** 2 + b[cross] ** 2)
+            / np.maximum(denom, 1e-15)
+            * dt.repeat(a.shape[0], axis=0)[cross]
+        )
+    else:
+        raise ValueError(f"Unsupported norm: {norm}. Use 1 for MAE or 2 for MSE.")
+
+    # Time-average each output, then average outputs
+    per_output_loss = interval_integrals.sum(axis=1) / (tf - t0)
+
+    if output_weights is not None:
+        output_weights = np.asarray(output_weights, dtype=np.float64).reshape(-1)
+        if output_weights.shape[0] != per_output_loss.shape[0]:
+            raise ValueError("output_weights must have shape (q,).")
+        return float(np.sum(output_weights * per_output_loss) / np.sum(output_weights))
+
+    return float(np.mean(per_output_loss))
+
+
+def extract_observed_trajectory_from_crn(
+    crn,
+    x_traj: np.ndarray,
+    y_traj: np.ndarray,
+    obs_labels: List[str],
+) -> np.ndarray:
+    """
+    Return the candidate trajectory projected onto the observed labels.
+
+    Priority:
+      1. exact match in crn.output_labels
+      2. fallback to crn.species_labels using x_traj
+
+    Args:
+        crn: candidate IOCRN
+        x_traj: shape (n, T)
+        y_traj: shape (q, T)
+        obs_labels: labels to extract
+
+    Returns:
+        y_obs_pred: shape (len(obs_labels), T)
+    """
+    obs = []
+
+    output_label_to_idx = {}
+    if hasattr(crn, "output_labels"):
+        output_label_to_idx = {lab: i for i, lab in enumerate(crn.output_labels)}
+
+    species_label_to_idx = {}
+    if hasattr(crn, "species_labels"):
+        species_label_to_idx = {lab: i for i, lab in enumerate(crn.species_labels)}
+
+    for lab in obs_labels:
+        if lab in output_label_to_idx:
+            obs.append(y_traj[output_label_to_idx[lab]])
+        elif lab in species_label_to_idx:
+            obs.append(x_traj[species_label_to_idx[lab]])
+        else:
+            raise ValueError(
+                f"Observed label '{lab}' not found in candidate CRN outputs or species."
+            )
+
+    return np.vstack(obs)
+
+def dynamic_dataset_fit_error_projected(
+    crn,
+    dataset: List[Dict[str, Any]],
+    time_horizon: np.ndarray,
+    norm: int = 2,
+    relative: bool = False,
+    output_weights: np.ndarray | None = None,
+    LARGE_NUMBER: float = 1e4,
+):
+    """
+    Fit candidate CRN to dataset by comparing only named observed outputs.
+    """
+    if len(dataset) == 0:
+        raise ValueError("dataset must be non-empty.")
+
+    u_list = [np.asarray(sample["u"], dtype=np.float32) for sample in dataset]
+
+    # x0 is optional; if missing, assume zeros of candidate dimension
+    x0_list = []
+    for sample in dataset:
+        if "x0" in sample:
+            x0_list.append(np.asarray(sample["x0"], dtype=np.float32))
+        else:
+            x0_list.append(np.zeros(crn.num_species, dtype=np.float32))
+
+    t_pred, x_list, y_list, last_task_info = crn.transient_response(
+        u_list=u_list,
+        x0_list=x0_list,
+        time_horizon=time_horizon,
+        LARGE_NUMBER=LARGE_NUMBER,
+        mode="zip"
+    ) # here I don't want to force the execution. When plotting I should just read the stored information from last_task_info instead of re-running the simulation.
+
+    losses = []
+    for sample, x_pred, y_pred in zip(dataset, x_list, y_list):
+        obs_labels = sample["obs_labels"]
+        y_obs = np.asarray(sample["y_obs"], dtype=np.float64)
+        t_obs = np.asarray(sample["t_obs"], dtype=np.float64)
+
+        y_proj = extract_observed_trajectory_from_crn(
+            crn=crn,
+            x_traj=np.asarray(x_pred, dtype=np.float64),
+            y_traj=np.asarray(y_pred, dtype=np.float64),
+            obs_labels=obs_labels,
+        )
+
+        loss_i = piecewise_linear_trajectory_loss(
+            t_pred=np.asarray(t_pred, dtype=np.float64),
+            y_pred=y_proj,
+            t_obs=t_obs,
+            y_obs=y_obs,
+            norm=norm,
+            relative=relative,
+            output_weights=output_weights,
+        )
+        losses.append(loss_i)
+
+    performance = float(np.mean(losses))
+
+    crn.last_task_info["reward"] = performance
+    crn.last_task_info["dataset_size"] = len(dataset)
+    crn.last_task_info['dataset'] = dataset
+    crn.last_task_info['time_horizon'] = time_horizon
+    crn.last_task_info['reward type'] = 'data fit'
+
+    return performance, crn.last_task_info

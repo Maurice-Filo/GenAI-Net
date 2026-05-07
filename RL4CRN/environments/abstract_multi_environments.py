@@ -538,6 +538,46 @@ class AbstractMultiEnvironments:
                             raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
                         plt.close(fig)
 
+                    case {'style': 'logger', 'task': 'data_fit'}:
+                        n_examples = mode.get("n_examples", 6)
+
+                        # Reuse the best env's grid layout
+                        fig, axes = self.envs[top_k[0]].state.plot_data_fit(
+                            n_examples=n_examples,
+                            plot_cfg=mode.get("plot_cfg", None),
+                        )
+
+                        # Overlay the other top_k trajectories on the same axes
+                        # by re-calling with the same fig/axes
+                        for i in top_k[1:]:
+                            try:
+                                fig, axes = self.envs[i].state.plot_data_fit(
+                                    fig=fig,
+                                    axes=axes,
+                                    alpha=0.25,
+                                    n_examples=n_examples,
+                                    plot_cfg=mode.get("plot_cfg", None),
+                                )
+                            except ValueError:
+                                pass
+
+                        fig.suptitle(f'CRN Distribution {self.rendering_iteration} Data Fit')
+
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(
+                                figure_name=f'CRN Distribution {self.rendering_iteration} Data Fit (Top {(1.-disregarded_percentage)*100}%)',
+                                figure=fig
+                            )
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN Distribution {self.rendering_iteration} Data Fit')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+
                     # case {'style': 'logger', 'task': 'habituation_gap'}:
                     #     fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
                     #     if not isinstance(axes, (list, np.ndarray)):

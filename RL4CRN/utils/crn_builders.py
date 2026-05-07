@@ -43,8 +43,8 @@ def build_simple_IOCRN(
     for disturbance_species, disturbance_name in (degradation_input_map or {}).items():
         dilutions.append(
             MassAction(
-                reactant_labels=[],
-                product_labels=[disturbance_species],
+                reactant_labels=[disturbance_species],
+                product_labels=[],
                 input_channels=[disturbance_name],
                 params=[1.0],
                 params_controllability=[True],
@@ -63,7 +63,7 @@ def build_simple_IOCRN(
         )
 
     for species_label, production_rate in (production_map or {}).items():
-        dilutions.append(
+        productions.append(
             MassAction(
                 reactant_labels=[],
                 product_labels=[species_label],
