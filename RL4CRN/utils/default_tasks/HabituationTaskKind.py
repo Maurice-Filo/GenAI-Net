@@ -456,8 +456,8 @@ class HabituationGapTaskKind(TaskKindBase):
                 raise ValueError("all t_on and t_off must be > 0.")
 
         gap_time = overrides_get(task, {}, "gap_time", fallback_attr="gap_time")
-        if gap_time is None or float(gap_time) <= 0:
-            raise ValueError("habituation_gap requires gap_time > 0.")
+        if gap_time is None or float(gap_time) < 0:
+            raise ValueError("habituation_gap requires gap_time >= 0.")
 
         if int(overrides_get(task, {}, "n_repeats_pre", fallback_attr="n_repeats_pre")) <= 0:
             raise ValueError("n_repeats_pre must be >= 1.")
@@ -562,6 +562,173 @@ class HabituationGapTaskKind(TaskKindBase):
                 state.last_task_info["input_pulse"] = run0.get("input_pulse")
                 state.last_task_info["time_horizon"] = run0.get("time_horizon")
                 state.last_task_info["outputs"] = run0.get("outputs")
+
+            return float(loss), state.last_task_info
+
+        return reward_fn
+
+
+
+# --- habituation
+
+def build_on_off_time_horizon(
+    *,
+    t_on: float,
+    t_off: float,
+    n_repeats: int,
+    n_t: int,
+    dtype=np.float32,
+) -> List[np.ndarray]:
+    if n_repeats <= 0:
+        raise ValueError("n_repeats must be >= 1.")
+    if t_on <= 0 or t_off <= 0:
+        raise ValueError("t_on and t_off must be > 0.")
+
+    n_segments = 2 * int(n_repeats)
+    if n_t < 2 * n_segments:
+        raise ValueError(f"n_t={n_t} too small for {n_segments} segments.")
+
+    pts_per_segment = max(2, int(np.floor(n_t / n_segments)))
+
+    nested_time_horizon = []
+    for _ in range(int(n_repeats)):
+        nested_time_horizon.append(np.linspace(0.0, float(t_on), pts_per_segment, dtype=dtype))
+        nested_time_horizon.append(np.linspace(0.0, float(t_off), pts_per_segment, dtype=dtype))
+
+    return nested_time_horizon
+
+
+def build_u_nested_list_on_off(
+    *,
+    u_list: List[np.ndarray],
+    n_repeats: int,
+    off_value: float = 0.0,
+) -> List[List[np.ndarray]]:
+    u_nested_list = []
+
+    for u in u_list:
+        u = np.asarray(u, dtype=np.float32).reshape(-1)
+        u_off = np.full_like(u, float(off_value), dtype=np.float32)
+
+        protocol = []
+        for _ in range(int(n_repeats)):
+            protocol.append(u)
+            protocol.append(u_off)
+
+        u_nested_list.append(protocol)
+
+    return u_nested_list
+
+
+@register_task_kind
+class HabituationTaskKind(TaskKindBase):
+    """Habituation task with a repeated ON/OFF pulse train."""
+
+    kind = "habituation"
+
+    @staticmethod
+    def help() -> Dict[str, Any]:
+        return {
+            "required": {
+                "pulse_shape": "Single (t_on, t_off)",
+                "n_repeats": "int number of ON/OFF pulse repeats",
+                "u_values": "List[float] grid for u",
+            },
+            "optional": {
+                "weights": "float or list of peak-ratio weights (default 1.0)",
+                "ratio_weights": "alias for weights",
+                "min_peak": "float (default 0.1)",
+                "max_peak": "float (default 2.0)",
+                "n_t": "int samples per simulation (default task.n_t)",
+            },
+        }
+
+    def validate(self, task: TaskSpec) -> None:
+        pulse_shape = overrides_get(task, {}, "pulse_shape", fallback_attr="pulse_shape")
+        if not (isinstance(pulse_shape, (tuple, list)) and len(pulse_shape) == 2):
+            raise ValueError("habituation requires pulse_shape=(t_on, t_off).")
+
+        t_on, t_off = float(pulse_shape[0]), float(pulse_shape[1])
+        if t_on <= 0 or t_off <= 0:
+            raise ValueError("t_on and t_off must be > 0.")
+
+        n_repeats = overrides_get(task, {}, "n_repeats", fallback_attr="n_repeats")
+        if n_repeats is None or int(n_repeats) <= 1:
+            raise ValueError("n_repeats must be >= 2.")
+
+        if overrides_get(task, {}, "u_values", fallback_attr="u_values") is None:
+            raise ValueError("habituation requires u_values.")
+
+    def default_u_list(self, task: TaskSpec) -> List[np.ndarray]:
+        u_values = overrides_get(task, {}, "u_values", fallback_attr="u_values")
+        if u_values is None:
+            raise ValueError("need u_values")
+        if task.n_inputs is None:
+            raise ValueError("need n_inputs")
+
+        return [
+            np.asarray(u, dtype=np.float32)
+            for u in product(list(u_values), repeat=int(task.n_inputs))
+        ]
+
+    def make_reward_fn(self, task: TaskSpec, overrides: Dict[str, Any]) -> Callable[[Any], Any]:
+        pulse_shape = overrides_get(task, overrides, "pulse_shape", fallback_attr="pulse_shape")
+        if not (isinstance(pulse_shape, (tuple, list)) and len(pulse_shape) == 2):
+            raise ValueError("habituation requires pulse_shape=(t_on, t_off).")
+
+        t_on, t_off = float(pulse_shape[0]), float(pulse_shape[1])
+        n_repeats = int(overrides_get(task, overrides, "n_repeats", fallback_attr="n_repeats"))
+        n_t = int(overrides_get(task, overrides, "n_t", fallback_attr="n_t", default=task.n_t))
+
+        weights = overrides_get(task, overrides, "ratio_weights", fallback_attr="ratio_weights", default=None)
+        if weights is None:
+            weights = overrides_get(task, overrides, "weights", fallback_attr="weights", default=1.0)
+        if isinstance(weights, str):
+            weights = 1.0
+
+        min_peak = float(overrides_get(task, overrides, "min_peak", fallback_attr="min_peak", default=0.1))
+        max_peak = float(overrides_get(task, overrides, "max_peak", fallback_attr="max_peak", default=2.0))
+
+        u_list_local = self.build_u_list(task, overrides)
+        ic_obj = "from_ss" if task.ic == "from_ss" else self.build_ic(task, overrides)
+
+        nested_time_horizon = build_on_off_time_horizon(
+            t_on=t_on,
+            t_off=t_off,
+            n_repeats=n_repeats,
+            n_t=n_t,
+            dtype=np.float32,
+        )
+
+        u_nested_list = build_u_nested_list_on_off(
+            u_list=u_list_local,
+            n_repeats=n_repeats,
+            off_value=0.0,
+        )
+
+        def reward_fn(state: Any):
+            if ic_obj == "from_ss":
+                u_off = np.zeros_like(u_list_local[0], dtype=np.float32)
+                x0_list = steady_state_ic_list(state, [u_off])
+            else:
+                x0_list = ic_obj.get_ic(state)
+
+            loss, info = habituation_error_piecewise(
+                crn=state,
+                u_nested_list=u_nested_list,
+                x0_list=x0_list,
+                nested_time_horizon=nested_time_horizon,
+                w=weights,
+                LARGE_NUMBER=task.LARGE_NUMBER,
+                min_peak=min_peak,
+                max_peak=max_peak,
+            )
+
+            state.last_task_info.update(info)
+            state.last_task_info["reward"] = float(loss)
+            state.last_task_info["reward type"] = "habituation"
+            state.last_task_info["pulse_shape"] = (t_on, t_off)
+            state.last_task_info["n_repeats"] = n_repeats
 
             return float(loss), state.last_task_info
 
