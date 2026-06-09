@@ -1,0 +1,78 @@
+{
+  "benchmark": {
+    "name": "logic_102400_full",
+    "task": "logic",
+    "output_root": "comparisons/rpa_search/data/raw",
+    "figure_dir": "comparisons/rpa_search/figures",
+    "x_field": "ode_simulations",
+    "log_y": true,
+    "plot_title": "Logic Circuit Search Progress",
+    "aggregate_plot_title": "Logic Circuit Search Progress (3 seeds)",
+    "plot_ylabel": "Best-so-far logic loss",
+    "min_ode_simulations": 102400,
+    "plot_methods": [
+      "random_search",
+      "circuitree",
+      "reaction_network_evolution_jl",
+      "rl4crn"
+    ],
+    "plot_run_ids": [
+      "logic_full102400_seed0_parallel",
+      "logic_full102400_seed0_single",
+      "logic_full102400_seed0_cvode",
+      "logic_full102400_seed0",
+      "logic_full102400_seed1_parallel",
+      "logic_full102400_seed1_single",
+      "logic_full102400_seed1_cvode",
+      "logic_full102400_seed1",
+      "logic_full102400_seed2_parallel",
+      "logic_full102400_seed2_single",
+      "logic_full102400_seed2_cvode",
+      "logic_full102400_seed2"
+    ],
+    "plot_method_run_ids": {
+      "random_search": ["logic_full102400_seed0_parallel", "logic_full102400_seed1_parallel", "logic_full102400_seed2_parallel"],
+      "circuitree": ["logic_full102400_seed0_single", "logic_full102400_seed1_single", "logic_full102400_seed2_single"],
+      "reaction_network_evolution_jl": ["logic_full102400_seed0", "logic_full102400_seed1", "logic_full102400_seed2"],
+      "rl4crn": ["logic_full102400_seed0_cvode", "logic_full102400_seed1_cvode", "logic_full102400_seed2_cvode"]
+    }
+  },
+  "logic": {
+    "formula": "chain_or_pairs_4",
+    "n_inputs": 4,
+    "include_dilution": false,
+    "n_support_species": 0,
+    "solver": "LSODA",
+    "rtol": 1e-8,
+    "atol": 1e-8,
+    "t_f": 100.0,
+    "n_t": 1000,
+    "ic": ["constant", 0.01],
+    "weights": "transient",
+    "library_order": 2
+  },
+  "search": {
+    "seed": 0,
+    "max_added_reactions": 5,
+    "rate_constant_range": [0.1, 50.0],
+    "random_workers": 32,
+    "random_chunk_size": 64,
+    "circuitree_workers": 1,
+    "candidate_budget": 102400,
+    "mcts_iterations": 102400,
+    "mcts_exploration": 1.4
+  },
+  "rl4crn": {
+    "epochs": 100,
+    "batch_size": 1024,
+    "n_cpus": 32,
+    "render_every": 0,
+    "policy_width": 256,
+    "policy_depth": 2,
+    "deep_layer_size": 512,
+    "hall_of_fame_size": 30
+  },
+  "rne": {
+    "population_size": 64
+  }
+}

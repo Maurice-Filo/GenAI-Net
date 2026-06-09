@@ -182,18 +182,26 @@ class AbstractMultiEnvironments:
                 for i in range(min(n_best, len(top_k))):
                     self.envs[top_k[i]].render(mode=mode, ID=f'{self.rendering_iteration}_{i}')
 
-                # Render the hall of fame
+                # Render the hall of fame. Cap plots by default so logger output
+                # stays readable when the HoF grows large.
                 if self.hall_of_fame is not None:
-                    for i, env in enumerate(self.hall_of_fame):
+                    hof_envs = list(self.hall_of_fame)
+                    hof_n_best = mode.get("hof_n_best", 10)
+                    if hof_n_best is not None:
+                        hof_envs = hof_envs[:max(0, int(hof_n_best))]
+
+                    for i, env in enumerate(hof_envs):
                         env.render(mode=mode, ID = f'hof_{i}')
-                    
-                    hof_iocrn_list = [env.state for env in self.hall_of_fame]
-                    fig_graph = topology_graph(hof_iocrn_list, t=5, figsize = (10,10))
-                    buf = BytesIO()
-                    fig_graph.savefig(buf, format='png')
-                    buf.seek(0)
-                    self.logger.log_image(buf, name=f'HOF Diversity Graph {self.rendering_iteration}')
-                    buf.close()
+
+                    if mode.get('topology', True) and len(hof_envs) > 0:
+                        hof_iocrn_list = [env.state for env in hof_envs]
+                        fig_graph = topology_graph(hof_iocrn_list, t=5, figsize = (10,10))
+                        buf = BytesIO()
+                        fig_graph.savefig(buf, format='png')
+                        buf.seek(0)
+                        self.logger.log_image(buf, name=f'HOF Diversity Graph {self.rendering_iteration}')
+                        buf.close()
+                        plt.close(fig_graph)
 
                 # Render the IOCRN diversity graph
                 if mode.get('topology', True):
@@ -207,6 +215,7 @@ class AbstractMultiEnvironments:
                     buf.seek(0)
                     self.logger.log_image(buf, name=f'CRN Diversity Graph {self.rendering_iteration}')
                     buf.close()
+                    plt.close(fig_graph)
                     # buf = BytesIO()
                     # fig_graph1.savefig(buf, format='png')
                     # buf.seek(0)
@@ -537,6 +546,79 @@ class AbstractMultiEnvironments:
                         else:
                             raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
                         plt.close(fig)
+
+                    case {'style': 'logger', 'task': 'habituation_hallmarks' | 'habituation_hallmarks_mmc2'}:
+                        figure_prefix = mode.get(
+                            "figure_prefix",
+                            "MMC2 Habituation" if mode.get("task") == "habituation_hallmarks_mmc2" else "Habituation",
+                        )
+                        fig, _ = self.envs[top_k[0]].state.plot_habituation_hallmarks(
+                            normalize=mode.get("normalize", False),
+                            input_color=mode.get("input_color", "red"),
+                            trj_color=mode.get("trj_color", "green"),
+                            shade_on=mode.get("shade_on", True),
+                            show_memory_species=mode.get("show_memory_species", True),
+                            plot_cfg=mode.get("plot_cfg", None),
+                        )
+                        fig.suptitle(f'Best CRN {figure_prefix} Protocols {self.rendering_iteration}')
+
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(
+                                figure_name=f'Best CRN {figure_prefix} Protocols {self.rendering_iteration}',
+                                figure=fig,
+                            )
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'Best CRN {figure_prefix} Protocols {self.rendering_iteration}')
+                            buf.close()
+                        else:
+                            raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                        if mode.get("diagnostics", True):
+                            try:
+                                fig_diag, _ = self.envs[top_k[0]].state.plot_habituation_hallmark_diagnostics(
+                                    plot_cfg=mode.get("diagnostics_plot_cfg", None),
+                                )
+                                fig_diag.suptitle(f'Best CRN {figure_prefix} Diagnostics {self.rendering_iteration}')
+                                if mode['format'] == 'figure':
+                                    self.logger.log_figure(
+                                        figure_name=f'Best CRN {figure_prefix} Diagnostics {self.rendering_iteration}',
+                                        figure=fig_diag,
+                                    )
+                                elif mode['format'] == 'image':
+                                    buf = BytesIO()
+                                    fig_diag.savefig(buf, format='png')
+                                    buf.seek(0)
+                                    self.logger.log_image(buf, name=f'Best CRN {figure_prefix} Diagnostics {self.rendering_iteration}')
+                                    buf.close()
+                                plt.close(fig_diag)
+                            except ValueError:
+                                pass
+                        for group_name in mode.get("group_plots", []):
+                            fig_group, _ = self.envs[top_k[0]].state.plot_habituation_hallmarks(
+                                normalize=mode.get("normalize", False),
+                                input_color=mode.get("input_color", "red"),
+                                trj_color=mode.get("trj_color", "green"),
+                                shade_on=mode.get("shade_on", True),
+                                show_memory_species=mode.get("show_memory_species", True),
+                                group_filter=group_name,
+                                plot_cfg=mode.get("group_plot_cfg", mode.get("plot_cfg", None)),
+                            )
+                            fig_group.suptitle(f'Best CRN {figure_prefix} {group_name} {self.rendering_iteration}')
+                            if mode['format'] == 'figure':
+                                self.logger.log_figure(
+                                    figure_name=f'Best CRN {figure_prefix} {group_name} {self.rendering_iteration}',
+                                    figure=fig_group,
+                                )
+                            elif mode['format'] == 'image':
+                                buf = BytesIO()
+                                fig_group.savefig(buf, format='png')
+                                buf.seek(0)
+                                self.logger.log_image(buf, name=f'Best CRN {figure_prefix} {group_name} {self.rendering_iteration}')
+                                buf.close()
+                            plt.close(fig_group)
 
                     case {'style': 'logger', 'task': 'data_fit'}:
                         n_examples = mode.get("n_examples", 6)

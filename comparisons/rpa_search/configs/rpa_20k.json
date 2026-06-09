@@ -1,0 +1,43 @@
+{
+  "benchmark": {
+    "name": "rpa_20k",
+    "task": "rpa",
+    "output_root": "comparisons/rpa_search/data/raw",
+    "figure_dir": "comparisons/rpa_search/figures",
+    "x_field": "ode_simulations",
+    "log_y": true
+  },
+  "rpa": {
+    "species": ["X_1", "X_2", "X_3"],
+    "production_input_map": {"X_1": "u_1"},
+    "degradation_input_map": {"X_3": "u_2"},
+    "output_species": "X_3",
+    "solver": "LSODA",
+    "rtol": 1e-8,
+    "atol": 1e-8,
+    "t_f": 100.0,
+    "n_t": 1000,
+    "ic": ["constant", 0.01],
+    "weights": "transient",
+    "u_values": [0.5, 1.0, 1.5],
+    "library_order": 2
+  },
+  "search": {
+    "seed": 0,
+    "max_added_reactions": 5,
+    "rate_constant_range": [0.1, 50.0],
+    "candidate_budget": 20000,
+    "mcts_iterations": 20000,
+    "mcts_exploration": 1.4
+  },
+  "rl4crn": {
+    "epochs": 200,
+    "batch_size": 100,
+    "n_cpus": 4,
+    "render_every": 0,
+    "policy_width": 256,
+    "policy_depth": 2,
+    "deep_layer_size": 512,
+    "hall_of_fame_size": 30
+  }
+}

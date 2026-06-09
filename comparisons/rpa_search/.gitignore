@@ -1,0 +1,10 @@
+.mplconfig/
+__pycache__/
+**/__pycache__/
+data/raw/
+figures/
+julia/depot/
+julia/julia-*/
+
+!configs/
+!configs/*.json
