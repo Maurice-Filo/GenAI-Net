@@ -1,0 +1,43 @@
+{
+  "benchmark": {
+    "name": "rpa_smoke",
+    "task": "rpa",
+    "output_root": "comparisons/rpa_search/data/raw",
+    "figure_dir": "comparisons/rpa_search/figures",
+    "x_field": "ode_simulations",
+    "log_y": true
+  },
+  "rpa": {
+    "species": ["X_1", "X_2", "X_3"],
+    "production_input_map": {"X_1": "u_1"},
+    "degradation_input_map": {"X_3": "u_2"},
+    "output_species": "X_3",
+    "solver": "LSODA",
+    "rtol": 1e-8,
+    "atol": 1e-8,
+    "t_f": 30.0,
+    "n_t": 120,
+    "ic": ["constant", 0.01],
+    "weights": "transient",
+    "u_values": [0.5, 1.0, 1.5],
+    "library_order": 2
+  },
+  "search": {
+    "seed": 0,
+    "max_added_reactions": 3,
+    "rate_constant_range": [0.1, 5.0],
+    "candidate_budget": 8,
+    "mcts_iterations": 8,
+    "mcts_exploration": 1.4
+  },
+  "rl4crn": {
+    "epochs": 2,
+    "batch_size": 4,
+    "n_cpus": 1,
+    "render_every": 0,
+    "policy_width": 64,
+    "policy_depth": 1,
+    "deep_layer_size": 128,
+    "hall_of_fame_size": 8
+  }
+}

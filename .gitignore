@@ -1,8 +1,12 @@
 *.pth
 *.pt
 *.gif
+*.pdf
+*.tex
 *.json
 *.pkl
+*.aux
+*.out
 .env
 debate_trainscript*.txt
 

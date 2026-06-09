@@ -104,7 +104,7 @@ class ExplicitObserver(AbstractObserver):
         Returns:
             Numpy array of shape `(len(reaction_library),)` with entries in `{0, 1}`.
         """
-        idx = np.array(self.iocrn.gather_reaction_IDs(), dtype=np.long) 
+        idx = np.array(self.iocrn.gather_reaction_IDs(), dtype=np.int_) 
         multihot = np.zeros(len(self.reaction_library)) 
         multihot[idx] = 1.
         return multihot

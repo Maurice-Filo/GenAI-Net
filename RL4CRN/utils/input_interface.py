@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pprint
 import textwrap
+import random
 
 from dataclasses import dataclass, field, asdict
 from itertools import product
@@ -73,6 +74,7 @@ def seed_everything(seed: int) -> None: # CHECKED ___ OK
     Args:
         seed: Random seed.
     """
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -1154,6 +1156,30 @@ class Trainer:
         self._loaded_hof: Optional[List[Any]] = None
         self._loaded_cfg: Optional[dict] = None
 
+    def _log_loss_components(self, step: int) -> None:
+        logger = self.s.logger
+        if logger is None:
+            return
+
+        component_values: Dict[str, List[float]] = {}
+        for env in self.s.mult_env.envs:
+            comps = env.state.last_task_info.get("component_losses", {})
+            if not isinstance(comps, dict):
+                continue
+            for name, value in comps.items():
+                try:
+                    component_values.setdefault(str(name), []).append(float(value))
+                except (TypeError, ValueError):
+                    continue
+
+        for name, values in component_values.items():
+            if not values:
+                continue
+            arr = np.asarray(values, dtype=float)
+            logger.log_metric(f"Component: {name} Average", float(np.mean(arr)), step=step)
+            logger.log_metric(f"Component: {name} Best", float(np.min(arr)), step=step)
+            logger.log_metric(f"Component: {name} Median", float(np.median(arr)), step=step)
+
     def resimulate(
         self,
         crns: List[Any],
@@ -1288,6 +1314,7 @@ class Trainer:
         # which drags in agent/policy and breaks multiprocessing serialization.
         reward_fn = self.s.task.compute_reward
         rewards = mult_env.get_reward(reward_fn)
+        self._log_loss_components(self.state.epoch)
 
         agent.update(
             rewards,
@@ -1419,6 +1446,8 @@ class Trainer:
                 "ssa_robust": "SSA_transient_response",
                 "habituation": "transient_response_piecewise",
                 "habituation_gap" : "transient_response_piecewise",
+                "habituation_hallmarks" : "habituation_hallmarks",
+                "habituation_hallmarks_mmc2" : "habituation_hallmarks",
                 "classification" : "phase_portrait"
             }
             plot_type = kind_to_plot.get(kind, "transient_response")
@@ -1502,6 +1531,7 @@ class Trainer:
             "hall_of_fame_crns": [env.state for env in self.s.mult_env.hall_of_fame],
             "torch_rng": torch.get_rng_state(),
             "numpy_rng": np.random.get_state(),
+            "python_rng": random.getstate(),
             "sample_hof_envs": list(self.s.sample_hof) if getattr(self.s, "sample_hof", None) is not None else [],
             "sample_hof_max_size": getattr(self.s.sample_hof, "max_size", 0) if getattr(self.s, "sample_hof", None) is not None else 0,
         }
@@ -1534,6 +1564,8 @@ class Trainer:
             torch.set_rng_state(payload["torch_rng"])
         if "numpy_rng" in payload:
             np.random.set_state(payload["numpy_rng"])
+        if "python_rng" in payload:
+            random.setstate(payload["python_rng"])
 
         # --- Restore HoF into the live mult_env ---
         hof_crns = payload.get("hall_of_fame_crns", []) or []
@@ -1784,6 +1816,8 @@ def load_session_and_trainer(
         torch.set_rng_state(payload["torch_rng"])
     if "numpy_rng" in payload:
         np.random.set_state(payload["numpy_rng"])
+    if "python_rng" in payload:
+        random.setstate(payload["python_rng"])
 
     return trainer
 

@@ -290,9 +290,13 @@ class REINFORCEAgent(AbstractAgent):
             advantages = current_batch_best_loss - final_losses_hof  # shape (len_hof,)
             # remove negative advantages
             advantages = torch.clamp(advantages, min=0.0).detach()   # shape (len_hof,) # detach shouldn't be necessary but just to be sure
-            # TODO: normalize weights?
-            
-            sil_loss = -(all_logPs*weights*advantages).mean()
+            # A replayed HoF action can be invalid under the current mask after entropy
+            # collapse, yielding log_prob == -inf. Even 0 * -inf is NaN in torch.
+            valid = torch.isfinite(all_logPs) & torch.isfinite(advantages) & (advantages > 0.0)
+            if not valid.any():
+                return all_logPs.sum() * 0.0
+
+            sil_loss = -(all_logPs[valid] * weights[valid] * advantages[valid]).mean()
 
             return sil_loss
 
@@ -392,11 +396,20 @@ class REINFORCEAgent(AbstractAgent):
             sil_loss = self.self_imitation_learingin_loss(hof, final_loss_for_each_sample, top_k, weighting_scheme=sil_weighting_scheme, observer=observer, tensorizer=tensorizer, stepper=stepper, sil_batch_size=sil_batch_size)
             loss_for_gradient_entropy_mean += sil_loss*self.sil_settings['sil_loss_weight']
 
+        if not torch.isfinite(loss_for_gradient_entropy_mean):
+            self.optimizer.zero_grad()
+            self.logPs_sequence.clear()
+            self.entropies_sequence.clear()
+            return
+
         loss_for_gradient_entropy_mean.backward()
 
         # Do gradient clipping if needed and perform the optimization step
-        torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
-        self.optimizer.step()
+        grad_norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), max_norm=1.0)
+        if torch.isfinite(grad_norm):
+            self.optimizer.step()
+        else:
+            self.optimizer.zero_grad()
         toc_backward = time.time()
 
         # Update the entropy weight and the risk value #TODO: risk scheduler never tested

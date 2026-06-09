@@ -1273,6 +1273,313 @@ class IOCRN:
 
 
     
+    def plot_habituation_hallmarks(
+        self,
+        fig=None,
+        axes=None,
+        alpha=1.0,
+        input_color="red",
+        trj_color="green",
+        shade_on=True,
+        plot_cfg=None,
+        normalize=False,
+        show_memory_species=True,
+        memory_alpha=0.18,
+        memory_color="0.35",
+        group_filter=None,
+    ):
+        """Plot all cached habituation hallmark protocols stored by the task."""
+        runs = self.last_task_info.get("hallmark_runs", None)
+        if not isinstance(runs, list) or len(runs) == 0:
+            raise ValueError("No hallmark_runs found. Run the habituation_hallmarks task first.")
+        if group_filter is not None:
+            if isinstance(group_filter, str):
+                filters = [group_filter.lower()]
+            else:
+                filters = [str(g).lower() for g in group_filter]
+            runs = [
+                run for run in runs
+                if any(f in str(run.get("group", "")).lower() for f in filters)
+            ]
+            if len(runs) == 0:
+                raise ValueError("No hallmark_runs matched group_filter.")
+
+        cfg = _merge_cfg(_DEFAULT_PLOT_CFG, plot_cfg)
+        show_extrema_markers = bool(
+            cfg.get(
+                "show_peak_trough_markers",
+                self.last_task_info.get("reward type") == "habituation_hallmarks_mmc2",
+            )
+        )
+        peak_marker_color = cfg.get("peak_marker_color", "#111111")
+        trough_marker_color = cfg.get("trough_marker_color", "#4C78A8")
+        marker_size = float(cfg.get("peak_trough_marker_size", 14.0))
+
+        norm_factor = 1.0
+        if normalize:
+            peaks = []
+            for run in runs:
+                for y in run.get("outputs", []):
+                    arr = np.asarray(y, dtype=float)
+                    if arr.size:
+                        peaks.append(np.nanmax(arr))
+            if peaks:
+                norm_factor = float(np.nanmax(peaks))
+                if not np.isfinite(norm_factor) or norm_factor == 0.0:
+                    norm_factor = 1.0
+
+        with paper_rc_context(cfg.get("rc")):
+            n_rows = len(runs) * self.num_outputs
+            if fig is None and axes is None:
+                figsize = cfg.get("figsize") or (4.8, max(1.7 * n_rows, 3.0))
+                fig, axes = plt.subplots(
+                    n_rows,
+                    1,
+                    figsize=figsize,
+                    sharex=False,
+                    constrained_layout=bool(cfg.get("constrained_layout", False)),
+                )
+            axes = _ensure_axes_list(axes, n_rows)
+
+            ax_idx = 0
+            for run in runs:
+                t = np.asarray(run["time_horizon"], dtype=float)
+                outputs = [
+                    np.asarray(y, dtype=float) / norm_factor if normalize else np.asarray(y, dtype=float)
+                    for y in run["outputs"]
+                ]
+                seg_intervals = run.get("input_intervals", None)
+                u_pulse = run.get("input_pulse", None)
+                have_input = seg_intervals is not None and u_pulse is not None
+                boundaries = step_values = seg_values = gap_bounds = None
+                if have_input:
+                    boundaries, step_values, seg_values, gap_bounds = _pulse_step_and_shading_from_intervals(
+                        seg_intervals,
+                        u_pulse,
+                        gap=True,
+                        segment_types=run.get("segment_types", None),
+                    )
+
+                group = run.get("group", "hallmark")
+                label = run.get("label", "protocol")
+                plot_memory = bool(show_memory_species) and ("long-term" in str(group).lower())
+                for out_i in range(self.num_outputs):
+                    ax = axes[ax_idx]
+                    ax_idx += 1
+                    species_name = self.species_labels[self.output_idx[out_i]]
+                    _plot_one_frequency(
+                        ax=ax,
+                        t=t,
+                        outputs=outputs,
+                        out_i=out_i,
+                        title=f"{group}: {label} | {species_name}",
+                        alpha=cfg["alpha"] if cfg["alpha"] is not None else alpha,
+                        have_input=have_input,
+                        boundaries=boundaries,
+                        step_values=step_values,
+                        seg_values=seg_values,
+                        gap_bounds=gap_bounds,
+                        input_color=input_color,
+                        trj_color=trj_color,
+                        shade_on=shade_on,
+                        pulse_lw=1.0,
+                        pulse_ls="--",
+                        y_label="Delta y / peak" if normalize else "Delta y",
+                        legend_label=None,
+                    )
+                    if show_extrema_markers:
+                        intervals = run.get("absolute_intervals", run.get("input_intervals", []))
+                        segment_types = run.get("segment_types", [])
+                        for y in outputs:
+                            arr = np.asarray(y, dtype=float)
+                            if arr.ndim == 2:
+                                y0 = arr[out_i, :]
+                            else:
+                                y0 = arr
+                            for seg_idx, seg_type in enumerate(segment_types):
+                                if seg_type != "on" or seg_idx >= len(intervals):
+                                    continue
+                                peak_start, peak_end = intervals[seg_idx]
+                                off_idx = seg_idx + 1
+                                if off_idx < len(segment_types) and segment_types[off_idx] == "off":
+                                    peak_end = intervals[off_idx][1]
+                                peak_mask = (t >= float(peak_start)) & (t <= float(peak_end))
+                                if np.any(peak_mask):
+                                    peak_indices = np.flatnonzero(peak_mask)
+                                    peak_i = int(peak_indices[int(np.nanargmax(y0[peak_mask]))])
+                                    ax.scatter(
+                                        [t[peak_i]],
+                                        [y0[peak_i]],
+                                        marker="o",
+                                        s=marker_size,
+                                        facecolors="none",
+                                        edgecolors=peak_marker_color,
+                                        linewidths=0.7,
+                                        zorder=6,
+                                    )
+                                if off_idx < len(segment_types) and segment_types[off_idx] == "off" and off_idx < len(intervals):
+                                    trough_start, trough_end = intervals[off_idx]
+                                    trough_mask = (t >= float(trough_start)) & (t <= float(trough_end))
+                                    if np.any(trough_mask):
+                                        trough_indices = np.flatnonzero(trough_mask)
+                                        trough_i = int(trough_indices[int(np.nanargmin(y0[trough_mask]))])
+                                        ax.scatter(
+                                            [t[trough_i]],
+                                            [y0[trough_i]],
+                                            marker="v",
+                                            s=marker_size,
+                                            facecolors=trough_marker_color,
+                                            edgecolors="none",
+                                            alpha=0.85,
+                                            zorder=6,
+                                        )
+                    if plot_memory and run.get("trajectories") is not None:
+                        hidden_idx = [i for i in range(self.num_species) if i not in set(self.output_idx.tolist())]
+                        for x in run.get("trajectories", []):
+                            x_arr = np.asarray(x, dtype=float)
+                            for h_idx in hidden_idx:
+                                z = x_arr[h_idx, :]
+                                if normalize:
+                                    scale = float(np.nanmax(np.abs(z)))
+                                    if not np.isfinite(scale) or scale == 0.0:
+                                        scale = 1.0
+                                    z = z / scale
+                                else:
+                                    z = z - z[0]
+                                ax.plot(
+                                    t,
+                                    z,
+                                    color=memory_color,
+                                    alpha=memory_alpha,
+                                    linewidth=0.8,
+                                    linestyle="-",
+                                )
+                    _apply_axes_style(ax, cfg)
+                    ax.set_ylabel(cfg.get("ylabel") or ("Delta y / peak" if normalize else "Delta y"))
+
+            axes[-1].set_xlabel(cfg.get("xlabel") or "Time")
+            if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                fig.tight_layout()
+            _maybe_save(fig, cfg)
+            return fig, axes
+
+
+    def plot_habituation_hallmark_diagnostics(self, fig=None, axes=None, plot_cfg=None):
+        """Plot scalar diagnostics for the cached habituation hallmark loss."""
+        info = self.last_task_info.get("hallmark_info", {})
+        components = self.last_task_info.get("component_losses", info.get("component_losses", {}))
+        if not components:
+            raise ValueError("No component_losses found. Run the habituation_hallmarks task first.")
+        is_mmc2 = self.last_task_info.get("reward type") == "habituation_hallmarks_mmc2"
+
+        cfg = _merge_cfg(_DEFAULT_PLOT_CFG, plot_cfg)
+        with paper_rc_context(cfg.get("rc")):
+            if fig is None and axes is None:
+                figsize = cfg.get("figsize") or (8.0, 6.0)
+                fig, axes = plt.subplots(
+                    2,
+                    2,
+                    figsize=figsize,
+                    constrained_layout=bool(cfg.get("constrained_layout", False)),
+                )
+            axes = np.asarray(axes).reshape(-1)
+
+            names = list(components.keys())
+            vals = [float(components[k]) for k in names]
+            ax = axes[0]
+            bar_color = "#5B6C8A" if is_mmc2 else "0.35"
+            ax.bar(np.arange(len(names)), vals, color=bar_color, edgecolor="0.2", linewidth=0.4)
+            ax.set_xticks(np.arange(len(names)))
+            ax.set_xticklabels(names, rotation=35, ha="right")
+            ax.set_ylabel("Loss")
+            ax.set_title("MMC2 hinge components" if is_mmc2 else "Components")
+            _apply_axes_style(ax, cfg)
+
+            ax = axes[1]
+            periods = info.get("frequency_periods", [])
+            slopes = info.get("frequency_slopes", [])
+            if periods and slopes:
+                order = np.argsort(np.asarray(periods, dtype=float))
+                p = np.asarray(periods, dtype=float)[order]
+                s = np.asarray(slopes, dtype=float)[order]
+                ax.plot(p, s, marker="o", color="#B03A2E" if is_mmc2 else "0.2")
+            ax.set_xlabel("Period")
+            ax.set_ylabel("h_t" if is_mmc2 else "H_s / period")
+            ax.set_title("Frequency sensitivity" if is_mmc2 else "Frequency")
+            _apply_axes_style(ax, cfg)
+
+            ax = axes[2]
+            intensities = info.get("intensity_values", [])
+            scores = info.get("intensity_scores", [])
+            first = info.get("intensity_first_peaks", [])
+            if intensities and scores:
+                order = np.argsort(np.asarray(intensities, dtype=float))
+                a = np.asarray(intensities, dtype=float)[order]
+                y = np.asarray(scores, dtype=float)[order]
+                ax.plot(a, y, marker="o", color="#B03A2E" if is_mmc2 else "0.2", label="h_t" if is_mmc2 else "score")
+                if first:
+                    f = np.asarray(first, dtype=float)[order]
+                    if np.nanmax(np.abs(f)) > 0:
+                        f = f / np.nanmax(np.abs(f))
+                    ax.plot(a, f, marker="s", color="#4C78A8" if is_mmc2 else "0.55", label="first peak")
+                    ax.legend(frameon=False)
+            ax.set_xlabel("Intensity")
+            ax.set_ylabel("h_t / normalized peak" if is_mmc2 else "Value")
+            ax.set_title("Intensity sensitivity" if is_mmc2 else "Intensity")
+            _apply_axes_style(ax, cfg)
+
+            ax = axes[3]
+            if is_mmc2:
+                rt = info.get("rt", None)
+                rt_strict = info.get("rt_strict", None)
+                labels = []
+                values = []
+                if rt is not None:
+                    labels.append("rt 1%")
+                    values.append(float(rt))
+                if rt_strict is not None:
+                    labels.append("rt 0.5%")
+                    values.append(float(rt_strict))
+                if values:
+                    ax.bar(np.arange(len(values)), values, color=["#4C78A8", "#B03A2E"][:len(values)], edgecolor="0.2", linewidth=0.4)
+                    ax.set_xticks(np.arange(len(values)))
+                    ax.set_xticklabels(labels)
+                ax.set_ylabel("Recovery time")
+                ax.set_title("Subliminal accumulation")
+            else:
+                gaps = info.get("long_gap_times", [])
+                memory = info.get("memory", [])
+                state_memory = info.get("state_memory", [])
+                memory_difference = info.get("memory_difference", [])
+                if gaps:
+                    g = np.asarray(gaps, dtype=float)
+                    if memory:
+                        ax.plot(g, memory, marker="o", label="output memory")
+                    if state_memory:
+                        ax.plot(g, state_memory, marker="s", label="state memory")
+                    if memory_difference:
+                        ax.plot(g, memory_difference, marker="^", label="difference")
+                    ss_distance = info.get("longest_gap_ss_distance", [])
+                    if ss_distance:
+                        ax.scatter(
+                            [float(np.max(g))],
+                            [float(np.mean(ss_distance))],
+                            marker="x",
+                            color="0.05",
+                            label="fsolve SS distance",
+                        )
+                    ax.legend(frameon=False)
+                ax.set_xlabel("Gap")
+                ax.set_ylabel("Memory")
+                ax.set_title("Long-Term")
+            _apply_axes_style(ax, cfg)
+
+            if cfg.get("tight_layout", True) and not cfg.get("constrained_layout", False):
+                fig.tight_layout()
+            _maybe_save(fig, cfg)
+            return fig, axes
+
+
     def plot_logic_response(
         self,
         *,
@@ -2469,13 +2776,15 @@ def _pulse_step_and_shading_from_intervals(
     u_pulse,
     *,
     gap: bool,
+    segment_types=None,
 ):
     """
     Build (boundaries, step_values, seg_values, gap_bounds) from legacy seg_intervals and u_pulse.
 
     seg_intervals: [(0,T0),(0,T1),...]
     u_pulse: array-like, first element used as ON amplitude
-    gap: if True, longest segment is treated as a GAP (forced LOW) and pulse phase restarts after it.
+    gap: if True, legacy fallback treats the longest segment as a GAP.
+    segment_types: Optional explicit labels ("on", "off", "gap") per segment.
 
     Returns:
     boundaries: (K+1,)
@@ -2491,7 +2800,20 @@ def _pulse_step_and_shading_from_intervals(
 
     gap_bounds = None
 
-    if gap and K > 0:
+    if segment_types is not None:
+        types = [str(s).lower() for s in segment_types]
+        if len(types) != K:
+            raise ValueError("segment_types must have the same length as seg_intervals.")
+        seg_values = np.zeros(K, dtype=float)
+        for k, typ in enumerate(types):
+            seg_values[k] = on_value if typ == "on" else 0.0
+        gap_indices = [k for k, typ in enumerate(types) if typ == "gap"]
+        if gap_indices:
+            gap_bounds = [
+                (float(boundaries[k]), float(boundaries[k + 1]))
+                for k in gap_indices
+            ]
+    elif gap and K > 0:
         gap_idx = int(np.argmax(durations))
         gap_bounds = (float(boundaries[gap_idx]), float(boundaries[gap_idx + 1]))
 
@@ -2565,8 +2887,10 @@ def _plot_one_frequency(
                     ax.axvspan(boundaries[k], boundaries[k + 1], color=input_color, alpha=0.15)
 
         if gap_bounds is not None:
-            ax.axvline(gap_bounds[0], alpha=0.25)
-            ax.axvline(gap_bounds[1], alpha=0.25)
+            bounds = gap_bounds if isinstance(gap_bounds, list) else [gap_bounds]
+            for start, end in bounds:
+                ax.axvline(start, alpha=0.25)
+                ax.axvline(end, alpha=0.25)
 
 
 

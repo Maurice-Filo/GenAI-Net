@@ -1,0 +1,2 @@
+seed,run_id,success,best_loss,stop_reason,elapsed_seconds,success_count_so_far,finished_count_so_far
+3,seed003,True,14.912629078571179,success,473.32931756973267,1,1
