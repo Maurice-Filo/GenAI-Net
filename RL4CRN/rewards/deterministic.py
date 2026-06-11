@@ -83,7 +83,7 @@ def dynamic_tracking_error(crn, u_list, x0_list, time_horizon, r_list, w, norm=1
             - 'reward type': 'dynamic_tracking_error'
     """
 
-    print(u_list)
+    # print(u_list)
     t, x_list, y_list, last_task_info = crn.transient_response(u_list, x0_list, time_horizon, LARGE_NUMBER=LARGE_NUMBER)
     performance = performance_metric(r_list, y_list, w, norm=norm, relative=relative)
     crn.last_task_info['reward'] = performance
