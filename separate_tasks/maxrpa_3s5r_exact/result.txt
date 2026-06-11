@@ -1,0 +1,6 @@
+number of complexes: 10 (expected 10)
+number of possible directed reactions: 90 (expected 90)
+total CRNs: 43949268 (expected 43,949,268)
+maxRPA count: 3233372
+reduced fraction: 808343 / 10987317
+decimal portion: 0.073570554121629512
