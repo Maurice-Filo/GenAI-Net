@@ -1,0 +1,6 @@
+method,run_id,seed,epoch,candidate_evaluations,batch_size,n_cpus,epoch_best_loss,epoch_median_loss,saved_best_loss,success,stop_reason,elapsed_seconds
+rl4crn_rne_oscillator_trace_8rxn_risk09_lr1e4_entropy001_s4_c03,seed001,1,1,100,100,16,123.7589333410222,130.43178742587583,123.7589333410222,False,max_epochs,5.637161493301392
+rl4crn_rne_oscillator_trace_8rxn_risk09_lr1e4_entropy001_s4_c03,seed001,1,2,200,100,16,123.62813965322263,130.53015456205856,123.62813965322263,False,max_epochs,7.525564193725586
+rl4crn_rne_oscillator_trace_8rxn_risk09_lr1e4_entropy001_s4_c03,seed001,1,3,300,100,16,122.6209388704435,130.11565867446978,122.6209388704435,False,max_epochs,9.089510440826416
+rl4crn_rne_oscillator_trace_8rxn_risk09_lr1e4_entropy001_s4_c03,seed001,1,4,400,100,16,122.59298173916828,131.4406690512468,122.59298173916828,False,max_epochs,10.66672682762146
+rl4crn_rne_oscillator_trace_8rxn_risk09_lr1e4_entropy001_s4_c03,seed001,1,5,500,100,16,124.85747553251807,131.7115972814059,122.59298173916828,False,max_epochs,12.281775712966919

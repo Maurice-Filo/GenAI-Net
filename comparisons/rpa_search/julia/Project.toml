@@ -1,0 +1,10 @@
+[deps]
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+ReactionNetworkEvolution = "61220d1e-4cdb-4fc3-9e6c-02bd7f830b85"
+RoadRunner = "e916ade1-3a88-4cc2-a33a-2915d20637d9"
+Sundials = "c3572dad-4567-51f8-b174-8c6c989267f4"

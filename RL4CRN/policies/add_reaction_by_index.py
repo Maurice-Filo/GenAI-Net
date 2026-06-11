@@ -315,6 +315,13 @@ class AddReactionByIndex(torch.nn.Module):
         log_probabilities = 0
         if mode == 'full':
             reaction_structure_logits = self.reaction_structure_head(encoded) # shape: (N, M)
+            if not torch.isfinite(reaction_structure_logits).all():
+                reaction_structure_logits = torch.nan_to_num(
+                    reaction_structure_logits,
+                    nan=0.0,
+                    posinf=1e6,
+                    neginf=-1e6,
+                )
 
             # Mask out already existing reactions in the IOCRN
             masked_reaction_structure_logits = reaction_structure_logits.masked_fill(state[:,:self.M].bool(), float('-inf')) # shape: (N, M)
@@ -329,10 +336,16 @@ class AddReactionByIndex(torch.nn.Module):
                 masked_reaction_structure_logits[rows, :] = float('-inf')
                 masked_reaction_structure_logits[rows, self.zero_reaction_idx] = reaction_structure_logits[rows, self.zero_reaction_idx]
 
+            all_logits_neg_inf = (masked_reaction_structure_logits == float('-inf')).all(dim=-1)
+            if all_logits_neg_inf.any():
+                fallback_idx = self.zero_reaction_idx if self.zero_reaction_idx is not None else 0
+                masked_reaction_structure_logits[all_logits_neg_inf, fallback_idx] = 0.0
+
             # Apply temperature to the logits
             if structure_temp is not None:
                 self.structure_head_temperature["current_temperature"] = structure_temp
-            masked_reaction_structure_logits = masked_reaction_structure_logits / self.structure_head_temperature["current_temperature"]
+            temp = max(1e-4, float(self.structure_head_temperature["current_temperature"]))
+            masked_reaction_structure_logits = masked_reaction_structure_logits / temp
 
             # Construct the categorical distribution over the library reactions and compute their entropies
             reaction_structure_distribution = Categorical(logits=masked_reaction_structure_logits) # batch of N categorical distributions, each over M categories

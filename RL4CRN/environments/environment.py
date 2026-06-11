@@ -519,6 +519,71 @@ class Environment():
                     except ValueError:
                         pass
 
+            case {'style': 'logger', 'task': 'habituation_hallmarks' | 'habituation_hallmarks_mmc2'}:
+                if self.logger is not None:
+                    figure_prefix = mode.get(
+                        "figure_prefix",
+                        "MMC2 Habituation" if mode.get("task") == "habituation_hallmarks_mmc2" else "Habituation",
+                    )
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        fig, _ = self.state.plot_habituation_hallmarks(
+                            normalize=mode.get("normalize", False),
+                            input_color=mode.get("input_color", "red"),
+                            trj_color=mode.get("trj_color", "green"),
+                            shade_on=mode.get("shade_on", True),
+                            show_memory_species=mode.get("show_memory_species", True),
+                            plot_cfg=mode.get("plot_cfg", None),
+                        )
+                        fig.suptitle(f"CRN {ID} {figure_prefix} Hallmarks, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} {figure_prefix} Hallmarks", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} {figure_prefix} Hallmarks')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                        if mode.get("diagnostics", True):
+                            fig_diag, _ = self.state.plot_habituation_hallmark_diagnostics(
+                                plot_cfg=mode.get("diagnostics_plot_cfg", None),
+                            )
+                            fig_diag.suptitle(f"CRN {ID} {figure_prefix} Loss Diagnostics")
+                            if mode['format'] == 'figure':
+                                self.logger.log_figure(figure_name=f"CRN {ID} {figure_prefix} Diagnostics", figure=fig_diag)
+                            elif mode['format'] == 'image':
+                                buf = BytesIO()
+                                fig_diag.savefig(buf, format='png')
+                                buf.seek(0)
+                                self.logger.log_image(buf, name=f'CRN {ID} {figure_prefix} Diagnostics')
+                                buf.close()
+                            plt.close(fig_diag)
+                        for group_name in mode.get("group_plots", []):
+                            fig_group, _ = self.state.plot_habituation_hallmarks(
+                                normalize=mode.get("normalize", False),
+                                input_color=mode.get("input_color", "red"),
+                                trj_color=mode.get("trj_color", "green"),
+                                shade_on=mode.get("shade_on", True),
+                                show_memory_species=mode.get("show_memory_species", True),
+                                group_filter=group_name,
+                                plot_cfg=mode.get("group_plot_cfg", mode.get("plot_cfg", None)),
+                            )
+                            fig_group.suptitle(f"CRN {ID} {figure_prefix}: {group_name}")
+                            if mode['format'] == 'figure':
+                                self.logger.log_figure(figure_name=f"CRN {ID} {figure_prefix} {group_name}", figure=fig_group)
+                            elif mode['format'] == 'image':
+                                buf = BytesIO()
+                                fig_group.savefig(buf, format='png')
+                                buf.seek(0)
+                                self.logger.log_image(buf, name=f'CRN {ID} {figure_prefix} {group_name}')
+                                buf.close()
+                            plt.close(fig_group)
+                    except ValueError:
+                        pass
+
             case {'style': 'logger', 'task': 'data_fit'}:
                 if self.logger is not None:
                     self.logger.log_text(

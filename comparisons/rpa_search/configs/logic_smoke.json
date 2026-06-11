@@ -1,0 +1,53 @@
+{
+  "benchmark": {
+    "name": "logic_smoke",
+    "task": "logic",
+    "output_root": "comparisons/rpa_search/data/raw",
+    "figure_dir": "comparisons/rpa_search/figures",
+    "x_field": "ode_simulations",
+    "log_y": true,
+    "plot_title": "Logic Circuit Search Progress",
+    "plot_ylabel": "Best-so-far logic loss",
+    "plot_methods": [
+      "random_search",
+      "circuitree",
+      "reaction_network_evolution_jl",
+      "rl4crn"
+    ]
+  },
+  "logic": {
+    "formula": "chain_or_pairs_4",
+    "n_inputs": 4,
+    "include_dilution": false,
+    "n_support_species": 0,
+    "solver": "LSODA",
+    "rtol": 1e-8,
+    "atol": 1e-8,
+    "t_f": 30.0,
+    "n_t": 120,
+    "ic": ["constant", 0.01],
+    "weights": "transient",
+    "library_order": 2
+  },
+  "search": {
+    "seed": 0,
+    "max_added_reactions": 4,
+    "rate_constant_range": [0.1, 5.0],
+    "candidate_budget": 8,
+    "mcts_iterations": 8,
+    "mcts_exploration": 1.4
+  },
+  "rl4crn": {
+    "epochs": 2,
+    "batch_size": 4,
+    "n_cpus": 1,
+    "render_every": 0,
+    "policy_width": 64,
+    "policy_depth": 1,
+    "deep_layer_size": 128,
+    "hall_of_fame_size": 8
+  },
+  "rne": {
+    "population_size": 8
+  }
+}

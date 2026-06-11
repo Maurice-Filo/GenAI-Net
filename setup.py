@@ -43,5 +43,8 @@ setuptools.setup(
         "SSA": [
             'stochasticSimulations @ git+https://github.com/redsnic/stochasticApproaches.git',
         ],
+        "vertexai": [
+            "google-cloud-aiplatform",
+        ],
     },
 )

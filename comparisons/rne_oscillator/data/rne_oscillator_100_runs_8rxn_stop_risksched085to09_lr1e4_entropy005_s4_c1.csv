@@ -1,0 +1,6 @@
+seed,run_id,success,best_loss,stop_reason,elapsed_seconds,success_count_so_far,finished_count_so_far
+1,seed001,True,6.24340931019382,success,489.4092233181,1,1
+4,seed004,True,19.36961189979837,success,363.8360288143158,2,2
+0,seed000,True,18.078001421390745,success,1154.018208026886,3,3
+2,seed002,False,52.229151352667785,max_epochs,1310.020028591156,3,4
+3,seed003,False,87.65011566585098,max_epochs,1327.8334221839905,3,5
