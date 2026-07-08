@@ -17,6 +17,7 @@ import pprint
 import textwrap
 import random
 import json
+import time
 
 from dataclasses import dataclass, field, asdict
 from functools import partial
@@ -1272,13 +1273,19 @@ class Trainer:
         if epoch < start or (epoch - start) % every != 0:
             return 0
         archive = self._forbidden_topologies()
+        tic = time.perf_counter()
         added = self._archive_forbidden_from_hof(epoch=epoch, m=m)
+        elapsed = time.perf_counter() - tic
         total = len(archive)
         if self.s.logger is not None and hasattr(self.s.logger, "log_metric"):
             self.s.logger.log_metric("Forbidden Topologies/Added", added, step=epoch)
             self.s.logger.log_metric("Forbidden Topologies/Total", total, step=epoch)
+            self.s.logger.log_metric("Forbidden Topologies/Timing Total Seconds", elapsed, step=epoch)
         if added:
-            print(f"[epoch {epoch}] archived {added} forbidden topologies | total={total}")
+            print(
+                f"[epoch {epoch}] archived {added} forbidden topologies | "
+                f"total={total} | archive_time={elapsed:.3g}s"
+            )
         return added
 
     def _archive_forbidden_from_hof(self, *, epoch: int, m: int) -> int:
@@ -1300,10 +1307,13 @@ class Trainer:
             opt_attempted = False
             opt_success = False
             opt_message = "optimization disabled"
+            opt_elapsed = 0.0
+            opt_evaluations = 0
             archive_state = env.state
             archive_loss = original_loss
 
             if use_ipopt:
+                tic = time.perf_counter()
                 result = optimize_crn_parameters_ipopt(
                     env.state,
                     self.s.task.compute_reward,
@@ -1311,9 +1321,11 @@ class Trainer:
                     log_min=float(getattr(cfg, "forbidden_ipopt_log_min", -18.0)),
                     log_max=float(getattr(cfg, "forbidden_ipopt_log_max", 6.0)),
                 )
+                opt_elapsed = time.perf_counter() - tic
                 opt_attempted = result.attempted
                 opt_success = result.success
                 opt_message = result.message
+                opt_evaluations = int(getattr(result, "n_evaluations", 0) or 0)
                 if result.success:
                     archive_state = result.state
                     archive_loss = float(result.loss)
@@ -1343,6 +1355,8 @@ class Trainer:
                 optimization_attempted=opt_attempted,
                 optimization_success=opt_success,
                 optimization_message=opt_message,
+                optimization_seconds=opt_elapsed,
+                optimization_evaluations=opt_evaluations,
             )
         return added
 
@@ -1359,6 +1373,8 @@ class Trainer:
         optimization_attempted: bool,
         optimization_success: bool,
         optimization_message: str,
+        optimization_seconds: float = 0.0,
+        optimization_evaluations: int = 0,
     ) -> None:
         logger = self.s.logger
         if logger is None:
@@ -1370,6 +1386,8 @@ class Trainer:
             logger.log_metric(f"{prefix}/Threshold", threshold, step=epoch)
             logger.log_metric(f"{prefix}/Optimization Attempted", int(optimization_attempted), step=epoch)
             logger.log_metric(f"{prefix}/Optimization Success", int(optimization_success), step=epoch)
+            logger.log_metric(f"{prefix}/Optimization Seconds", float(optimization_seconds), step=epoch)
+            logger.log_metric(f"{prefix}/Optimization Evaluations", int(optimization_evaluations), step=epoch)
             logger.log_metric(f"{prefix}/Stored", int(stored), step=epoch)
             logger.log_metric(f"{prefix}/Inserted", int(inserted), step=epoch)
         record = {
@@ -1383,6 +1401,8 @@ class Trainer:
             "optimization_attempted": optimization_attempted,
             "optimization_success": optimization_success,
             "optimization_message": optimization_message,
+            "optimization_seconds": float(optimization_seconds),
+            "optimization_evaluations": int(optimization_evaluations),
         }
         text = "Forbidden topology archive decision:\n" + pprint.pformat(record, width=100)
         if hasattr(logger, "log_text"):
@@ -1423,6 +1443,7 @@ class Trainer:
 
         graph = settings["graph"]
         before = len(hof) if hof is not None else 0
+        tic = time.perf_counter()
         try:
             result = graph.run_round(
                 task_description=settings["task_description"],
@@ -1435,6 +1456,7 @@ class Trainer:
                 step=epoch,
             )
         except Exception as exc:
+            elapsed = time.perf_counter() - tic
             message = f"LLM graph failed at epoch {epoch}: {exc}"
             settings["history"].append(
                 {
@@ -1443,6 +1465,7 @@ class Trainer:
                     "valid": 0,
                     "hof_size_before": before,
                     "hof_size_after": before,
+                    "elapsed_seconds": elapsed,
                     "error": str(exc),
                 }
             )
@@ -1450,10 +1473,12 @@ class Trainer:
                 if hasattr(self.s.logger, "log_metric"):
                     self.s.logger.log_metric("LLM/Triggered", 1, step=epoch)
                     self.s.logger.log_metric("LLM/Failed", 1, step=epoch)
+                    self.s.logger.log_metric("LLM/Timing Trainer Hook Seconds", elapsed, step=epoch)
                 if hasattr(self.s.logger, "log_text"):
                     self.s.logger.log_text(message)
             print(f"[epoch {epoch}] {message}")
             return None
+        elapsed = time.perf_counter() - tic
         after = len(hof) if hof is not None else 0
         valid = sum(1 for ev in result.evaluations if ev.valid)
 
@@ -1464,6 +1489,7 @@ class Trainer:
                 "valid": valid,
                 "hof_size_before": before,
                 "hof_size_after": after,
+                "elapsed_seconds": elapsed,
             }
         )
 
@@ -1472,6 +1498,7 @@ class Trainer:
             self.s.logger.log_metric("LLM/Requested Count", int(settings["num_candidates"]), step=epoch)
             self.s.logger.log_metric("LLM/Hall of Fame Size Before", before, step=epoch)
             self.s.logger.log_metric("LLM/Hall of Fame Size After", after, step=epoch)
+            self.s.logger.log_metric("LLM/Timing Trainer Hook Seconds", elapsed, step=epoch)
 
         best = min(
             (float(ev.loss) for ev in result.evaluations if ev.valid and ev.loss is not None),
@@ -1479,7 +1506,8 @@ class Trainer:
         )
         print(
             f"[epoch {epoch}] LLM graph proposed {int(settings['num_candidates'])} CRNs | "
-            f"valid={valid} | best={best:.4g} | HoF {before}->{after}"
+            f"valid={valid} | best={best:.4g} | HoF {before}->{after} | "
+            f"llm_time={elapsed:.3g}s"
         )
         return result
 

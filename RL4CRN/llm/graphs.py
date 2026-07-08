@@ -8,6 +8,7 @@ Candidate validation and scoring remain delegated to ``LLMCandidateEvaluator``.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -263,12 +264,15 @@ class DeciderWriterCRNGraph:
     ) -> LLMGraphRunResult:
         """Run one graph round, evaluate candidates, update memory, and log."""
 
+        round_tic = time.perf_counter()
         decider_node = self.spec.get_node(self.spec.decider_node)
+        decider_tic = time.perf_counter()
         decision, decider_prompt = self._decide(
             task_description,
             forbidden_topologies_text=forbidden_topologies_text,
             return_prompt=True,
         )
+        decider_seconds = time.perf_counter() - decider_tic
         writer_node = self.spec.get_node(self.spec.writer_node)
         writer_prompt = self.build_writer_prompt(
             task_description=task_description,
@@ -309,12 +313,14 @@ class DeciderWriterCRNGraph:
             step=step,
             name="discussion",
         )
-        raw_payload, candidates, evaluations, retry_message = self._generate_evaluate_with_retry(
+        writer_eval_tic = time.perf_counter()
+        raw_payload, candidates, evaluations, retry_message, timing = self._generate_evaluate_with_retry(
             writer_prompt=writer_prompt,
             writer_node=writer_node,
             logger=logger or self.comet_logger,
             step=step,
         )
+        writer_and_evaluation_seconds = time.perf_counter() - writer_eval_tic
         for i, evaluation in enumerate(evaluations):
             if evaluation.env is not None:
                 is_forbidden = (
@@ -376,6 +382,17 @@ class DeciderWriterCRNGraph:
             logger=logger or self.comet_logger,
             step=step,
         )
+        total_seconds = time.perf_counter() - round_tic
+        self.log_timing(
+            {
+                "Round Seconds": total_seconds,
+                "Decider Seconds": decider_seconds,
+                "Writer And Evaluation Seconds": writer_and_evaluation_seconds,
+                **timing,
+            },
+            logger=logger or self.comet_logger,
+            step=step,
+        )
         return LLMGraphRunResult(
             spec=self.spec,
             decision=decision,
@@ -392,19 +409,29 @@ class DeciderWriterCRNGraph:
         writer_node: LLMGraphNode,
         logger: Any = None,
         step: Optional[int] = None,
-    ) -> tuple[Any, List[LLMCandidate], List[CandidateEvaluation], str]:
+    ) -> tuple[Any, List[LLMCandidate], List[CandidateEvaluation], str, Dict[str, float]]:
         """Generate candidates, then retry once with concrete feedback if needed."""
 
         retry_message = ""
+        timing: Dict[str, float] = {
+            "Writer Generate Seconds": 0.0,
+            "Candidate Evaluation Seconds": 0.0,
+            "Retry Writer Generate Seconds": 0.0,
+            "Retry Candidate Evaluation Seconds": 0.0,
+        }
         try:
+            tic = time.perf_counter()
             raw_payload = self.client.generate_json(
                 writer_prompt,
                 generation_config=writer_node.generation_config,
             )
+            timing["Writer Generate Seconds"] = time.perf_counter() - tic
             candidates = parse_candidates_payload(raw_payload)
+            tic = time.perf_counter()
             evaluations = self.evaluator.evaluate_many(candidates)
+            timing["Candidate Evaluation Seconds"] = time.perf_counter() - tic
             if any(evaluation.valid for evaluation in evaluations):
-                return raw_payload, candidates, evaluations, retry_message
+                return raw_payload, candidates, evaluations, retry_message, timing
 
             retry_message = self._format_evaluation_feedback(evaluations)
             if not retry_message:
@@ -443,13 +470,17 @@ class DeciderWriterCRNGraph:
             logger=logger,
             step=step,
         )
+        tic = time.perf_counter()
         raw_payload = self.client.generate_json(
             retry_prompt,
             generation_config=writer_node.generation_config,
         )
+        timing["Retry Writer Generate Seconds"] = time.perf_counter() - tic
         candidates = parse_candidates_payload(raw_payload)
+        tic = time.perf_counter()
         evaluations = self.evaluator.evaluate_many(candidates)
-        return raw_payload, candidates, evaluations, retry_message
+        timing["Retry Candidate Evaluation Seconds"] = time.perf_counter() - tic
+        return raw_payload, candidates, evaluations, retry_message, timing
 
     @staticmethod
     def _build_retry_prompt(writer_prompt: str, retry_message: str) -> str:
@@ -667,6 +698,22 @@ class DeciderWriterCRNGraph:
                 logger.log_metric(f"{prefix}/Loss Candidate {i}", loss, step=step)
                 series_step = i if step is None else int(step) * 1000 + i
                 logger.log_metric(f"{prefix}/Loss Candidate Series", loss, step=series_step)
+
+    def log_timing(
+        self,
+        timing: Mapping[str, float],
+        *,
+        logger: Any = None,
+        step: Optional[int] = None,
+    ) -> None:
+        """Log graph timing metrics with the LLM prefix."""
+
+        logger = logger or self.comet_logger
+        if logger is None or not hasattr(logger, "log_metric"):
+            return
+        prefix = self.metric_prefix
+        for name, value in timing.items():
+            logger.log_metric(f"{prefix}/Timing {name}", float(value), step=step)
 
 
 def plot_llm_evaluations(

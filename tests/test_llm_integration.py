@@ -331,6 +331,10 @@ class LLMIntegrationTests(unittest.TestCase):
         metric_names = {name for name, _, _ in logger.metrics}
         self.assertIn("LLM/Loss Best", metric_names)
         self.assertIn("LLM/Loss Candidate 0", metric_names)
+        self.assertIn("LLM/Timing Round Seconds", metric_names)
+        self.assertIn("LLM/Timing Decider Seconds", metric_names)
+        self.assertIn("LLM/Timing Writer Generate Seconds", metric_names)
+        self.assertIn("LLM/Timing Candidate Evaluation Seconds", metric_names)
         self.assertTrue(any("Decider -> Writer" in text for text in logger.texts))
         self.assertTrue(any(name.startswith("llm_candidates_step_") for name, _, _ in logger.assets))
         self.assertTrue(any(name.startswith("llm_discussion_step_") for name, _, _ in logger.assets))
@@ -475,6 +479,7 @@ class LLMIntegrationTests(unittest.TestCase):
         metric_names = {name for name, _, _ in logger.metrics}
         self.assertIn("LLM/Requested Count", metric_names)
         self.assertIn("LLM/Hall of Fame Size After", metric_names)
+        self.assertIn("LLM/Timing Trainer Hook Seconds", metric_names)
 
     def test_forbidden_archive_uses_threshold_when_ipopt_unavailable(self):
         session_like = SessionLike()
@@ -508,6 +513,18 @@ class LLMIntegrationTests(unittest.TestCase):
         added = trainer._refresh_forbidden_topologies(epoch=0)
         self.assertEqual(added, 1)
         self.assertEqual(len(trainer.s.forbidden_topologies), 1)
+        metric_names = {name for name, _, _ in trainer.s.logger.metrics}
+        self.assertIn("Forbidden Topologies/Timing Total Seconds", metric_names)
+        self.assertIn("Forbidden Topologies/Optimization Seconds", metric_names)
+        self.assertIn("Forbidden Topologies/Optimization Evaluations", metric_names)
+        archive_assets = [
+            json.loads(data)
+            for name, data, _ in trainer.s.logger.assets
+            if name and name.startswith("forbidden_topology_archive_epoch_")
+        ]
+        self.assertTrue(archive_assets)
+        self.assertIn("optimization_seconds", archive_assets[-1])
+        self.assertIn("optimization_evaluations", archive_assets[-1])
 
         trainer.s.forbidden_topologies.records.clear()
         train_cfg.forbidden_threshold = 1.0

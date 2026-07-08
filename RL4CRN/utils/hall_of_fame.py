@@ -134,11 +134,8 @@ class HallOfFame:
             # Depending on strictness, you might want to just return here instead of crashing
             raise ValueError("Environment state must have 'reward' in last_task_info.")
 
-        # NOTE: this is actually critical to avoid issues when resetting older environments
-        env_snapshot = crn_env.clone() 
-        
         # New entry wrapper
-        entry = HoFItem(loss, unhashable_signature, time.time(), env_snapshot)
+        entry = HoFItem(loss, unhashable_signature, time.time(), crn_env) # TEMPORARY - UNCLONED
 
         # 1. Handle Duplicates
         if entry.signature in self.signature_map:
@@ -147,6 +144,7 @@ class HallOfFame:
             # Compare scores explicitly for clarity
             if entry.score > existing_entry.score:
                 # Update existing entry in-place
+                entry = HoFItem(loss, unhashable_signature, time.time(), crn_env.clone()) # NOTE: CLONED
                 existing_entry.assign(entry)
                 # Re-establish heap invariant (O(N))
                 heapq.heapify(self.heap)
@@ -155,6 +153,7 @@ class HallOfFame:
 
         # 2. Add New Item
         if len(self.heap) < self.max_size:
+            entry = HoFItem(loss, unhashable_signature, time.time(), crn_env.clone()) # NOTE: CLONED
             heapq.heappush(self.heap, entry)
             self.signature_map[entry.signature] = entry
             self._cache_is_dirty = True
@@ -168,6 +167,7 @@ class HallOfFame:
                 
                 # Pop worst, push new
                 # Note: heappushpop is more efficient than pop then push
+                entry = HoFItem(loss, unhashable_signature, time.time(), crn_env.clone()) # NOTE: CLONED
                 heapq.heappushpop(self.heap, entry)
                 self.signature_map[entry.signature] = entry
                 self._cache_is_dirty = True
