@@ -11,6 +11,7 @@ import numpy as np
 
 from RL4CRN.environments.environment import Environment
 from RL4CRN.llm.schemas import CandidateEvaluation, LLMCandidate
+from RL4CRN.utils.forbidden_topologies import ForbiddenTopologyArchive
 
 
 class LLMCandidateEvaluator:
@@ -36,6 +37,9 @@ class LLMCandidateEvaluator:
         logger: Any = None,
         min_parameter_value: float = 1e-6,
         require_full_budget: bool = True,
+        require_unique_reactions: bool = True,
+        forbidden_topologies: Optional[ForbiddenTopologyArchive] = None,
+        forbidden_loss: float = 1e9,
     ):
         self.crn_template = crn_template
         self.max_added_reactions = int(max_added_reactions)
@@ -47,6 +51,9 @@ class LLMCandidateEvaluator:
         self.logger = logger
         self.min_parameter_value = float(min_parameter_value)
         self.require_full_budget = bool(require_full_budget)
+        self.require_unique_reactions = bool(require_unique_reactions)
+        self.forbidden_topologies = forbidden_topologies
+        self.forbidden_loss = float(forbidden_loss)
 
     @classmethod
     def from_session(
@@ -55,6 +62,7 @@ class LLMCandidateEvaluator:
         *,
         min_parameter_value: float = 1e-6,
         require_full_budget: bool = True,
+        require_unique_reactions: bool = True,
     ) -> "LLMCandidateEvaluator":
         """Create an evaluator from a current ``input_interface.Session``."""
 
@@ -69,6 +77,9 @@ class LLMCandidateEvaluator:
             logger=session.logger,
             min_parameter_value=min_parameter_value,
             require_full_budget=require_full_budget,
+            require_unique_reactions=require_unique_reactions,
+            forbidden_topologies=getattr(session, "forbidden_topologies", None),
+            forbidden_loss=float(getattr(session.cfg.train, "forbidden_topology_loss", 1e9)),
         )
 
     def evaluate_many(
@@ -83,7 +94,11 @@ class LLMCandidateEvaluator:
         evaluations = [self.evaluate(candidate) for candidate in candidates]
         if add_to_hall_of_fame is not None:
             for evaluation in evaluations:
-                if evaluation.valid and evaluation.env is not None:
+                if (
+                    evaluation.valid
+                    and evaluation.env is not None
+                    and not self.is_forbidden_env(evaluation.env)
+                ):
                     add_to_hall_of_fame.add(evaluation.env)
         if jsonl_path is not None:
             self.append_jsonl(evaluations, jsonl_path)
@@ -122,6 +137,21 @@ class LLMCandidateEvaluator:
                     )
                 env.step(action=action, stepper=self.stepper, raw_action=raw_action)
                 raw_actions.append(raw_action)
+
+            if self.forbidden_topologies is not None and self.forbidden_topologies.contains_state(env.state):
+                return CandidateEvaluation(
+                    candidate=candidate,
+                    valid=False,
+                    loss=self.forbidden_loss,
+                    env=env,
+                    message="forbidden topology: already archived as evaluated/admissible solution.",
+                    raw_actions=raw_actions,
+                    task_info={
+                        "reward": self.forbidden_loss,
+                        "forbidden_topology": True,
+                        "source": "LLM",
+                    },
+                )
 
             loss, task_info = self._compute_loss(env)
             env.state.last_task_info = dict(getattr(env.state, "last_task_info", {}) or {})
@@ -179,6 +209,13 @@ class LLMCandidateEvaluator:
 
         if not reaction_ids:
             return CandidateEvaluation(candidate=candidate, valid=False, message="empty candidate.")
+
+        if self.require_unique_reactions and len(set(reaction_ids)) != len(reaction_ids):
+            return CandidateEvaluation(
+                candidate=candidate,
+                valid=False,
+                message="candidate contains duplicate reaction IDs.",
+            )
 
         checked_params: List[List[float]] = []
         for reaction_id, params in zip(reaction_ids, parameter_values):
@@ -245,6 +282,15 @@ class LLMCandidateEvaluator:
             raw_loss = raw_loss.item()
 
         return float(raw_loss), task_info
+
+    def is_forbidden_env(self, env: Any) -> bool:
+        """Return True when an evaluated environment matches the forbidden archive."""
+
+        return (
+            self.forbidden_topologies is not None
+            and env is not None
+            and self.forbidden_topologies.contains_state(env.state)
+        )
 
     @staticmethod
     def append_jsonl(evaluations: Sequence[CandidateEvaluation], path: str | Path) -> None:

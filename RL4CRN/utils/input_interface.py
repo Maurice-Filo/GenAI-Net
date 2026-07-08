@@ -16,8 +16,10 @@ from __future__ import annotations
 import pprint
 import textwrap
 import random
+import json
 
 from dataclasses import dataclass, field, asdict
+from functools import partial
 from itertools import product
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import copy
@@ -29,7 +31,9 @@ import torch
 
 from RL4CRN.iocrns.reaction_library import ReactionLibrary
 from RL4CRN.iocrns.iocrn import IOCRN
+from RL4CRN.utils.forbidden_topologies import ForbiddenTopologyArchive, reward_with_forbidden_topologies
 from RL4CRN.utils.hall_of_fame import HallOfFame
+from RL4CRN.utils.parameter_optimization import optimize_crn_parameters_ipopt
 from abc import ABC, abstractmethod
 
 
@@ -515,6 +519,15 @@ class TrainCfg:
     seed: int = 0
     n_cpus: Optional[int] = None
     batch_size: Optional[int] = None
+    forbidden_topology_m: int = 0
+    forbidden_topology_every: int = 5
+    forbidden_topology_loss: float = 1e9
+    forbidden_topology_start_epoch: int = 0
+    forbidden_threshold: float = float("inf")
+    forbidden_optimize_with_ipopt: bool = True
+    forbidden_ipopt_maxiter: int = 100
+    forbidden_ipopt_log_min: float = -18.0
+    forbidden_ipopt_log_max: float = 6.0
 
 
 @dataclass
@@ -591,11 +604,13 @@ class RenderCfg:
     Attributes:
         n_best: Number of top trajectories to render.
         disregarded_percentage: Percentage of trajectories to disregard based on reward (for stochastic tasks).
-        mode: Rendering mode, e.g., "transients", "inputs", "final_state", etc.
+        mode: Rendering mode. A legacy string such as "transients" is accepted
+            and normalized by Trainer.run to the logger-mode dictionary expected
+            by the environment renderer.
     """
     n_best: int = 30
     disregarded_percentage: float = 0.5
-    mode: str = "transients"
+    mode: Union[str, Dict[str, Any]] = "transients"
 
 @dataclass
 class Config:
@@ -928,6 +943,7 @@ class Session:
     agent: Any
 
     sample_hof: Optional[HallOfFame] = None
+    forbidden_topologies: ForbiddenTopologyArchive = field(default_factory=ForbiddenTopologyArchive)
     logger: Any = None
 
     @staticmethod
@@ -1155,6 +1171,7 @@ class Trainer:
         self.state = TrainState()
         self._loaded_hof: Optional[List[Any]] = None
         self._loaded_cfg: Optional[dict] = None
+        self._llm_loop: Optional[Dict[str, Any]] = None
 
     def _log_loss_components(self, step: int) -> None:
         logger = self.s.logger
@@ -1179,6 +1196,310 @@ class Trainer:
             logger.log_metric(f"Component: {name} Average", float(np.mean(arr)), step=step)
             logger.log_metric(f"Component: {name} Best", float(np.min(arr)), step=step)
             logger.log_metric(f"Component: {name} Median", float(np.median(arr)), step=step)
+
+    def configure_llm_graph(
+        self,
+        graph: Any,
+        *,
+        every: int,
+        task_description: str,
+        num_candidates: int = 10,
+        start_epoch: int = 0,
+        stop_epoch: Optional[int] = None,
+        add_to_hall_of_fame: bool = True,
+        jsonl_path: Optional[Union[str, os.PathLike]] = None,
+    ) -> None:
+        """Attach an LLM proposal graph to the RL training loop.
+
+        The graph is called after the regular RL batch has been scored and
+        before ``agent.update``.  Valid LLM-proposed CRNs can therefore enter
+        the same Hall of Fame used by self-imitation learning (SIL), allowing
+        the policy update of that epoch to replay them immediately.
+
+        Args:
+            graph: Object exposing ``run_round(...)``; typically
+                ``RL4CRN.llm.DeciderWriterCRNGraph``.
+            every: Call the graph every this many epochs.  Set to 0 through
+                ``clear_llm_graph`` instead of passing non-positive values.
+            task_description: Text task context passed to the LLM graph.
+            num_candidates: Number of CRNs requested at each LLM generation
+                round.  Defaults to 10.
+            start_epoch: First epoch at which LLM proposals are allowed.
+            stop_epoch: Optional last epoch at which LLM proposals are allowed.
+            add_to_hall_of_fame: If True, valid LLM candidates are inserted into
+                the training Hall of Fame before SIL replay.
+            jsonl_path: Optional audit log for every evaluated LLM candidate.
+        """
+        if every <= 0:
+            raise ValueError("LLM graph cadence `every` must be positive.")
+        if num_candidates <= 0:
+            raise ValueError("LLM graph `num_candidates` must be positive.")
+        if not hasattr(graph, "run_round"):
+            raise ValueError("graph must expose a run_round(...) method.")
+
+        self._llm_loop = {
+            "graph": graph,
+            "every": int(every),
+            "task_description": str(task_description),
+            "num_candidates": int(num_candidates),
+            "start_epoch": int(start_epoch),
+            "stop_epoch": None if stop_epoch is None else int(stop_epoch),
+            "add_to_hall_of_fame": bool(add_to_hall_of_fame),
+            "jsonl_path": jsonl_path,
+            "history": [],
+        }
+
+    def forbidden_topology_summary(self, limit: int = 10) -> str:
+        """Return LLM-facing text describing archived forbidden topologies."""
+
+        archive = self._forbidden_topologies()
+        return archive.format_for_prompt(limit=limit)
+
+    def _forbidden_topologies(self) -> ForbiddenTopologyArchive:
+        archive = getattr(self.s, "forbidden_topologies", None)
+        if archive is None:
+            archive = ForbiddenTopologyArchive()
+            setattr(self.s, "forbidden_topologies", archive)
+        return archive
+
+    def _refresh_forbidden_topologies(self, epoch: int) -> int:
+        cfg = self.s.cfg.train
+        m = int(getattr(cfg, "forbidden_topology_m", 0) or 0)
+        if m <= 0:
+            return 0
+        every = max(1, int(getattr(cfg, "forbidden_topology_every", 1) or 1))
+        start = int(getattr(cfg, "forbidden_topology_start_epoch", 0) or 0)
+        if epoch < start or (epoch - start) % every != 0:
+            return 0
+        archive = self._forbidden_topologies()
+        added = self._archive_forbidden_from_hof(epoch=epoch, m=m)
+        total = len(archive)
+        if self.s.logger is not None and hasattr(self.s.logger, "log_metric"):
+            self.s.logger.log_metric("Forbidden Topologies/Added", added, step=epoch)
+            self.s.logger.log_metric("Forbidden Topologies/Total", total, step=epoch)
+        if added:
+            print(f"[epoch {epoch}] archived {added} forbidden topologies | total={total}")
+        return added
+
+    def _archive_forbidden_from_hof(self, *, epoch: int, m: int) -> int:
+        hof = self.s.mult_env.hall_of_fame
+        if hof is None or m <= 0:
+            return 0
+
+        cfg = self.s.cfg.train
+        archive = self._forbidden_topologies()
+        threshold = float(getattr(cfg, "forbidden_threshold", float("inf")))
+        use_ipopt = bool(getattr(cfg, "forbidden_optimize_with_ipopt", True))
+        added = 0
+
+        for rank, env in enumerate(hof):
+            if rank >= int(m):
+                break
+            info = getattr(env.state, "last_task_info", {}) or {}
+            original_loss = float(info.get("reward", float("inf")))
+            opt_attempted = False
+            opt_success = False
+            opt_message = "optimization disabled"
+            archive_state = env.state
+            archive_loss = original_loss
+
+            if use_ipopt:
+                result = optimize_crn_parameters_ipopt(
+                    env.state,
+                    self.s.task.compute_reward,
+                    maxiter=int(getattr(cfg, "forbidden_ipopt_maxiter", 100)),
+                    log_min=float(getattr(cfg, "forbidden_ipopt_log_min", -18.0)),
+                    log_max=float(getattr(cfg, "forbidden_ipopt_log_max", 6.0)),
+                )
+                opt_attempted = result.attempted
+                opt_success = result.success
+                opt_message = result.message
+                if result.success:
+                    archive_state = result.state
+                    archive_loss = float(result.loss)
+
+            should_store = bool(opt_success or archive_loss <= threshold)
+            if should_store:
+                inserted = archive.add_state(
+                    archive_state,
+                    loss=archive_loss,
+                    epoch=epoch,
+                    rank=rank,
+                    source="hall_of_fame_ipopt" if opt_attempted else "hall_of_fame",
+                    optimization_attempted=opt_attempted,
+                    optimization_success=opt_success,
+                    optimization_message=opt_message,
+                )
+                added += int(inserted)
+
+            self._log_forbidden_archive_decision(
+                epoch=epoch,
+                rank=rank,
+                original_loss=original_loss,
+                archive_loss=archive_loss,
+                threshold=threshold,
+                stored=should_store,
+                inserted=should_store and inserted if should_store else False,
+                optimization_attempted=opt_attempted,
+                optimization_success=opt_success,
+                optimization_message=opt_message,
+            )
+        return added
+
+    def _log_forbidden_archive_decision(
+        self,
+        *,
+        epoch: int,
+        rank: int,
+        original_loss: float,
+        archive_loss: float,
+        threshold: float,
+        stored: bool,
+        inserted: bool,
+        optimization_attempted: bool,
+        optimization_success: bool,
+        optimization_message: str,
+    ) -> None:
+        logger = self.s.logger
+        if logger is None:
+            return
+        prefix = "Forbidden Topologies"
+        if hasattr(logger, "log_metric"):
+            logger.log_metric(f"{prefix}/Candidate Original Loss", original_loss, step=epoch)
+            logger.log_metric(f"{prefix}/Candidate Archive Loss", archive_loss, step=epoch)
+            logger.log_metric(f"{prefix}/Threshold", threshold, step=epoch)
+            logger.log_metric(f"{prefix}/Optimization Attempted", int(optimization_attempted), step=epoch)
+            logger.log_metric(f"{prefix}/Optimization Success", int(optimization_success), step=epoch)
+            logger.log_metric(f"{prefix}/Stored", int(stored), step=epoch)
+            logger.log_metric(f"{prefix}/Inserted", int(inserted), step=epoch)
+        record = {
+            "epoch": epoch,
+            "rank": rank,
+            "original_loss": original_loss,
+            "archive_loss": archive_loss,
+            "threshold": threshold,
+            "stored": stored,
+            "inserted": inserted,
+            "optimization_attempted": optimization_attempted,
+            "optimization_success": optimization_success,
+            "optimization_message": optimization_message,
+        }
+        text = "Forbidden topology archive decision:\n" + pprint.pformat(record, width=100)
+        if hasattr(logger, "log_text"):
+            logger.log_text(text)
+        if hasattr(logger, "log_asset_data"):
+            logger.log_asset_data(
+                json.dumps(record, indent=2, sort_keys=True),
+                name=f"forbidden_topology_archive_epoch_{epoch}_rank_{rank}.json",
+                step=epoch,
+            )
+
+    def clear_llm_graph(self) -> None:
+        """Disable LLM proposal calls during subsequent training epochs."""
+        self._llm_loop = None
+
+    def _maybe_run_llm_graph(self, epoch: int) -> Optional[Any]:
+        settings = self._llm_loop
+        if not settings:
+            return None
+
+        start_epoch = int(settings["start_epoch"])
+        stop_epoch = settings["stop_epoch"]
+        every = int(settings["every"])
+        if epoch < start_epoch:
+            return None
+        if stop_epoch is not None and epoch > int(stop_epoch):
+            return None
+        if (epoch - start_epoch) % every != 0:
+            return None
+
+        hof = self.s.mult_env.hall_of_fame
+        if bool(settings["add_to_hall_of_fame"]) and hof is None:
+            raise ValueError(
+                "LLM proposals cannot be inserted because cfg.train.hall_of_fame_size <= 0."
+            )
+        if bool(settings["add_to_hall_of_fame"]) and not hasattr(hof, "add"):
+            raise ValueError("LLM proposals require a writable HallOfFame object with an add(...) method.")
+
+        graph = settings["graph"]
+        before = len(hof) if hof is not None else 0
+        try:
+            result = graph.run_round(
+                task_description=settings["task_description"],
+                forbidden_topologies_text=self.forbidden_topology_summary(),
+                num_candidates=int(settings["num_candidates"]),
+                hall_of_fame_iter=hof,
+                add_to_hall_of_fame=hof if bool(settings["add_to_hall_of_fame"]) else None,
+                jsonl_path=settings["jsonl_path"],
+                logger=self.s.logger,
+                step=epoch,
+            )
+        except Exception as exc:
+            message = f"LLM graph failed at epoch {epoch}: {exc}"
+            settings["history"].append(
+                {
+                    "epoch": epoch,
+                    "requested": int(settings["num_candidates"]),
+                    "valid": 0,
+                    "hof_size_before": before,
+                    "hof_size_after": before,
+                    "error": str(exc),
+                }
+            )
+            if self.s.logger is not None:
+                if hasattr(self.s.logger, "log_metric"):
+                    self.s.logger.log_metric("LLM/Triggered", 1, step=epoch)
+                    self.s.logger.log_metric("LLM/Failed", 1, step=epoch)
+                if hasattr(self.s.logger, "log_text"):
+                    self.s.logger.log_text(message)
+            print(f"[epoch {epoch}] {message}")
+            return None
+        after = len(hof) if hof is not None else 0
+        valid = sum(1 for ev in result.evaluations if ev.valid)
+
+        settings["history"].append(
+            {
+                "epoch": epoch,
+                "requested": int(settings["num_candidates"]),
+                "valid": valid,
+                "hof_size_before": before,
+                "hof_size_after": after,
+            }
+        )
+
+        if self.s.logger is not None and hasattr(self.s.logger, "log_metric"):
+            self.s.logger.log_metric("LLM/Triggered", 1, step=epoch)
+            self.s.logger.log_metric("LLM/Requested Count", int(settings["num_candidates"]), step=epoch)
+            self.s.logger.log_metric("LLM/Hall of Fame Size Before", before, step=epoch)
+            self.s.logger.log_metric("LLM/Hall of Fame Size After", after, step=epoch)
+
+        best = min(
+            (float(ev.loss) for ev in result.evaluations if ev.valid and ev.loss is not None),
+            default=float("nan"),
+        )
+        print(
+            f"[epoch {epoch}] LLM graph proposed {int(settings['num_candidates'])} CRNs | "
+            f"valid={valid} | best={best:.4g} | HoF {before}->{after}"
+        )
+        return result
+
+    def llm_graph_history(self) -> List[Dict[str, Any]]:
+        """Return summary records for LLM calls made during this trainer session."""
+        if not self._llm_loop:
+            return []
+        return list(self._llm_loop.get("history", []))
+
+    def _normalized_render_mode(self) -> Dict[str, Any]:
+        """Return render mode in the dictionary format expected by mult_env.render."""
+        mode = self.s.cfg.render.mode
+        if isinstance(mode, str):
+            return {"style": "logger", "task": mode, "format": "figure"}
+        if isinstance(mode, dict):
+            return mode
+        raise TypeError(
+            "cfg.render.mode must be either a task string like 'transients' "
+            "or a render-mode dictionary with keys such as style/task/format."
+        )
 
     def resimulate(
         self,
@@ -1312,9 +1633,22 @@ class Trainer:
         # IMPORTANT:
         # Passing a bound method (e.g. self._compute_loss) forces joblib to pickle `self`,
         # which drags in agent/policy and breaks multiprocessing serialization.
-        reward_fn = self.s.task.compute_reward
+        base_reward_fn = self.s.task.compute_reward
+        forbidden_signatures = self._forbidden_topologies().signature_set()
+        forbidden_loss = float(getattr(cfg.train, "forbidden_topology_loss", 1e9))
+        if forbidden_signatures:
+            reward_fn = partial(
+                reward_with_forbidden_topologies,
+                reward_fn=base_reward_fn,
+                forbidden_signatures=forbidden_signatures,
+                forbidden_loss=forbidden_loss,
+            )
+        else:
+            reward_fn = base_reward_fn
         rewards = mult_env.get_reward(reward_fn)
         self._log_loss_components(self.state.epoch)
+        self._refresh_forbidden_topologies(self.state.epoch)
+        self._maybe_run_llm_graph(self.state.epoch)
 
         agent.update(
             rewards,
@@ -1358,7 +1692,12 @@ class Trainer:
                 e = self.state.epoch - 1
                 if cfg.train.render_every and (e % cfg.train.render_every == 0):
                     print(f"[epoch {e}] best loss={best:.4g} | median loss={med:.4g}")
-                    self.s.mult_env.render(rewards, n_best=self.s.cfg.render.n_best, disregarded_percentage=self.s.cfg.render.disregarded_percentage, mode=self.s.cfg.render.mode)
+                    self.s.mult_env.render(
+                        rewards,
+                        n_best=self.s.cfg.render.n_best,
+                        disregarded_percentage=self.s.cfg.render.disregarded_percentage,
+                        mode=self._normalized_render_mode(),
+                    )
                 _maybe_save(e)
 
         except KeyboardInterrupt:

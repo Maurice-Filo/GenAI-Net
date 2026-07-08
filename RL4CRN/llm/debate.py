@@ -55,10 +55,12 @@ class LLMCRNDebate:
         memory: Optional[LLMMemory] = None,
         generation_config: Optional[LLMGenerationConfig] = None,
         require_full_budget: bool = True,
+        require_unique_reactions: bool = True,
     ) -> "LLMCRNDebate":
         evaluator = LLMCandidateEvaluator.from_session(
             session,
             require_full_budget=require_full_budget,
+            require_unique_reactions=require_unique_reactions,
         )
         return cls(
             client=client,

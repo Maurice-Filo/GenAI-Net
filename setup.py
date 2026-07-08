@@ -44,6 +44,7 @@ setuptools.setup(
             'stochasticSimulations @ git+https://github.com/redsnic/stochasticApproaches.git',
         ],
         "vertexai": [
+            "google-genai",
             "google-cloud-aiplatform",
         ],
     },

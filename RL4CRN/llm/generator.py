@@ -15,7 +15,7 @@ from RL4CRN.llm.schemas import (
     LLMGenerationConfig,
     parse_candidates_payload,
 )
-from RL4CRN.llm.vertex_client import VertexLLMClient
+from RL4CRN.llm.vertex_client import DEFAULT_GEMINI_MODEL, VertexLLMClient
 
 
 @dataclass(frozen=True)
@@ -56,12 +56,14 @@ class LLMCRNGenerator:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         generation_config: Optional[LLMGenerationConfig] = None,
         require_full_budget: bool = True,
+        require_unique_reactions: bool = True,
     ) -> "LLMCRNGenerator":
         """Build a generator from a configured RL4CRN session."""
 
         evaluator = LLMCandidateEvaluator.from_session(
             session,
             require_full_budget=require_full_budget,
+            require_unique_reactions=require_unique_reactions,
         )
         return cls(
             client=client,
@@ -75,7 +77,7 @@ class LLMCRNGenerator:
         self,
         *,
         task_description: str,
-        num_candidates: int = 5,
+        num_candidates: int = 10,
         hall_of_fame_iter: Optional[Iterable[Any]] = None,
         add_to_hall_of_fame: Optional[Any] = None,
         jsonl_path: Optional[str | Path] = None,
@@ -120,7 +122,7 @@ class VertexCRNGenerator(LLMCRNGenerator):
         project_id: str,
         evaluator: LLMCandidateEvaluator,
         location: str = "europe-west1",
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = DEFAULT_GEMINI_MODEL,
         memory: Optional[LLMMemory] = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         generation_config: Optional[LLMGenerationConfig] = None,
@@ -145,15 +147,17 @@ class VertexCRNGenerator(LLMCRNGenerator):
         project_id: str,
         session: Any,
         location: str = "europe-west1",
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = DEFAULT_GEMINI_MODEL,
         memory: Optional[LLMMemory] = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         generation_config: Optional[LLMGenerationConfig] = None,
         require_full_budget: bool = True,
+        require_unique_reactions: bool = True,
     ) -> "VertexCRNGenerator":
         evaluator = LLMCandidateEvaluator.from_session(
             session,
             require_full_budget=require_full_budget,
+            require_unique_reactions=require_unique_reactions,
         )
         return cls(
             project_id=project_id,

@@ -50,6 +50,7 @@ def build_candidate_generation_prompt(
     hall_of_fame_iter: Optional[Iterable[Any]] = None,
     feedback_text: str = "",
     llm_best_text: str = "",
+    forbidden_topologies_text: str = "",
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     hall_of_fame_limit: int = 5,
 ) -> str:
@@ -59,6 +60,7 @@ def build_candidate_generation_prompt(
     library_text = format_reaction_library(reaction_library)
     feedback_text = feedback_text or "No recent LLM feedback is available."
     llm_best_text = llm_best_text or "No prior LLM-generated best candidates are available."
+    forbidden_topologies_text = forbidden_topologies_text or "No forbidden topologies have been archived yet."
 
     return f"""{system_prompt}
 
@@ -67,6 +69,7 @@ def build_candidate_generation_prompt(
 
 === Reaction Budget ===
 Use exactly {max_added_reactions} added reactions for each candidate.
+Do not repeat a reaction ID within the same candidate.
 
 === Recent LLM Feedback ===
 {feedback_text}
@@ -77,16 +80,22 @@ Use exactly {max_added_reactions} added reactions for each candidate.
 === RL Hall of Fame ===
 {hof_text}
 
+=== Forbidden Already-Evaluated Topologies ===
+The following topologies were already evaluated, archived, and are no longer
+admissible for this search. Do not propose candidates with the same reaction-ID
+set, even with different parameters.
+{forbidden_topologies_text}
+
 === Available Reaction Library ===
 Select reactions only by the IDs listed here.
 {library_text}
 
 === Output Contract ===
-Generate {num_candidates} new, distinct candidates.  Return one JSON object:
+Generate {num_candidates} new, distinct candidates. Return only one JSON
+object, with no markdown fences, no comments, and no text before or after it:
 {{
   "candidates": [
     {{
-      "reasoning": "brief mechanistic rationale",
       "reaction_ids": [0, 3, 5],
       "parameter_values": [[1.0], [0.5, 2.0], [0.1]]
     }}
@@ -94,4 +103,5 @@ Generate {num_candidates} new, distinct candidates.  Return one JSON object:
 }}
 
 Each entry in "parameter_values" must be the full parameter vector for the
-corresponding reaction ID.  Use positive finite numerical parameters."""
+corresponding reaction ID. Use positive finite numerical parameters. The number
+of reaction IDs must exactly match the number of parameter vectors."""
