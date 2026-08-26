@@ -584,6 +584,55 @@ class Environment():
                     except ValueError:
                         pass
 
+            case {'style': 'logger', 'task': 'habituation_hallmarks_custom'}:
+                if self.logger is not None:
+                    from apps.habituation.hallmarks_helpers import (
+                        render_habituation,
+                        render_hallmark_loss_summary,
+                    )
+
+                    figure_prefix = mode.get("figure_prefix", "Custom Habituation")
+                    reward = self.state.last_task_info.get("reward")
+                    self.logger.log_text(f"CRN {ID}, Reward: {reward} \n" + str(self.state))
+                    try:
+                        fig, _ = render_habituation(
+                            self.state,
+                            figsize=mode.get("figsize", None),
+                        )
+                        fig.suptitle(f"CRN {ID} {figure_prefix} Hallmarks, Reward: {reward}")
+                        if mode["format"] == "figure":
+                            self.logger.log_figure(figure_name=f"CRN {ID} {figure_prefix} Hallmarks", figure=fig)
+                        elif mode["format"] == "image":
+                            buf = BytesIO()
+                            fig.savefig(buf, format="png")
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f"CRN {ID} {figure_prefix} Hallmarks")
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                    except ValueError:
+                        pass
+                    try:
+                        fig_loss, _ = render_hallmark_loss_summary(
+                            self.state,
+                            figsize=mode.get("loss_figsize", (9, 4)),
+                        )
+                        fig_loss.suptitle(f"CRN {ID} {figure_prefix} Losses, Reward: {reward}")
+                        if mode["format"] == "figure":
+                            self.logger.log_figure(figure_name=f"CRN {ID} {figure_prefix} Losses", figure=fig_loss)
+                        elif mode["format"] == "image":
+                            buf = BytesIO()
+                            fig_loss.savefig(buf, format="png")
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f"CRN {ID} {figure_prefix} Losses")
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig_loss)
+                    except ValueError:
+                        pass
+
             case {'style': 'logger', 'task': 'data_fit'}:
                 if self.logger is not None:
                     self.logger.log_text(

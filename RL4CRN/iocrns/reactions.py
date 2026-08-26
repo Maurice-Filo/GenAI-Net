@@ -13,6 +13,9 @@ This module defines the core reaction objects used throughout the package:
 
 - `HillProduction` implements regulated production from the empty complex
   using Hill-type activation/repression.
+  
+- `CatalyticMichaelisMenten` implements enzyme-catalyzed conversion between
+  two species with a saturating Michaelis-Menten rate.
 
 Reactions are designed to be:
 
@@ -886,4 +889,105 @@ class ActiveDegradation(Reaction):
     
         return f"{reactants_str} ----> {products_str};  [ActiveDeg({params_str})]"
 
+
+class CatalyticMichaelisMenten(Reaction):
+    r"""Enzyme-catalyzed conversion with a saturating Michaelis-Menten rate.
+
+    This reaction converts one substrate species into one product species while
+    leaving the catalyst unchanged:
+
+    $$
+        S \xrightarrow{E} P,\qquad
+        a(x) = k E \frac{S}{K + S}.
+    $$
+
+    The catalyst participates in the propensity but has zero stoichiometry. This
+    is useful for coarse-grained modification/demodification cycles where the
+    enzyme-substrate complex is not represented explicitly.
+    """
+
+    def __init__(
+        self,
+        substrate_label,
+        product_label,
+        catalyst_label,
+        input_channels=[None, None],
+        params=[None, None],
+        params_controllability=[True, True],
+    ):
+        assert len(substrate_label) == 1, "CatalyticMichaelisMenten requires one substrate label."
+        assert len(product_label) == 1, "CatalyticMichaelisMenten requires one product label."
+        assert len(catalyst_label) == 1, "CatalyticMichaelisMenten requires one catalyst label."
+        assert len(params) == 2, "CatalyticMichaelisMenten requires parameters [k, K]."
+
+        self.substrate_label = list(substrate_label)
+        self.product_label = list(product_label)
+        self.catalyst_label = list(catalyst_label)
+        super().__init__(
+            self.substrate_label,
+            self.product_label,
+            input_channels,
+            params,
+            params_controllability,
+        )
+
+        self.signature = str(
+            ("CatalyticMM", self.substrate_label, self.product_label, self.catalyst_label)
+        )
+        self.maximal_rate = self.params[0]
+        self.michaelis_constant = self.params[1]
+        self.num_continuous_parameters = 2
+        self.num_discrete_parameters = 0
+        self.num_unknown_params = self.get_num_unknown_params()
+
+    def set_parameters(self, params):
+        assert len(params) == 2, "CatalyticMichaelisMenten requires parameters [k, K]."
+        self.maximal_rate = params[0]
+        self.michaelis_constant = params[1]
+        self.params = params
+
+    def get_involved_species(self):
+        species = list(
+            set(self.substrate_label + self.product_label + self.catalyst_label)
+        )
+        species.sort()
+        return species
+
+    def get_involved_inputs(self):
+        return self.input_labels
+
+    def get_stoichiometry_dict(self):
+        return {
+            self.substrate_label[0]: -1,
+            self.product_label[0]: 1,
+        }
+
+    def set_crn_context(self, crn):
+        super().set_crn_context(crn)
+        self.substrate_idx = crn.species_label_to_idx(self.substrate_label)[0]
+        self.product_idx = crn.species_label_to_idx(self.product_label)[0]
+        self.catalyst_idx = crn.species_label_to_idx(self.catalyst_label)[0]
+        self.input_idx = crn.input_label_to_idx(self.input_channels)
+
+    def propensity(self, x, u):
+        rate_input = u[self.input_idx[0]] if self.input_idx[0] is not None else 1.0
+        km_input = u[self.input_idx[1]] if self.input_idx[1] is not None else 1.0
+        substrate = x[self.substrate_idx]
+        catalyst = x[self.catalyst_idx]
+        return (
+            self.maximal_rate
+            * rate_input
+            * catalyst
+            * substrate
+            / (self.michaelis_constant * km_input + substrate)
+        )
+
+    def __str__(self):
+        substrate = self.substrate_label[0]
+        product = self.product_label[0]
+        catalyst = self.catalyst_label[0]
+        return (
+            f"{substrate} ----> {product};  "
+            f"[CatalyticMM(E={catalyst}, k={self.maximal_rate}, K={self.michaelis_constant})]"
+        )
 

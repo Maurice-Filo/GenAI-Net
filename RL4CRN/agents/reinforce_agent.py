@@ -393,7 +393,11 @@ class REINFORCEAgent(AbstractAgent):
         # Add self-imitation learning loss if specified
         sil_loss = None
         if use_sil:
+            tic_sil = time.time()
             sil_loss = self.self_imitation_learingin_loss(hof, final_loss_for_each_sample, top_k, weighting_scheme=sil_weighting_scheme, observer=observer, tensorizer=tensorizer, stepper=stepper, sil_batch_size=sil_batch_size)
+            toc_sil = time.time()
+            if self.logger is not None:
+                self.logger.log_metric('Timing: SIL', toc_sil - tic_sil, step=step_iteration)
             loss_for_gradient_entropy_mean += sil_loss*self.sil_settings['sil_loss_weight']
 
         if not torch.isfinite(loss_for_gradient_entropy_mean):

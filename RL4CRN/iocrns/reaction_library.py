@@ -19,7 +19,7 @@ The library is designed to be used in:
 - policies that need fixed-size parameter layouts.
 """
 
-from RL4CRN.iocrns.reactions import ActiveDegradation, Reaction, MassAction, HillProduction
+from RL4CRN.iocrns.reactions import ActiveDegradation, Reaction, MassAction, HillProduction, CatalyticMichaelisMenten
 from itertools import combinations_with_replacement, combinations, product, accumulate
 import numpy as np
 from RL4CRN.utils.utils import cartesian_prod
@@ -641,3 +641,64 @@ def construct_active_degradation_library(species_labels):
 
     return reaction_library
 
+
+def construct_catalytic_michaelis_mentin_library(species_labels):
+    r"""Construct a library of catalytic Michaelis-Menten conversion reactions.
+
+    Generates reactions of the form:
+
+    $$S \xrightarrow{E} P,$$
+
+    with propensity
+
+    $$a(x) = k E \frac{S}{K + S},$$
+
+    where `S` is the substrate, `P` is the product, and `E` is a catalyst that
+    affects the rate but has zero stoichiometric change. The generated library
+    uses ordered substrate-product pairs and a distinct catalyst species.
+
+    Args:
+        species_labels: List of species labels usable as substrates, products,
+            and catalysts.
+
+    Returns:
+        A `ReactionLibrary` populated with `CatalyticMichaelisMenten`
+        reactions.
+
+    Notes:
+        This constructor uses a parameter layout consistent with
+        `CatalyticMichaelisMenten`:
+
+        - parameter vector length: `2`
+        - parameters are initialized to `None`
+        - all parameters are marked controllable (`params_controllability=True`)
+
+        A rough count of generated reactions is:
+
+        $$n \cdot (n-1) \cdot (n-2),$$
+
+        where `n = len(species_labels)`.
+    """
+
+    reaction_library = ReactionLibrary()
+
+    for substrate in species_labels:
+        for product_label in species_labels:
+            if product_label == substrate:
+                continue
+            for catalyst in species_labels:
+                if catalyst in (substrate, product_label):
+                    continue
+                reaction = CatalyticMichaelisMenten(
+                    substrate_label=[substrate],
+                    product_label=[product_label],
+                    catalyst_label=[catalyst],
+                    input_channels=[None, None],
+                    params=[None, None],
+                    params_controllability=[True, True],
+                )
+                reaction_library.add_reactions(reaction)
+
+    reaction_library.prepare_lookup_tables()
+
+    return reaction_library

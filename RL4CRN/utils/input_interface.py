@@ -22,6 +22,7 @@ from itertools import product
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import copy
 import os
+import time
 
 import cloudpickle
 import numpy as np
@@ -1303,11 +1304,22 @@ class Trainer:
         cfg = self.s.cfg
 
         mult_env.reset()
-
+        obs_time = 0.0
+        act_time = 0.0
         for _ in range(cfg.train.max_added_reactions):
+            tic_observe = time.time()
             obs = mult_env.observe(self.s.observer, self.s.tensorizer)
+            toc_observe = time.time()
+            obs_time += toc_observe - tic_observe
+            tic_actuator = time.time()
             actions, raw_actions = agent.act(obs, self.s.actuator)
             mult_env.step(actions, self.s.stepper, raw_actions=raw_actions)
+            toc_actuator = time.time()
+            act_time += toc_actuator - tic_actuator
+
+        if self.s.logger is not None:
+            self.s.logger.log_metric("Timing: Observe", obs_time, step=self.state.epoch)
+            self.s.logger.log_metric("Timing: Actuator", act_time, step=self.state.epoch)
 
         # IMPORTANT:
         # Passing a bound method (e.g. self._compute_loss) forces joblib to pickle `self`,

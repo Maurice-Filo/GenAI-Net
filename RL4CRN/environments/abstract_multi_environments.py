@@ -175,7 +175,9 @@ class AbstractMultiEnvironments:
         if mode['style'] == 'logger':
             if self.logger is not None:
                 # Collect the top_k environments (indices) based on the rewards
-                top_k = torch.topk(torch.tensor(rewards), int(len(rewards) * (1.-disregarded_percentage)), largest=False).indices
+                k_top = max(1, int(len(rewards) * (1. - disregarded_percentage)))
+                k_top = min(k_top, len(rewards))
+                top_k = torch.topk(torch.tensor(rewards), k_top, largest=False).indices
                 self.rendering_iteration += 1
 
                 # Render the n_best environments
@@ -204,7 +206,7 @@ class AbstractMultiEnvironments:
                         plt.close(fig_graph)
 
                 # Render the IOCRN diversity graph
-                if mode.get('topology', True):
+                if mode.get('topology', True) and len(top_k) > 0:
                     iocrn_list = []
                     for idx in top_k:
                         iocrn_list.append(self.envs[idx].state)
@@ -619,6 +621,74 @@ class AbstractMultiEnvironments:
                                 self.logger.log_image(buf, name=f'Best CRN {figure_prefix} {group_name} {self.rendering_iteration}')
                                 buf.close()
                             plt.close(fig_group)
+
+                    case {'style': 'logger', 'task': 'habituation_hallmarks_custom'}:
+                        from apps.habituation.hallmarks_helpers import (
+                            render_habituation,
+                            render_hallmark_loss_summary,
+                        )
+
+                        figure_prefix = mode.get("figure_prefix", "Custom Habituation")
+                        best_env = self.envs[top_k[0]]
+                        reward = best_env.state.last_task_info.get("reward")
+                        self.logger.log_text(
+                            f"Best CRN {figure_prefix} {self.rendering_iteration}, Reward: {reward}\n"
+                            + str(best_env.state)
+                        )
+                        try:
+                            fig, _ = render_habituation(
+                                best_env.state,
+                                figsize=mode.get("figsize", None),
+                            )
+                            fig.suptitle(f"Best CRN {figure_prefix} Hallmarks {self.rendering_iteration}, Reward: {reward}")
+
+                            if mode["format"] == "figure":
+                                self.logger.log_figure(
+                                    figure_name=f"Best CRN {figure_prefix} Hallmarks {self.rendering_iteration}",
+                                    figure=fig,
+                                )
+                            elif mode["format"] == "image":
+                                buf = BytesIO()
+                                fig.savefig(buf, format="png")
+                                buf.seek(0)
+                                self.logger.log_image(
+                                    buf,
+                                    name=f"Best CRN {figure_prefix} Hallmarks {self.rendering_iteration}",
+                                )
+                                buf.close()
+                            else:
+                                raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                            plt.close(fig)
+                        except ValueError:
+                            pass
+                        try:
+                            fig_loss, _ = render_hallmark_loss_summary(
+                                best_env.state,
+                                figsize=mode.get("loss_figsize", (9, 4)),
+                            )
+                            fig_loss.suptitle(
+                                f"Best CRN {figure_prefix} Losses {self.rendering_iteration}, Reward: {reward}"
+                            )
+
+                            if mode["format"] == "figure":
+                                self.logger.log_figure(
+                                    figure_name=f"Best CRN {figure_prefix} Losses {self.rendering_iteration}",
+                                    figure=fig_loss,
+                                )
+                            elif mode["format"] == "image":
+                                buf = BytesIO()
+                                fig_loss.savefig(buf, format="png")
+                                buf.seek(0)
+                                self.logger.log_image(
+                                    buf,
+                                    name=f"Best CRN {figure_prefix} Losses {self.rendering_iteration}",
+                                )
+                                buf.close()
+                            else:
+                                raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                            plt.close(fig_loss)
+                        except ValueError:
+                            pass
 
                     case {'style': 'logger', 'task': 'data_fit'}:
                         n_examples = mode.get("n_examples", 6)

@@ -468,7 +468,7 @@ class IOCRN:
             for i in range(num_doses):
                 u = np.concatenate(([u_dose[i]], u_e))
                 x[:,i] = fsolve(lambda x, u: self.rate_function(0, x, u), x_0, args=(u,))
-                y[:,i] = x[self.num_outputs - 1, i] 
+                y[:,i] = x[self.output_idx, i] 
                 x_0 = x[:,i]  
             # Append the states and outputs to the lists
             x_list.append(x) 
@@ -2704,7 +2704,7 @@ class IOCRN:
 
         t0 = float(time_horizon[0])
         tf = float(time_horizon[-1])
-        x0 = np.asarray(x0, dtype=float)
+        x0 = np.asarray(x0, dtype=float).copy()
         time_horizon = np.asarray(time_horizon, dtype=float)
 
         rhsfn = _make_rhs(self.rate_function, u)
@@ -2722,6 +2722,18 @@ class IOCRN:
         # CVODE inequality constraints y[i] >= 0
         if nonneg_idx is not None and len(nonneg_idx) > 0:
             nonneg_idx = np.asarray(nonneg_idx, dtype=int)
+            # Piecewise solves pass the previous segment endpoint as the next
+            # initial state. A species that has decayed to zero can land at a
+            # tiny negative roundoff value, which CVODE rejects before taking a
+            # step. Treat only tolerance-scale negatives as physical zeros.
+            nonnegative_ic_tol = max(10.0 * float(self.atol), 1e-12)
+            constrained_x0 = x0[nonneg_idx]
+            small_negative = (
+                (constrained_x0 < 0.0)
+                & (constrained_x0 >= -nonnegative_ic_tol)
+            )
+            if np.any(small_negative):
+                x0[nonneg_idx[small_negative]] = 0.0
             options["constraints_idx"] = nonneg_idx
             options["constraints_type"] = np.ones_like(nonneg_idx, dtype=int)  # 1 → y[i] >= 0 :contentReference[oaicite:1]{index=1}
 

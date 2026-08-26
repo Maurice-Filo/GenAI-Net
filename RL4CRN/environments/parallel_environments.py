@@ -74,6 +74,10 @@ class ParallelEnvironments(AbstractMultiEnvironments):
             
         # update hall of fame 
         if self.hall_of_fame is not None:
+            tic_hof = time.time()
             self.hall_of_fame.add_all(self.envs)
+            toc_hof = time.time()
+            if self.logger is not None:
+                self.logger.log_metric('Timing: Hall of Fame Update', toc_hof - tic_hof)
 
         return rewards_list

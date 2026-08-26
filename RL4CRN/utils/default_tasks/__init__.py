@@ -1,2 +1,3 @@
 from RL4CRN.utils.default_tasks.RNEOscillatorTraceTaskKind import RNEOscillatorTraceTaskKind
 from RL4CRN.utils.default_tasks.HabituationTaskKind import HabituationHallmarksMMC2TaskKind
+from RL4CRN.utils.default_tasks.HabituationHallmarksTaskKind import HabituationHallmarksCustomTaskKind
