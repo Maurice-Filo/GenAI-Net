@@ -30,6 +30,106 @@ from RL4CRN.utils.visualizations import plot_truth_table
 import numpy as np
 from copy import deepcopy
 
+
+def _active_learning_step_trace(events, horizon, input_idx):
+    """Reconstruct one event-style input trace for plotting."""
+    times = [0.0]
+    values = [0.0]
+    for t, pair in events:
+        t = float(t)
+        if t < 0.0 or t > horizon:
+            continue
+        values_pair = np.asarray(pair, dtype=float).reshape(-1)
+        times.append(t)
+        values.append(float(values_pair[input_idx]))
+    times.append(float(horizon))
+    values.append(values[-1])
+    return times, values
+
+
+def _plot_active_learning_representatives(state):
+    """Plot one correlated and one uncorrelated active-learning protocol."""
+    runs = state.last_task_info.get("active_learning_runs", [])
+    correlated_run = next((run for run in runs if run.get("correlated") is True), None)
+    uncorrelated_run = next((run for run in runs if run.get("correlated") is False), None)
+    if correlated_run is None or uncorrelated_run is None:
+        raise ValueError("No active-learning representative runs available.")
+
+    horizon = float(state.last_task_info.get("horizon", 0.0))
+    fig, axes = plt.subplots(2, 2, figsize=(11, 5), sharex="col")
+    representatives = [
+        ("correlated: target O(t) = S(t)", correlated_run),
+        ("uncorrelated: target O(t) = 0", uncorrelated_run),
+    ]
+
+    for col, (title, run) in enumerate(representatives):
+        ax_input = axes[0, col]
+        ax_output = axes[1, col]
+
+        cs_t, cs_y = _active_learning_step_trace(run["events"], horizon, input_idx=0)
+        s_t, s_y = _active_learning_step_trace(run["events"], horizon, input_idx=1)
+        ax_input.step(cs_t, cs_y, where="post", label="CS")
+        ax_input.step(s_t, s_y, where="post", label="S")
+        ax_input.set_title(title)
+        ax_input.set_ylabel("input")
+        ax_input.legend(loc="upper right")
+
+        time = np.asarray(run["time"], dtype=float)
+        output = np.asarray(run["outputs"][0][0], dtype=float)
+        target = np.asarray(run["target_trace"], dtype=float)
+        ax_output.plot(time, output, linewidth=2, label="O")
+        ax_output.plot(time, target, linestyle=":", linewidth=2, label="target")
+        ax_output.set_xlabel("time")
+        ax_output.set_ylabel("output")
+        ax_output.legend(loc="upper right")
+
+    return fig, axes
+
+
+def _plot_active_learning_conditioning_representative(state):
+    """Plot the representative pre/post tests for active-learning conditioning."""
+    runs = state.last_task_info.get("active_learning_conditioning_runs", [])
+    if not runs:
+        raise ValueError("No active-learning conditioning representative runs available.")
+
+    run = runs[0]
+    horizon = float(state.last_task_info.get("test_horizon", 0.0))
+    representatives = [
+        ("pre correlated: target O(t) = 0", run["pre_correlated"], "zero"),
+        ("pre uncorrelated: target O(t) = 0", run["pre_uncorrelated"], "zero"),
+        ("after correlated conditioning: target O(t) = S(t)", run["post_after_correlated_conditioning"], "s"),
+        ("after uncorrelated conditioning: target O(t) = 0", run["post_after_uncorrelated_conditioning"], "zero"),
+    ]
+
+    fig, axes = plt.subplots(2, 4, figsize=(16, 5), sharex="col")
+    for col, (title, protocol_run, target_kind) in enumerate(representatives):
+        ax_input = axes[0, col]
+        ax_output = axes[1, col]
+
+        cs_t, cs_y = _active_learning_step_trace(protocol_run["events"], horizon, input_idx=0)
+        s_t, s_y = _active_learning_step_trace(protocol_run["events"], horizon, input_idx=1)
+        ax_input.step(cs_t, cs_y, where="post", label="CS")
+        ax_input.step(s_t, s_y, where="post", label="S")
+        ax_input.set_title(title)
+        ax_input.set_ylabel("input")
+        ax_input.legend(loc="upper right")
+
+        time = np.asarray(protocol_run["time"], dtype=float)
+        output = np.asarray(protocol_run["output_trace"], dtype=float)
+        if target_kind == "s":
+            target = np.asarray(protocol_run["s_trace"], dtype=float)
+        else:
+            target = np.zeros_like(output)
+
+        ax_output.plot(time, output, linewidth=2, label="O")
+        ax_output.plot(time, target, linestyle=":", linewidth=2, label="target")
+        ax_output.set_xlabel("time")
+        ax_output.set_ylabel("output")
+        ax_output.legend(loc="upper right")
+
+    return fig, axes
+
+
 class Environment():
     """Gym-like CRN environment based on adding reactions to a template.
 
@@ -205,11 +305,13 @@ class Environment():
                 - `task`: Diagnostic task. Supported values in this implementation
                   include `'transients'`, `'phase_plot'`, `'rank'`,
                   `'transients + dose-response'`, `'transients + frequency content'`,
-                  `'transients + logic'`, `'SSA_transients'`.
+                  `'transients + logic'`, `'SSA_transients'`, `'active_learning'`,
+                  `'active_learning_conditioning'`.
                 - `format`: `'figure'` to log matplotlib figures directly, or
                   `'image'` to log PNG buffers.
                 Some tasks also consume optional keys such as `t0`, `bounds_freq`,
-                or `scale`.
+                or `scale`. The piecewise transient plot is available as either
+                `'habituation'` or `'transient_response_piecewise'`.
             ID: Optional identifier used when naming logged artifacts.
 
         Returns:
@@ -456,20 +558,63 @@ class Environment():
                     except ValueError:
                         pass
 
-            case {'style': 'logger', 'task': 'habituation'}:
+            case {'style': 'logger', 'task': 'active_learning'}:
                 if self.logger is not None:
                     self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
                     try:
-                        fig, _ = self.state.plot_transient_response_piecewise()
+                        fig, _ = _plot_active_learning_representatives(self.state)
                         fig.tight_layout(rect=[0, 0, 1, 0.95])
-                        fig.suptitle(f"CRN {ID} Habituation Response, Reward: {self.state.last_task_info['reward']}")
+                        fig.suptitle(f"CRN {ID} Active Learning, Reward: {self.state.last_task_info['reward']}")
                         if mode['format'] == 'figure':
-                            self.logger.log_figure(figure_name=f"CRN {ID} Habituation", figure=fig)
+                            self.logger.log_figure(figure_name=f"CRN {ID} Active Learning", figure=fig)
                         elif mode['format'] == 'image':
                             buf = BytesIO()
                             fig.savefig(buf, format='png')
                             buf.seek(0)
-                            self.logger.log_image(buf, name=f'CRN {ID} Habituation')
+                            self.logger.log_image(buf, name=f'CRN {ID} Active Learning')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                    except ValueError:
+                        pass
+
+            case {'style': 'logger', 'task': 'active_learning_conditioning'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        fig, _ = _plot_active_learning_conditioning_representative(self.state)
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID} Active Learning Conditioning, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} Active Learning Conditioning", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} Active Learning Conditioning')
+                            buf.close()
+                        else:
+                            raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                        plt.close(fig)
+                    except ValueError:
+                        pass
+
+            case {'style': 'logger', 'task': 'habituation' | 'transient_response_piecewise'}:
+                if self.logger is not None:
+                    self.logger.log_text(f"CRN {ID}, Reward: {self.state.last_task_info['reward']} \n" + str(self.state))
+                    try:
+                        plot_label = "Habituation" if mode['task'] == 'habituation' else "Piecewise Transients"
+                        fig, _ = self.state.plot_transient_response_piecewise()
+                        fig.tight_layout(rect=[0, 0, 1, 0.95])
+                        fig.suptitle(f"CRN {ID} {plot_label}, Reward: {self.state.last_task_info['reward']}")
+                        if mode['format'] == 'figure':
+                            self.logger.log_figure(figure_name=f"CRN {ID} {plot_label}", figure=fig)
+                        elif mode['format'] == 'image':
+                            buf = BytesIO()
+                            fig.savefig(buf, format='png')
+                            buf.seek(0)
+                            self.logger.log_image(buf, name=f'CRN {ID} {plot_label}')
                             buf.close()
                         else:
                             raise Exception(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")

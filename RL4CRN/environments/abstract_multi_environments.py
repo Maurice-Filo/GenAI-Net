@@ -27,7 +27,11 @@ import torch
 import matplotlib.pyplot as plt
 from io import BytesIO
 import numpy as np
-from RL4CRN.environments.environment import Environment
+from RL4CRN.environments.environment import (
+    Environment,
+    _plot_active_learning_conditioning_representative,
+    _plot_active_learning_representatives,
+)
 from RL4CRN.utils.visualizations import topology_graph
 from RL4CRN.utils.visualizations import plot_truth_table
 from RL4CRN.utils.hall_of_fame import HallOfFame
@@ -156,7 +160,8 @@ class AbstractMultiEnvironments:
                   method include (depending on code paths):
                   `'transients'`, `'transients + dose-response'`, `'phase_plot'`,
                   `'rank'`, `'transients + frequency content'`, `'transients + logic'`,
-                  `'SSA_transients'`.
+                  `'SSA_transients'`, `'active_learning'`,
+                  `'active_learning_conditioning'`.
                 - `format`: `'figure'` to log matplotlib figures directly, or `'image'`
                   to log PNG buffers.
                 Additional optional keys may be used by specific tasks:
@@ -174,8 +179,12 @@ class AbstractMultiEnvironments:
         tic_step = time.time()
         if mode['style'] == 'logger':
             if self.logger is not None:
-                # Collect the top_k environments (indices) based on the rewards
-                top_k = torch.topk(torch.tensor(rewards), int(len(rewards) * (1.-disregarded_percentage)), largest=False).indices
+                # Collect the top_k environments (indices) based on the rewards.
+                # Keep at least one candidate so representative text/images are
+                # still logged for small batches or aggressive discard settings.
+                k = max(1, int(len(rewards) * (1.-disregarded_percentage)))
+                k = min(k, len(rewards))
+                top_k = torch.topk(torch.tensor(rewards), k, largest=False).indices.tolist()
                 self.rendering_iteration += 1
 
                 # Render the n_best environments
@@ -188,12 +197,13 @@ class AbstractMultiEnvironments:
                         env.render(mode=mode, ID = f'hof_{i}')
                     
                     hof_iocrn_list = [env.state for env in self.hall_of_fame]
-                    fig_graph = topology_graph(hof_iocrn_list, t=5, figsize = (10,10))
-                    buf = BytesIO()
-                    fig_graph.savefig(buf, format='png')
-                    buf.seek(0)
-                    self.logger.log_image(buf, name=f'HOF Diversity Graph {self.rendering_iteration}')
-                    buf.close()
+                    if mode.get('topology', True) and hof_iocrn_list:
+                        fig_graph = topology_graph(hof_iocrn_list, t=5, figsize = (10,10))
+                        buf = BytesIO()
+                        fig_graph.savefig(buf, format='png')
+                        buf.seek(0)
+                        self.logger.log_image(buf, name=f'HOF Diversity Graph {self.rendering_iteration}')
+                        buf.close()
 
                 # Render the IOCRN diversity graph
                 if mode.get('topology', True):
@@ -509,7 +519,78 @@ class AbstractMultiEnvironments:
                             raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
                         plt.close(fig)
 
-                    case {'style': 'logger', 'task': 'habituation'}:
+                    case {'style': 'logger', 'task': 'active_learning'}:
+                        if len(top_k) > 0:
+                            best_idx = top_k[0]
+                            best_state = self.envs[best_idx].state
+                            reward = best_state.last_task_info.get('reward', None)
+                            self.logger.log_text(
+                                f"CRN Distribution {self.rendering_iteration} Active Learning Representative, "
+                                f"Reward: {reward}\n" + str(best_state)
+                            )
+                            fig, _ = _plot_active_learning_representatives(best_state)
+                            fig.tight_layout(rect=[0, 0, 1, 0.95])
+                            fig.suptitle(
+                                f"CRN Distribution {self.rendering_iteration} Active Learning "
+                                f"(best representative, reward={reward})"
+                            )
+                            if mode['format'] == 'figure':
+                                self.logger.log_figure(
+                                    figure_name=f'CRN Distribution {self.rendering_iteration} Active Learning',
+                                    figure=fig,
+                                )
+                            elif mode['format'] == 'image':
+                                buf = BytesIO()
+                                fig.savefig(buf, format='png')
+                                buf.seek(0)
+                                self.logger.log_image(
+                                    buf,
+                                    name=f'CRN Distribution {self.rendering_iteration} Active Learning',
+                                )
+                                buf.close()
+                            else:
+                                raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                            plt.close(fig)
+
+                    case {'style': 'logger', 'task': 'active_learning_conditioning'}:
+                        if len(top_k) > 0:
+                            best_idx = top_k[0]
+                            best_state = self.envs[best_idx].state
+                            reward = best_state.last_task_info.get('reward', None)
+                            self.logger.log_text(
+                                f"CRN Distribution {self.rendering_iteration} Active Learning Conditioning Representative, "
+                                f"Reward: {reward}\n" + str(best_state)
+                            )
+                            fig, _ = _plot_active_learning_conditioning_representative(best_state)
+                            fig.tight_layout(rect=[0, 0, 1, 0.95])
+                            fig.suptitle(
+                                f"CRN Distribution {self.rendering_iteration} Active Learning Conditioning "
+                                f"(best representative, reward={reward})"
+                            )
+                            if mode['format'] == 'figure':
+                                self.logger.log_figure(
+                                    figure_name=f'CRN Distribution {self.rendering_iteration} Active Learning Conditioning',
+                                    figure=fig,
+                                )
+                            elif mode['format'] == 'image':
+                                buf = BytesIO()
+                                fig.savefig(buf, format='png')
+                                buf.seek(0)
+                                self.logger.log_image(
+                                    buf,
+                                    name=f'CRN Distribution {self.rendering_iteration} Active Learning Conditioning',
+                                )
+                                buf.close()
+                            else:
+                                raise ValueError(f"Unknown mode: {mode['format']}. Use 'figure' or 'image'.")
+                            plt.close(fig)
+
+                    case {'style': 'logger', 'task': 'habituation' | 'transient_response_piecewise'}:
+                        top_rewards = [self.envs[i].state.last_task_info.get('reward', None) for i in top_k]
+                        self.logger.log_text(
+                            f"CRN Distribution {self.rendering_iteration} Piecewise Transients, "
+                            f"top rewards: {top_rewards}"
+                        )
                         fig, axes = plt.subplots(self.envs[0].state.num_outputs, 1, figsize=(10, 5 * self.envs[0].state.num_outputs))
                         if not isinstance(axes, (list, np.ndarray)):
                             axes = [axes]

@@ -128,6 +128,7 @@ class TaskSpec:
         max_threads: SSA max threads.
         cv_weight: Robust SSA CV weight.
         rpa_weight: Robust SSA RPA weight.
+        relative: relative loss (false by default)
 
         # Reward constants
         norm: Norm used in tracking losses.
@@ -175,6 +176,7 @@ class TaskSpec:
     max_threads: int = 1024
     cv_weight: float = 1.0
     rpa_weight: float = 1.0
+    relative: bool = False
 
     # Reward constants
     norm: int = 1
@@ -189,6 +191,8 @@ class TaskSpec:
 
     # Task-kind specific parameters (forward-compatible extension point)
     params: Dict[str, Any] = field(default_factory=dict)
+
+    
 
 
 
@@ -1408,7 +1412,8 @@ class Trainer:
                 "ssa_robust": "SSA_transient_response",
                 "habituation": "transient_response_piecewise",
                 "habituation_gap" : "transient_response_piecewise",
-                "classification" : "phase_portrait"
+                "classification" : "phase_portrait",
+                "transient_response_piecewise" : "transient_response_piecewise"
             }
             plot_type = kind_to_plot.get(kind, "transient_response")
             if plot_type == "transient_response" and kind not in (None, "transient_response"):

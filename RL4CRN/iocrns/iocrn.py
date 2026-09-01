@@ -372,6 +372,95 @@ class IOCRN:
         out += '\n'.join([str(r) for r in ordered_reactions])
         return out
     
+    def to_md(self) -> str:
+        """
+        Markdown representation of the IOCRN.
+
+        Produces:
+        - a small header block (inputs/species/outputs)
+        - a Markdown table listing reactions (sorted by reaction ID when available)
+
+        Notes:
+        - This aims to be robust across reaction classes used in RL4CRN.
+        - If a field is missing on a reaction, it prints a safe fallback.
+        """
+        # --- Order reactions by ID if possible ---
+        try:
+            reaction_ids = [getattr(r, "ID") for r in self.reactions]
+            ordered_reactions = [r for _, r in sorted(zip(reaction_ids, self.reactions), key=lambda x: str(x[0]))]
+        except Exception:
+            ordered_reactions = list(self.reactions)
+
+        def _fmt_side(labels):
+            if labels is None:
+                return "∅"
+            if isinstance(labels, (list, tuple)):
+                if len(labels) == 0:
+                    return "∅"
+                # pretty join; duplicates matter in mass-action sometimes, but most RL4CRN builders don’t duplicate labels
+                return " + ".join(map(str, labels))
+            return str(labels)
+
+        def _fmt_inputs(inp):
+            if inp is None:
+                return ""
+            if isinstance(inp, (list, tuple)):
+                # common in RL4CRN: input_channels=[...]
+                vals = []
+                for x in inp:
+                    if x is None:
+                        continue
+                    vals.append(str(x))
+                return ", ".join(vals)
+            return str(inp)
+
+        def _fmt_params(r):
+            params = getattr(r, "params", None)
+            ctrl = getattr(r, "params_controllability", None)
+            if params is None:
+                return ""
+            try:
+                params = list(params)
+            except Exception:
+                return str(params)
+
+            if ctrl is None:
+                return ", ".join([f"{p:g}" if isinstance(p, (float, int)) else str(p) for p in params])
+
+            try:
+                ctrl = list(ctrl)
+                out = []
+                for p, c in zip(params, ctrl):
+                    p_str = f"{p:g}" if isinstance(p, (float, int)) else str(p)
+                    out.append(p_str + ("*" if bool(c) else ""))
+                return ", ".join(out)
+            except Exception:
+                return ", ".join([str(p) for p in params])
+
+        # --- Header block ---
+        md = []
+        md.append(f"**Inputs:** `{getattr(self, 'input_labels', None)}`  ")
+        md.append(f"**Species:** `{getattr(self, 'species_labels', None)}`  ")
+        md.append(f"**Output species:** `{getattr(self, 'output_labels', None)}`  ")
+        md.append("")
+
+        # --- Reaction table ---
+        md.append("| # | ID | Reaction | Inputs | Params |")
+        md.append("|---:|---|---|---|---|")
+
+        for i, r in enumerate(ordered_reactions):
+            rid = getattr(r, "ID", "")
+            reactants = _fmt_side(getattr(r, "reactant_labels", None))
+            products = _fmt_side(getattr(r, "product_labels", None))
+            arrow = "→"
+            rxn = f"{reactants} {arrow} {products}"
+            inputs = _fmt_inputs(getattr(r, "input_channels", None))
+            params = _fmt_params(r)
+
+            md.append(f"| {i} | `{rid}` | `{rxn}` | `{inputs}` | `{params}` |")
+
+        return "\n".join(md)
+
     def to_reaction_file(self):
         """Export the IOCRN to a custom DSL reaction-file format.
 
@@ -1868,6 +1957,7 @@ class IOCRN:
                     shade_on=(shade_on and is_main),
                     pulse_lw=pulse_lw,
                     pulse_ls=pulse_ls,
+                    y_label="Delta Concentration" if y_label is None else y_label,
                     legend_label = legend_label,
                 )
 
@@ -2407,8 +2497,8 @@ def _plot_one_frequency(
     shade_on: bool,
     pulse_lw: float,
     pulse_ls: str,
-    y_label: str,
-    legend_label: str,
+    y_label: str = "Delta Concentration",
+    legend_label: str = None,
 ):
     """Plot a single output channel for one frequency on a provided axis."""
     # trajectories
