@@ -4,10 +4,22 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from comparisons.llm_crn_generation.generate_contract_v2_prompt_review import (
+    current_review_records,
+)
 from comparisons.llm_crn_generation.prompt_approval import validate_prompt_approval
 
 
 class PromptApprovalTests(unittest.TestCase):
+    def test_generated_review_matches_runtime_prompt_sources(self):
+        review = Path(
+            "paper/iclr2027_genai_net_llm/generated/CONTRACT_V2_PROMPT_REVIEW.json"
+        )
+        self.assertEqual(
+            json.loads(review.read_text(encoding="utf-8")),
+            current_review_records(),
+        )
+
     def test_missing_approval_fails_closed(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

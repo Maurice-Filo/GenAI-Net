@@ -38,6 +38,20 @@ def validate_prompt_approval(
     review_path = Path(review_path).expanduser().resolve()
     if not review_path.is_file():
         raise RuntimeError(f"Prompt review packet is missing: {review_path}")
+    if review_path == DEFAULT_PROMPT_REVIEW.resolve():
+        try:
+            checked_in_review = json.loads(review_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Invalid prompt review packet: {review_path}") from exc
+        from comparisons.llm_crn_generation.generate_contract_v2_prompt_review import (
+            current_review_records,
+        )
+
+        if checked_in_review != current_review_records():
+            raise RuntimeError(
+                "Generated prompt review is stale relative to the runtime prompts; "
+                "regenerate and review it before approval."
+            )
     if not approval_path.is_file():
         raise RuntimeError(
             "Paper campaign blocked pending author prompt approval. Review "
