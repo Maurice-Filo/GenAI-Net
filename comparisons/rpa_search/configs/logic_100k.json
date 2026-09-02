@@ -42,7 +42,7 @@
     "n_inputs": 4,
     "include_dilution": false,
     "n_support_species": 0,
-    "solver": "LSODA",
+    "solver": "CVODE",
     "rtol": 1e-8,
     "atol": 1e-8,
     "t_f": 100.0,
@@ -65,7 +65,7 @@
   "rl4crn": {
     "epochs": 100,
     "batch_size": 1024,
-    "n_cpus": 32,
+    "n_cpus": 64,
     "render_every": 0,
     "policy_width": 256,
     "policy_depth": 2,

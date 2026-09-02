@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Generate the author-review packet for contract-v2 prompts without model calls."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from RL4CRN.llm.benchmark_prompts import (
+    CRN_AGENT_SYSTEM_PROMPT,
+    MMC2_TASK_PROMPTS,
+    get_mmc2_task_prompt_variant,
+)
+from RL4CRN.llm.graphs import default_decider_writer_spec
+from RL4CRN.llm.harness_client import build_harness_bot_task
+
+
+DEFAULT_OUTPUT = (
+    ROOT
+    / "paper/iclr2027_genai_net_llm/generated/CONTRACT_V2_PROMPT_REVIEW.md"
+)
+
+
+def sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def main() -> None:
+    output = DEFAULT_OUTPUT
+    spec = default_decider_writer_spec()
+    decider = spec.get_node(spec.decider_node).prompt_template
+    writer = spec.get_node(spec.writer_node).prompt_template
+    decider_wrapper = build_harness_bot_task("text", "calls/0001/request.md")
+    writer_wrapper = build_harness_bot_task("json", "calls/0002/request.md")
+    tasks = {
+        task: get_mmc2_task_prompt_variant(task, variant="standard", solver="CVODE")
+        for task in sorted(MMC2_TASK_PROMPTS)
+        if task != "stochastic_rpa"
+    }
+    records = {
+        "system_prompt": {"sha256": sha256(CRN_AGENT_SYSTEM_PROMPT)},
+        "decider_template": {"sha256": sha256(decider)},
+        "writer_template": {"sha256": sha256(writer)},
+        "harness_decider_wrapper": {"sha256": sha256(decider_wrapper)},
+        "harness_writer_wrapper": {"sha256": sha256(writer_wrapper)},
+        "task_prompts": {
+            task: {"sha256": sha256(prompt)} for task, prompt in tasks.items()
+        },
+        "approval_status": "pending-author-review",
+        "model_calls_per_round": 2,
+        "writer_retry_limit": 0,
+        "candidate_validation_policy": "independent-members",
+        "rate_bounds": [0.001, 100.0],
+        "out_of_range_rate_policy": "clamp-to-endpoint",
+    }
+    blocks = [
+        "# Contract-v2 prompt review",
+        "",
+        "Status: **PENDING AUTHOR APPROVAL. DO NOT LAUNCH PAPER CAMPAIGNS.**",
+        "",
+        "This packet freezes the proposed shared system prompt, the two stage templates, and all deterministic task prompts. Dynamic HOF, SIL, evaluator, and exclusion state remains in workspace files and is not reproduced here.",
+        "",
+        "## Review checklist",
+        "",
+        "- [ ] Decider owns all concrete CRN structures and intended rates.",
+        "- [ ] Writer only resolves, constrains, clamps, and encodes Decider designs.",
+        "- [ ] Rate truncation to `[0.001, 100]` is scientifically acceptable.",
+        "- [ ] Independent member validation is acceptable for hosted and local runs.",
+        "- [ ] Exactly two calls per round and no automatic Writer repair call is acceptable.",
+        "- [ ] The role-specific Harness wrappers preserve the Decider/Writer boundary.",
+        "- [ ] Each task statement matches the executable evaluator.",
+        "- [ ] Request 0 withholds HOF; later requests receive HOF and SIL state.",
+        "",
+        "## Shared system prompt",
+        "",
+        f"SHA-256: `{records['system_prompt']['sha256']}`",
+        "",
+        "```text",
+        CRN_AGENT_SYSTEM_PROMPT.rstrip(),
+        "```",
+        "",
+        "## Decider template",
+        "",
+        f"SHA-256: `{records['decider_template']['sha256']}`",
+        "",
+        "```text",
+        decider.rstrip(),
+        "```",
+        "",
+        "## Writer template",
+        "",
+        f"SHA-256: `{records['writer_template']['sha256']}`",
+        "",
+        "```text",
+        writer.rstrip(),
+        "```",
+        "",
+        "## Harness Decider wrapper",
+        "",
+        f"SHA-256: `{records['harness_decider_wrapper']['sha256']}`",
+        "",
+        "```text",
+        decider_wrapper.rstrip(),
+        "```",
+        "",
+        "## Harness Writer wrapper",
+        "",
+        f"SHA-256: `{records['harness_writer_wrapper']['sha256']}`",
+        "",
+        "```text",
+        writer_wrapper.rstrip(),
+        "```",
+    ]
+    for task, prompt in tasks.items():
+        blocks.extend(
+            [
+                "",
+                f"## Task: {task}",
+                "",
+                f"SHA-256: `{records['task_prompts'][task]['sha256']}`",
+                "",
+                "```text",
+                prompt.rstrip(),
+                "```",
+            ]
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("\n".join(blocks) + "\n", encoding="utf-8")
+    review_json = output.with_suffix(".json")
+    review_json.write_text(
+        json.dumps(records, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    approval_example = output.with_name("CONTRACT_V2_PROMPT_APPROVAL.example.json")
+    approval_example.write_text(
+        json.dumps(
+            {
+                "approval_status": "not-approved",
+                "prompt_review_sha256": sha256(review_json.read_text(encoding="utf-8")),
+                "approved_by": "",
+                "approved_at": "",
+                "note": "Rename to CONTRACT_V2_PROMPT_APPROVAL.json and set approval fields only after reviewing every prompt.",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(output)
+
+
+if __name__ == "__main__":
+    main()

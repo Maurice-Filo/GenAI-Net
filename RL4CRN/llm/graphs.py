@@ -15,8 +15,19 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from RL4CRN.llm.candidate_evaluator import LLMCandidateEvaluator
 from RL4CRN.llm.memory import LLMMemory
-from RL4CRN.llm.prompts import build_candidate_generation_prompt
+from RL4CRN.llm.prompts import build_candidate_generation_prompt, format_hall_of_fame
 from RL4CRN.llm.schemas import CandidateEvaluation, LLMCandidate, LLMGenerationConfig, parse_candidates_payload
+
+
+def _display_rate_bounds(evaluator: Any) -> tuple[float, float]:
+    """Return finite prompt bounds, using contract-v2 defaults for generic evaluators."""
+
+    minimum = getattr(evaluator, "min_parameter_value", None)
+    maximum = getattr(evaluator, "max_parameter_value", None)
+    return (
+        0.001 if minimum is None else float(minimum),
+        100.0 if maximum is None else float(maximum),
+    )
 
 
 @dataclass(frozen=True)
@@ -56,6 +67,8 @@ class LLMGraphRunResult:
     raw_payload: Any
     candidates: List[LLMCandidate]
     evaluations: List[CandidateEvaluation]
+    tool_evaluations: List[Dict[str, Any]] = field(default_factory=list)
+    response_validation: Dict[str, Any] = field(default_factory=dict)
 
 
 def default_decider_writer_spec() -> LLMGraphSpec:
@@ -64,9 +77,9 @@ def default_decider_writer_spec() -> LLMGraphSpec:
     return LLMGraphSpec(
         nodes=[
             LLMGraphNode(
-                name="RPA task",
+                name="Task contract",
                 role="context",
-                prompt_template="Task context is provided by the notebook.",
+                prompt_template="The executable task contract is provided in the workspace.",
             ),
             LLMGraphNode(
                 name="Search constraints",
@@ -78,18 +91,27 @@ def default_decider_writer_spec() -> LLMGraphSpec:
                 role="text",
                 prompt_template=(
                     "DECIDER ROLE\n"
-                    "Choose a concise CRN proposal strategy for the task below.\n"
-                    "Respect these hard constraints:\n"
+                    "Select exactly {num_candidates} concrete candidate CRNs for the task below.\n"
+                    "You own every scientific choice: specify each reaction structure and its intended rate. "
+                    "You may use equations, species names, reaction-library IDs, tables, or another concise "
+                    "notation. Do not emit machine JSON and do not defer design choices to the Writer.\n\n"
+                    "The Writer and host will implement these hard constraints:\n"
                     "- exactly {max_added_reactions} reactions;\n"
-                    "- use only reaction IDs from the current library;\n"
-                    "- no duplicate reaction IDs;\n"
-                    "- every parameter must be positive and finite;\n"
-                    "- every parameter vector must have the length required by its reaction.\n\n"
+                    "- only IDs from REACTION_LIBRARY.tsv;\n"
+                    "- no duplicate IDs within one candidate;\n"
+                    "- one correctly sized parameter vector per reaction;\n"
+                    "- finite direct-LLM rates in [{rate_min}, {rate_max}].\n"
+                    "A finite intended rate below {rate_min} is truncated to {rate_min}; one above "
+                    "{rate_max} is truncated to {rate_max}. Account for that deterministic rule.\n\n"
                     "Task:\n{task_description}\n\n"
                     "Recent LLM feedback:\n{feedback_text}\n\n"
                     "Best previous LLM candidates:\n{llm_best_text}\n\n"
+                    "Current ranked RL Hall of Fame:\n{hall_of_fame_text}\n\n"
+                    "Latest RL SIL status (optimization context, not candidate quality):\n"
+                    "{sil_feedback_text}\n\n"
                     "Forbidden already-evaluated topologies:\n{forbidden_topologies_text}\n\n"
-                    "Return a short JSON object with keys strategy and constraints."
+                    "Return a concise, easy-to-read design record containing all {num_candidates} concrete "
+                    "CRNs and a short scientific rationale for each. This is not private chain-of-thought."
                 ),
                 generation_config=LLMGenerationConfig(temperature=0.2, response_mime_type="text/plain"),
             ),
@@ -97,10 +119,17 @@ def default_decider_writer_spec() -> LLMGraphSpec:
                 name="Writer",
                 role="json",
                 prompt_template=(
-                    "{task_description}\n\n"
-                    "Decider strategy and constraints:\n{decision}\n\n"
-                    "Generate candidates that obey every hard constraint. "
-                    "Prefer mechanistically diverse motifs."
+                    "WRITER ROLE\n"
+                    "Implement the Decider's concrete designs as machine JSON. Read "
+                    "DECIDER_DESIGNS.md and use targeted lookups in REACTION_LIBRARY.tsv. Preserve the "
+                    "Decider's scientific choices; do not invent replacement CRNs or conduct a second "
+                    "proposal pass. Resolve structures to allowed IDs, enforce exactly "
+                    "{max_added_reactions} unique reactions per member, encode the required parameter "
+                    "vectors, and truncate finite rates to [{rate_min}, {rate_max}] before writing JSON.\n\n"
+                    "Task contract:\n{task_description}\n\n"
+                    "Decider designs:\n{decision}\n\n"
+                    "Aim to encode all requested members. Each member will be validated independently, so "
+                    "keep every encodable design correct even if another design cannot be represented."
                 ),
                 generation_config=LLMGenerationConfig(temperature=0.7, max_output_tokens=8192),
             ),
@@ -121,7 +150,7 @@ def default_decider_writer_spec() -> LLMGraphSpec:
             ),
         ],
         edges=[
-            ("RPA task", "Decider"),
+            ("Task contract", "Decider"),
             ("Search constraints", "Decider"),
             ("Feedback memory", "Decider"),
             ("Decider", "Writer"),
@@ -129,7 +158,7 @@ def default_decider_writer_spec() -> LLMGraphSpec:
             ("Writer", "Evaluator"),
             ("Evaluator", "Feedback memory"),
         ],
-        title="RPA LLM decider-writer graph",
+        title="CRN Decide-then-Write graph",
     )
 
 
@@ -146,6 +175,8 @@ class DeciderWriterCRNGraph:
         comet_logger: Any = None,
         metric_prefix: str = "LLM",
         transcript_jsonl_path: Optional[str | Path] = None,
+        writer_retry_limit: int = 1,
+        workspace_context_mode: bool = False,
     ):
         self.client = client
         self.evaluator = evaluator
@@ -154,6 +185,10 @@ class DeciderWriterCRNGraph:
         self.comet_logger = comet_logger
         self.metric_prefix = metric_prefix.strip("/")
         self.transcript_jsonl_path = Path(transcript_jsonl_path) if transcript_jsonl_path else None
+        self.writer_retry_limit = int(writer_retry_limit)
+        self.workspace_context_mode = bool(workspace_context_mode)
+        if self.writer_retry_limit not in {0, 1}:
+            raise ValueError("writer_retry_limit must be 0 or 1.")
 
     def draw(self, *, ax: Any = None, pos: Optional[Mapping[str, Tuple[float, float]]] = None) -> Any:
         """Draw the graph using networkx and matplotlib, returning the graph."""
@@ -170,7 +205,7 @@ class DeciderWriterCRNGraph:
 
         if pos is None:
             pos = {
-                "RPA task": (-1.6, 0.8),
+                "Task contract": (-1.6, 0.8),
                 "Search constraints": (-1.6, -0.2),
                 "Decider": (0.0, 0.3),
                 "Writer": (1.5, 0.3),
@@ -188,25 +223,55 @@ class DeciderWriterCRNGraph:
         ax.axis("off")
         return graph
 
-    def decide(self, task_description: str, *, return_prompt: bool = False) -> str | tuple[str, str]:
+    def decide(
+        self,
+        task_description: str,
+        *,
+        num_candidates: int = 10,
+        return_prompt: bool = False,
+    ) -> str | tuple[str, str]:
         """Run the decider node and return its text decision."""
-        return self._decide(task_description, forbidden_topologies_text="", return_prompt=return_prompt)
+        return self._decide(
+            task_description,
+            forbidden_topologies_text="",
+            hall_of_fame_iter=None,
+            sil_feedback_text="",
+            num_candidates=num_candidates,
+            return_prompt=return_prompt,
+        )
 
     def _decide(
         self,
         task_description: str,
         *,
         forbidden_topologies_text: str = "",
+        hall_of_fame_iter: Optional[Iterable[Any]] = None,
+        sil_feedback_text: str = "",
+        num_candidates: int = 10,
         return_prompt: bool = False,
     ) -> str | tuple[str, str]:
         """Run the decider node with optional forbidden-topology context."""
 
         node = self.spec.get_node(self.spec.decider_node)
+        rate_min, rate_max = _display_rate_bounds(self.evaluator)
+        if self.workspace_context_mode:
+            feedback_text = "Read prior LLM feedback from CONTEXT/SEARCH_STATE.json."
+            llm_best_text = "Read prior best LLM candidates from CONTEXT/SEARCH_STATE.json."
+            hall_of_fame_text = "Read the ranked live snapshot from CONTEXT/HALL_OF_FAME.md."
+        else:
+            feedback_text = self.memory.format_feedback()
+            llm_best_text = self.memory.format_best()
+            hall_of_fame_text = format_hall_of_fame(hall_of_fame_iter)
         prompt = node.prompt_template.format(
             task_description=task_description,
+            num_candidates=int(num_candidates),
             max_added_reactions=self.evaluator.max_added_reactions,
-            feedback_text=self.memory.format_feedback(),
-            llm_best_text=self.memory.format_best(),
+            rate_min=rate_min,
+            rate_max=rate_max,
+            feedback_text=feedback_text,
+            llm_best_text=llm_best_text,
+            hall_of_fame_text=hall_of_fame_text,
+            sil_feedback_text=sil_feedback_text or "No completed SIL update is available yet.",
             forbidden_topologies_text=forbidden_topologies_text or "No forbidden topologies have been archived yet.",
         )
 
@@ -215,6 +280,33 @@ class DeciderWriterCRNGraph:
         else:
             payload = self.client.generate_json(prompt, generation_config=node.generation_config)
             decision = json.dumps(payload, indent=2, sort_keys=True)
+        workspace = getattr(self.client, "active_workspace", None)
+        if workspace is not None:
+            design_path = workspace.path / "DECIDER_DESIGNS.md"
+            artifact_decision = (
+                design_path.read_text(encoding="utf-8").strip()
+                if design_path.is_file()
+                else ""
+            )
+            if artifact_decision:
+                if artifact_decision != decision.strip():
+                    (workspace.path / "decider_response_reconciliation.json").write_text(
+                        json.dumps(
+                            {
+                                "policy": "workspace-artifact-authoritative",
+                                "stdout_matches_artifact": False,
+                                "stdout": decision,
+                                "artifact": artifact_decision,
+                            },
+                            indent=2,
+                            sort_keys=True,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                decision = artifact_decision
+            else:
+                design_path.write_text(decision.rstrip() + "\n", encoding="utf-8")
         if return_prompt:
             return decision, prompt
         return decision
@@ -227,18 +319,36 @@ class DeciderWriterCRNGraph:
         num_candidates: int,
         hall_of_fame_iter: Optional[Iterable[Any]] = None,
         forbidden_topologies_text: str = "",
+        sil_feedback_text: str = "",
     ) -> str:
         """Build the final JSON-generation prompt for the writer node."""
 
         node = self.spec.get_node(self.spec.writer_node)
+        rate_min, rate_max = _display_rate_bounds(self.evaluator)
+        writer_decision = (
+            "Read and implement the exact design record in DECIDER_DESIGNS.md."
+            if self.workspace_context_mode
+            else decision
+        )
         writer_task = node.prompt_template.format(
             task_description=task_description,
-            decision=decision,
+            decision=writer_decision,
+            num_candidates=int(num_candidates),
             max_added_reactions=self.evaluator.max_added_reactions,
+            rate_min=rate_min,
+            rate_max=rate_max,
             feedback_text=self.memory.format_feedback(),
             llm_best_text=self.memory.format_best(),
+            hall_of_fame_text=format_hall_of_fame(hall_of_fame_iter),
+            sil_feedback_text=sil_feedback_text or "No completed SIL update is available yet.",
             forbidden_topologies_text=forbidden_topologies_text or "No forbidden topologies have been archived yet.",
         )
+        if self.workspace_context_mode:
+            return writer_task + (
+                "\n\nEncoding resources are workspace files: use OUTPUT_GUIDE.json for the "
+                "machine schema, REACTION_LIBRARY.tsv for allowed IDs and arities, and "
+                "CONTEXT/ for live search state. Do not reproduce those files in the response."
+            )
         return build_candidate_generation_prompt(
             task_description=writer_task,
             reaction_library=self.evaluator.library,
@@ -248,6 +358,7 @@ class DeciderWriterCRNGraph:
             feedback_text=self.memory.format_feedback(),
             llm_best_text=self.memory.format_best(),
             forbidden_topologies_text=forbidden_topologies_text,
+            sil_feedback_text=sil_feedback_text,
         )
 
     def run_round(
@@ -261,6 +372,7 @@ class DeciderWriterCRNGraph:
         logger: Any = None,
         step: Optional[int] = None,
         forbidden_topologies_text: str = "",
+        sil_feedback_text: str = "",
     ) -> LLMGraphRunResult:
         """Run one graph round, evaluate candidates, update memory, and log."""
 
@@ -270,6 +382,9 @@ class DeciderWriterCRNGraph:
         decision, decider_prompt = self._decide(
             task_description,
             forbidden_topologies_text=forbidden_topologies_text,
+            hall_of_fame_iter=hall_of_fame_iter,
+            sil_feedback_text=sil_feedback_text,
+            num_candidates=num_candidates,
             return_prompt=True,
         )
         decider_seconds = time.perf_counter() - decider_tic
@@ -280,15 +395,16 @@ class DeciderWriterCRNGraph:
             num_candidates=num_candidates,
             hall_of_fame_iter=hall_of_fame_iter,
             forbidden_topologies_text=forbidden_topologies_text,
+            sil_feedback_text=sil_feedback_text,
         )
         messages = [
             self._message_record(
                 step=step,
-                source_nodes=["RPA task", "Search constraints", "Feedback memory", "Forbidden topology archive"],
+                source_nodes=["Task contract", "Search constraints", "RL Hall of Fame", "RL SIL status", "Feedback memory", "Forbidden topology archive"],
                 target_node=decider_node.name,
                 kind="prompt",
                 content=decider_prompt,
-                description="Task context, hard constraints, feedback memory, forbidden topology archive, and prior LLM best candidates sent to the Decider.",
+                description="Task context, hard constraints, ranked Hall of Fame, SIL status, feedback memory, forbidden topology archive, and prior LLM best candidates sent to the Decider.",
             ),
             self._message_record(
                 step=step,
@@ -300,7 +416,7 @@ class DeciderWriterCRNGraph:
             ),
             self._message_record(
                 step=step,
-                source_nodes=[decider_node.name, "Reaction library", "RL Hall of Fame", "Feedback memory", "Forbidden topology archive"],
+                source_nodes=[decider_node.name, "Reaction library", "RL Hall of Fame", "RL SIL status", "Feedback memory", "Forbidden topology archive"],
                 target_node=writer_node.name,
                 kind="prompt",
                 content=writer_prompt,
@@ -321,6 +437,9 @@ class DeciderWriterCRNGraph:
             step=step,
         )
         writer_and_evaluation_seconds = time.perf_counter() - writer_eval_tic
+        response_validation = dict(
+            getattr(self.client, "last_response_validation", {}) or {}
+        )
         for i, evaluation in enumerate(evaluations):
             if evaluation.env is not None:
                 is_forbidden = (
@@ -393,6 +512,11 @@ class DeciderWriterCRNGraph:
             logger=logger or self.comet_logger,
             step=step,
         )
+        self.log_response_validation(
+            response_validation,
+            logger=logger or self.comet_logger,
+            step=step,
+        )
         return LLMGraphRunResult(
             spec=self.spec,
             decision=decision,
@@ -400,6 +524,7 @@ class DeciderWriterCRNGraph:
             raw_payload=raw_payload,
             candidates=candidates,
             evaluations=evaluations,
+            response_validation=response_validation,
         )
 
     def _generate_evaluate_with_retry(
@@ -436,8 +561,17 @@ class DeciderWriterCRNGraph:
             retry_message = self._format_evaluation_feedback(evaluations)
             if not retry_message:
                 retry_message = "No valid candidates were produced."
+            if self.writer_retry_limit == 0:
+                return raw_payload, candidates, evaluations, retry_message, timing
         except Exception as exc:
             retry_message = f"{type(exc).__name__}: {exc}"
+            if self.writer_retry_limit == 0:
+                self.log_response_validation(
+                    dict(getattr(self.client, "last_response_validation", {}) or {}),
+                    logger=logger,
+                    step=step,
+                )
+                raise
 
         retry_prompt = self._build_retry_prompt(writer_prompt, retry_message)
         retry_messages = [
@@ -714,6 +848,43 @@ class DeciderWriterCRNGraph:
         prefix = self.metric_prefix
         for name, value in timing.items():
             logger.log_metric(f"{prefix}/Timing {name}", float(value), step=step)
+
+    def log_response_validation(
+        self,
+        validation: Mapping[str, Any],
+        *,
+        logger: Any = None,
+        step: Optional[int] = None,
+    ) -> None:
+        """Mirror member-level Writer validation and rate clamping to Comet."""
+
+        if not validation:
+            return
+        logger = logger or self.comet_logger
+        if logger is None:
+            return
+        prefix = self.metric_prefix
+        if hasattr(logger, "log_metric"):
+            for field, label in (
+                ("returned_candidate_count", "Writer Returned Count"),
+                ("accepted_candidate_count", "Writer Accepted Count"),
+                ("clamped_parameter_count", "Writer Clamped Parameter Count"),
+            ):
+                if validation.get(field) is not None:
+                    logger.log_metric(
+                        f"{prefix}/{label}", int(validation[field]), step=step
+                    )
+            logger.log_metric(
+                f"{prefix}/Writer Rejected Count",
+                len(validation.get("rejected_candidates", ()) or ()),
+                step=step,
+            )
+        if hasattr(logger, "log_asset_data"):
+            logger.log_asset_data(
+                json.dumps(dict(validation), indent=2, sort_keys=True),
+                name=f"llm_member_validation_step_{step if step is not None else 'na'}.json",
+                step=step,
+            )
 
 
 def plot_llm_evaluations(

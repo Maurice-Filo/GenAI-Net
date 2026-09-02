@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any, Callable, List, Sequence, Tuple
 
 import numpy as np
@@ -27,6 +28,8 @@ def optimize_crn_parameters_ipopt(
     maxiter: int = 100,
     log_min: float = -18.0,
     log_max: float = 6.0,
+    max_evaluations: int | None = None,
+    timeout_seconds: float | None = None,
 ) -> ParameterOptimizationResult:
     """Optimize all reaction parameters for a fixed topology using IPOPT.
 
@@ -62,12 +65,25 @@ def optimize_crn_parameters_ipopt(
         )
 
     eval_count = {"n": 0}
+    deadline = None if timeout_seconds is None else time.monotonic() + float(timeout_seconds)
+    best = {"loss": float("inf"), "state": base_state.clone()}
+
+    class OptimizationLimitReached(RuntimeError):
+        pass
 
     def objective(x: np.ndarray) -> float:
+        if max_evaluations is not None and eval_count["n"] >= int(max_evaluations):
+            raise OptimizationLimitReached("evaluation limit reached")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise OptimizationLimitReached("wall-clock limit reached")
         candidate = base_state.clone()
         _set_log_parameters(candidate, x)
         eval_count["n"] += 1
-        return _compute_loss(reward_fn, candidate)
+        loss = _compute_loss(reward_fn, candidate)
+        if loss < best["loss"]:
+            best["loss"] = loss
+            best["state"] = candidate
+        return loss
 
     bounds = [(float(log_min), float(log_max)) for _ in range(x0.size)]
     try:
@@ -83,7 +99,7 @@ def optimize_crn_parameters_ipopt(
         )
         optimized_state = base_state.clone()
         _set_log_parameters(optimized_state, result.x)
-        optimized_loss = _compute_loss(reward_fn, optimized_state)
+        optimized_loss = float(getattr(result, "fun", best["loss"]))
         return ParameterOptimizationResult(
             attempted=True,
             success=bool(getattr(result, "success", False)),
@@ -93,12 +109,17 @@ def optimize_crn_parameters_ipopt(
             n_evaluations=int(eval_count["n"]),
         )
     except Exception as exc:
-        loss = _compute_loss(reward_fn, base_state)
+        if eval_count["n"]:
+            loss = float(best["loss"])
+            fallback_state = best["state"]
+        else:
+            loss = _compute_loss(reward_fn, base_state)
+            fallback_state = base_state
         return ParameterOptimizationResult(
             attempted=True,
             success=False,
             loss=loss,
-            state=base_state,
+            state=fallback_state,
             message=f"IPOPT failed: {type(exc).__name__}: {exc}",
             n_evaluations=int(eval_count["n"]),
         )

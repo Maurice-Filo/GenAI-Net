@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
@@ -26,6 +26,7 @@ class LLMGenerationRound:
     candidates: List[LLMCandidate]
     evaluations: List[CandidateEvaluation]
     raw_payload: Any
+    tool_evaluations: List[Any] = field(default_factory=list)
 
 
 class LLMCRNGenerator:

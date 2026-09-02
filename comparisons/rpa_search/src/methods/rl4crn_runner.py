@@ -11,7 +11,14 @@ from comparisons.rpa_search.src.common.io import PROGRESS_FIELDS, append_csv, wr
 from RL4CRN.utils.input_interface import make_session_and_trainer
 
 
-def run_rl4crn(config: Dict[str, Any], run_dir, method: str, run_id: str, components) -> Dict[str, Any]:
+def run_rl4crn(
+    config: Dict[str, Any],
+    run_dir,
+    method: str,
+    run_id: str,
+    components,
+    logger=None,
+) -> Dict[str, Any]:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
         try:
@@ -38,7 +45,7 @@ def run_rl4crn(config: Dict[str, Any], run_dir, method: str, run_id: str, compon
     cfg.policy.depth = int(rl.get("policy_depth", cfg.policy.depth))
     cfg.policy.deep_layer_size = int(rl.get("deep_layer_size", cfg.policy.deep_layer_size))
 
-    trainer = make_session_and_trainer(cfg, task, logger=None)
+    trainer = make_session_and_trainer(cfg, task, logger=logger)
 
     best_loss = float("inf")
     total_ode = 0

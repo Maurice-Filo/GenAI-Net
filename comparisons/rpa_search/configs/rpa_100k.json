@@ -42,7 +42,7 @@
     "production_input_map": {"X_1": "u_1"},
     "degradation_input_map": {"X_3": "u_2"},
     "output_species": "X_3",
-    "solver": "LSODA",
+    "solver": "CVODE",
     "rtol": 1e-8,
     "atol": 1e-8,
     "t_f": 100.0,
@@ -66,7 +66,7 @@
   "rl4crn": {
     "epochs": 100,
     "batch_size": 1024,
-    "n_cpus": 32,
+    "n_cpus": 64,
     "render_every": 0,
     "policy_width": 256,
     "policy_depth": 2,

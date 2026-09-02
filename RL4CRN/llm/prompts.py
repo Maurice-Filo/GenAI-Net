@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
+from RL4CRN.llm.benchmark_prompts import CRN_AGENT_SYSTEM_PROMPT
 
-DEFAULT_SYSTEM_PROMPT = """You are an expert in chemical reaction networks, synthetic biology, and control theory.
-You propose CRNs by selecting reactions from a fixed library and assigning numerical parameters.
-Return strictly valid JSON and respect the exact reaction budget."""
+
+DEFAULT_SYSTEM_PROMPT = CRN_AGENT_SYSTEM_PROMPT
 
 
 def format_reaction_library(reaction_library: Any) -> str:
@@ -51,6 +51,7 @@ def build_candidate_generation_prompt(
     feedback_text: str = "",
     llm_best_text: str = "",
     forbidden_topologies_text: str = "",
+    sil_feedback_text: str = "",
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     hall_of_fame_limit: int = 5,
 ) -> str:
@@ -61,6 +62,17 @@ def build_candidate_generation_prompt(
     feedback_text = feedback_text or "No recent LLM feedback is available."
     llm_best_text = llm_best_text or "No prior LLM-generated best candidates are available."
     forbidden_topologies_text = forbidden_topologies_text or "No forbidden topologies have been archived yet."
+    sil_feedback_text = sil_feedback_text or "No completed SIL update is available yet."
+    novel_count = max(1, (int(num_candidates) * 3 + 4) // 5)
+    refinement_count = int(num_candidates) - novel_count
+    search_mix_text = (
+        f"Produce {novel_count} candidates with new reaction-ID sets and "
+        f"{refinement_count} candidates that refine parameters of promising "
+        "Hall-of-Fame reaction-ID sets. A Hall-of-Fame set remains eligible for "
+        "refinement unless it is explicitly present in the forbidden archive."
+        if refinement_count > 0
+        else "Produce one new candidate informed by the Hall of Fame and evaluator feedback."
+    )
 
     return f"""{system_prompt}
 
@@ -79,6 +91,14 @@ Do not repeat a reaction ID within the same candidate.
 
 === RL Hall of Fame ===
 {hof_text}
+
+=== RL Self-Imitation Learning Status ===
+This is optimization context, not a candidate-quality score.
+{sil_feedback_text}
+
+=== Exploration And Refinement Mix ===
+{search_mix_text}
+Never return two candidates with identical reaction IDs and parameter values.
 
 === Forbidden Already-Evaluated Topologies ===
 The following topologies were already evaluated, archived, and are no longer

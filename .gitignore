@@ -10,6 +10,7 @@
 *.jsonl
 .env
 debate_trainscript*.txt
+harness_runs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -19,6 +19,7 @@ import random
 import json
 import time
 
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field, asdict
 from functools import partial
 from itertools import product
@@ -32,9 +33,18 @@ import torch
 
 from RL4CRN.iocrns.reaction_library import ReactionLibrary
 from RL4CRN.iocrns.iocrn import IOCRN
-from RL4CRN.utils.forbidden_topologies import ForbiddenTopologyArchive, reward_with_forbidden_topologies
+from RL4CRN.utils.forbidden_topologies import (
+    ForbiddenTopologyArchive,
+    reward_with_forbidden_topologies,
+    topology_signature_key,
+)
 from RL4CRN.utils.hall_of_fame import HallOfFame
 from RL4CRN.utils.parameter_optimization import optimize_crn_parameters_ipopt
+from RL4CRN.utils.results_database import (
+    ResultsDatabase,
+    classify_hof_provenance,
+    serialize_crn,
+)
 from abc import ABC, abstractmethod
 
 
@@ -529,6 +539,9 @@ class TrainCfg:
     forbidden_ipopt_maxiter: int = 100
     forbidden_ipopt_log_min: float = -18.0
     forbidden_ipopt_log_max: float = 6.0
+    forbidden_async: bool = False
+    forbidden_optimization_max_evaluations: int = 50
+    forbidden_optimization_timeout_seconds: float = 120.0
 
 
 @dataclass
@@ -1173,6 +1186,102 @@ class Trainer:
         self._loaded_hof: Optional[List[Any]] = None
         self._loaded_cfg: Optional[dict] = None
         self._llm_loop: Optional[Dict[str, Any]] = None
+        self._results_db: Optional[ResultsDatabase] = None
+        self._results_db_every: int = 1
+        self._results_plot_every: int = 20
+        self._last_hof_snapshot_epoch: Optional[int] = None
+        self._forbidden_executor: Optional[ThreadPoolExecutor] = None
+        self._forbidden_job: Optional[Dict[str, Any]] = None
+        self._forbidden_scheduled_signatures: set[bytes] = set()
+        self._forbidden_optimization_evaluations = 0
+        self._llm_provenance_by_topology: Dict[str, Dict[str, Any]] = {}
+        self._rl_seen_topologies: set[str] = set()
+
+    def configure_results_database(
+        self,
+        path: Union[str, os.PathLike],
+        *,
+        every: int = 5,
+        run_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        plot_every: int = 20,
+    ) -> ResultsDatabase:
+        """Persist analyzed CRNs and periodic Hall-of-Fame snapshots to SQLite.
+
+        Database writes are handled by one background thread.  ``every`` only
+        controls HoF snapshots; LLM rounds and parameter optimizations are
+        recorded whenever they complete.
+        """
+
+        if every <= 0:
+            raise ValueError("Results database cadence `every` must be positive.")
+        if plot_every <= 0:
+            raise ValueError("HoF plot cadence `plot_every` must be positive.")
+        if self._results_db is not None:
+            self._results_db.close()
+        run_metadata = dict(metadata or {})
+        task = getattr(self.s, "task", None)
+        task_kind = getattr(task, "kind", None)
+        if task_kind is not None:
+            run_metadata.setdefault("task", str(task_kind))
+            run_metadata.setdefault("task_kind", str(task_kind))
+        self._results_db = ResultsDatabase(
+            path,
+            run_id=run_id,
+            run_metadata=run_metadata,
+        )
+        self._results_db_every = int(every)
+        self._results_plot_every = int(plot_every)
+        self._last_hof_snapshot_epoch = None
+        return self._results_db
+
+    def flush_results_database(self) -> None:
+        """Wait for already queued database writes to become durable."""
+
+        if self._results_db is not None:
+            self._results_db.flush()
+
+    def close_results_database(self) -> None:
+        """Flush and close the configured results database writer."""
+
+        if self._results_db is not None:
+            self._results_db.close()
+            self._results_db = None
+
+    def _maybe_persist_hof(self, epoch: int, *, force: bool = False) -> None:
+        database = self._results_db
+        if database is None or self._last_hof_snapshot_epoch == epoch:
+            return
+        if not force and epoch % self._results_db_every != 0:
+            return
+        hof = getattr(self.s.mult_env, "hall_of_fame", None)
+        if hof is None:
+            return
+        database.record_hof_snapshot(
+            hof,
+            epoch=epoch,
+            save_plots=force or epoch % self._results_plot_every == 0,
+            llm_provenance=self._llm_provenance_by_topology,
+        )
+        logger = self.s.logger
+        if logger is not None and hasattr(logger, "log_metric"):
+            counts: Dict[str, int] = {}
+            for env in hof:
+                state = getattr(env, "state", env)
+                provenance = classify_hof_provenance(
+                    serialize_crn(state),
+                    dict(getattr(state, "last_task_info", {}) or {}),
+                    self._llm_provenance_by_topology,
+                )
+                label = str(provenance["provenance_class"])
+                counts[label] = counts.get(label, 0) + 1
+            for label, count in counts.items():
+                logger.log_metric(
+                    f"Provenance/HOF {label.replace('_', ' ').title()}",
+                    count,
+                    step=epoch,
+                )
+        self._last_hof_snapshot_epoch = epoch
 
     def _log_loss_components(self, step: int) -> None:
         logger = self.s.logger
@@ -1208,14 +1317,17 @@ class Trainer:
         start_epoch: int = 0,
         stop_epoch: Optional[int] = None,
         add_to_hall_of_fame: bool = True,
+        cross_communication: bool = True,
+        withhold_initial_hof: bool = False,
         jsonl_path: Optional[Union[str, os.PathLike]] = None,
+        max_in_flight: int = 1,
     ) -> None:
         """Attach an LLM proposal graph to the RL training loop.
 
-        The graph is called after the regular RL batch has been scored and
-        before ``agent.update``.  Valid LLM-proposed CRNs can therefore enter
-        the same Hall of Fame used by self-imitation learning (SIL), allowing
-        the policy update of that epoch to replay them immediately.
+        Harness generation runs on background workers. The RL thread polls at
+        epoch boundaries and inserts completed valid CRNs into the Hall of Fame
+        used by self-imitation learning (SIL). Slow model calls therefore do not
+        block rollouts, policy updates, or later cadence-triggered model calls.
 
         Args:
             graph: Object exposing ``run_round(...)``; typically
@@ -1229,14 +1341,28 @@ class Trainer:
             stop_epoch: Optional last epoch at which LLM proposals are allowed.
             add_to_hall_of_fame: If True, valid LLM candidates are inserted into
                 the training Hall of Fame before SIL replay.
+            cross_communication: If False, do not expose RL HOF, SIL, or
+                exclusion state to the LLM. Valid candidates can be retained
+                outside the RL HOF for terminal pooling.
+            withhold_initial_hof: If True, request zero receives an empty HOF
+                snapshot while later requests retain full cross-communication.
             jsonl_path: Optional audit log for every evaluated LLM candidate.
+            max_in_flight: Maximum simultaneous model requests. Values above
+                one require ``graph.fork()`` so each request owns isolated
+                mutable client and workspace state.
         """
         if every <= 0:
             raise ValueError("LLM graph cadence `every` must be positive.")
         if num_candidates <= 0:
             raise ValueError("LLM graph `num_candidates` must be positive.")
+        if max_in_flight <= 0:
+            raise ValueError("LLM graph `max_in_flight` must be positive.")
         if not hasattr(graph, "run_round"):
             raise ValueError("graph must expose a run_round(...) method.")
+        if max_in_flight > 1 and not hasattr(graph, "fork"):
+            raise ValueError("Concurrent LLM calls require graph.fork().")
+
+        self.clear_llm_graph(wait=False)
 
         self._llm_loop = {
             "graph": graph,
@@ -1246,15 +1372,36 @@ class Trainer:
             "start_epoch": int(start_epoch),
             "stop_epoch": None if stop_epoch is None else int(stop_epoch),
             "add_to_hall_of_fame": bool(add_to_hall_of_fame),
+            "cross_communication": bool(cross_communication),
+            "withhold_initial_hof": bool(withhold_initial_hof),
+            "isolated_candidates": [],
             "jsonl_path": jsonl_path,
             "history": [],
+            "max_in_flight": int(max_in_flight),
+            "executor": ThreadPoolExecutor(
+                max_workers=int(max_in_flight), thread_name_prefix="rl4crn-llm"
+            ),
+            "jobs": [],
         }
 
     def forbidden_topology_summary(self, limit: int = 10) -> str:
         """Return LLM-facing text describing archived forbidden topologies."""
 
         archive = self._forbidden_topologies()
-        return archive.format_for_prompt(limit=limit)
+        summary = archive.format_for_prompt(limit=limit)
+        if self._forbidden_job is None:
+            return summary
+        state = self._forbidden_job["state"]
+        reaction_ids = (
+            sorted(int(value) for value in state.gather_reaction_IDs())
+            if hasattr(state, "gather_reaction_IDs")
+            else []
+        )
+        return (
+            summary
+            + "\nProcessing now (do not duplicate while pending): "
+            + f"reaction_ids={reaction_ids}; launched_epoch={self._forbidden_job['launched_epoch']}."
+        )
 
     def _forbidden_topologies(self) -> ForbiddenTopologyArchive:
         archive = getattr(self.s, "forbidden_topologies", None)
@@ -1271,7 +1418,11 @@ class Trainer:
         every = max(1, int(getattr(cfg, "forbidden_topology_every", 1) or 1))
         start = int(getattr(cfg, "forbidden_topology_start_epoch", 0) or 0)
         if epoch < start or (epoch - start) % every != 0:
-            return 0
+            return self._harvest_forbidden_job(epoch)
+        if bool(getattr(cfg, "forbidden_async", False)):
+            added = self._harvest_forbidden_job(epoch)
+            self._schedule_forbidden_job(epoch=epoch, maximum=m)
+            return added
         archive = self._forbidden_topologies()
         tic = time.perf_counter()
         added = self._archive_forbidden_from_hof(epoch=epoch, m=m)
@@ -1287,6 +1438,118 @@ class Trainer:
                 f"total={total} | archive_time={elapsed:.3g}s"
             )
         return added
+
+    def _schedule_forbidden_job(self, *, epoch: int, maximum: int) -> bool:
+        if self._forbidden_job is not None:
+            return False
+        if len(self._forbidden_scheduled_signatures) >= int(maximum):
+            return False
+        hof = self.s.mult_env.hall_of_fame
+        if hof is None:
+            return False
+        archive = self._forbidden_topologies()
+        selected = None
+        for rank, env in enumerate(hof):
+            signature = topology_signature_key(env.state)
+            if signature in self._forbidden_scheduled_signatures or archive.contains_state(env.state):
+                continue
+            selected = (rank, env.state.clone(), signature)
+            break
+        if selected is None:
+            return False
+        rank, state, signature = selected
+        if self._forbidden_executor is None:
+            self._forbidden_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="rl4crn-topology-processing"
+            )
+        cfg = self.s.cfg.train
+        future = self._forbidden_executor.submit(
+            optimize_crn_parameters_ipopt,
+            state,
+            self.s.task.compute_reward,
+            maxiter=int(getattr(cfg, "forbidden_ipopt_maxiter", 100)),
+            log_min=float(getattr(cfg, "forbidden_ipopt_log_min", -18.0)),
+            log_max=float(getattr(cfg, "forbidden_ipopt_log_max", 6.0)),
+            max_evaluations=int(getattr(cfg, "forbidden_optimization_max_evaluations", 50)),
+            timeout_seconds=float(getattr(cfg, "forbidden_optimization_timeout_seconds", 120.0)),
+        )
+        self._forbidden_scheduled_signatures.add(signature)
+        self._forbidden_job = {
+            "future": future,
+            "state": state,
+            "signature": signature,
+            "rank": rank,
+            "launched_epoch": epoch,
+            "started": time.perf_counter(),
+        }
+        return True
+
+    def _harvest_forbidden_job(self, epoch: int, *, wait: bool = False) -> int:
+        job = self._forbidden_job
+        if job is None or (not wait and not job["future"].done()):
+            return 0
+        result = job["future"].result()
+        elapsed = time.perf_counter() - job["started"]
+        self._forbidden_optimization_evaluations += int(result.n_evaluations)
+        archive = self._forbidden_topologies()
+        inserted = archive.add_state(
+            result.state,
+            loss=float(result.loss),
+            epoch=epoch,
+            rank=int(job["rank"]),
+            source="hall_of_fame_bounded_ipopt",
+            optimization_attempted=True,
+            optimization_success=bool(result.success),
+            optimization_message=result.message,
+            exclusion_reason="bounded parameter processing completed; topology hard-excluded",
+        )
+        if self._results_db is not None:
+            self._results_db.record_optimization(
+                job["state"],
+                result.state,
+                epoch=epoch,
+                rank=int(job["rank"]),
+                original_loss=float(
+                    (getattr(job["state"], "last_task_info", {}) or {}).get("reward", float("inf"))
+                ),
+                optimized_loss=float(result.loss),
+                attempted=True,
+                success=bool(result.success),
+                message=result.message,
+                elapsed_seconds=elapsed,
+                n_evaluations=int(result.n_evaluations),
+                stored=True,
+            )
+        self._log_forbidden_archive_decision(
+            epoch=epoch,
+            rank=int(job["rank"]),
+            original_loss=float(
+                (getattr(job["state"], "last_task_info", {}) or {}).get("reward", float("inf"))
+            ),
+            archive_loss=float(result.loss),
+            threshold=float("inf"),
+            stored=True,
+            inserted=inserted,
+            optimization_attempted=True,
+            optimization_success=bool(result.success),
+            optimization_message=result.message,
+            optimization_seconds=elapsed,
+            optimization_evaluations=int(result.n_evaluations),
+        )
+        self._forbidden_job = None
+        return int(inserted)
+
+    def wait_for_forbidden_topologies(self) -> int:
+        """Wait for the current bounded job and merge it; no new job is launched."""
+
+        added = self._harvest_forbidden_job(self.state.epoch, wait=True)
+        if self._forbidden_executor is not None:
+            self._forbidden_executor.shutdown(wait=True, cancel_futures=False)
+            self._forbidden_executor = None
+        return added
+
+    def forbidden_optimization_evaluations(self) -> int:
+        return int(self._forbidden_optimization_evaluations)
 
     def _archive_forbidden_from_hof(self, *, epoch: int, m: int) -> int:
         hof = self.s.mult_env.hall_of_fame
@@ -1341,8 +1604,43 @@ class Trainer:
                     optimization_attempted=opt_attempted,
                     optimization_success=opt_success,
                     optimization_message=opt_message,
+                    exclusion_reason=(
+                        "parameter optimization completed; topology fully processed"
+                        if opt_success
+                        else "topology evaluated and processing threshold satisfied"
+                    ),
                 )
                 added += int(inserted)
+
+            if self._results_db is not None:
+                self._results_db.record_optimization(
+                    env.state,
+                    archive_state,
+                    epoch=epoch,
+                    rank=rank,
+                    original_loss=original_loss,
+                    optimized_loss=archive_loss,
+                    attempted=opt_attempted,
+                    success=opt_success,
+                    message=opt_message,
+                    elapsed_seconds=opt_elapsed,
+                    n_evaluations=opt_evaluations,
+                    stored=should_store,
+                )
+                self._results_db.record_evaluation(
+                    archive_state,
+                    source="ipopt" if opt_attempted else "hof_analysis",
+                    epoch=epoch,
+                    loss=archive_loss,
+                    valid=should_store,
+                    message=opt_message,
+                    metadata={
+                        "hof_rank": rank,
+                        "optimization_attempted": opt_attempted,
+                        "optimization_success": opt_success,
+                        "stored_in_forbidden_archive": should_store,
+                    },
+                )
 
             self._log_forbidden_archive_decision(
                 epoch=epoch,
@@ -1414,24 +1712,65 @@ class Trainer:
                 step=epoch,
             )
 
-    def clear_llm_graph(self) -> None:
-        """Disable LLM proposal calls during subsequent training epochs."""
+    def clear_llm_graph(self, *, wait: bool = False) -> None:
+        """Disable LLM calls and shut down their worker, optionally waiting."""
+
+        settings = self._llm_loop
         self._llm_loop = None
+        if not settings:
+            return
+        for job in settings.get("jobs", ()):
+            future = job.get("future")
+            if future is not None and not future.done():
+                future.cancel()
+        executor = settings.get("executor")
+        if executor is not None:
+            executor.shutdown(wait=wait, cancel_futures=True)
+
+    def wait_for_llm_graph(self, timeout: Optional[float] = None) -> Optional[Any]:
+        """Wait for all pending LLM jobs and merge them on this thread."""
+
+        settings = self._llm_loop
+        if not settings:
+            return None
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        last_result = None
+        while settings.get("jobs"):
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            before = len(settings["jobs"])
+            result = self._collect_llm_graph_result(
+                completed_epoch=self.state.epoch,
+                wait=True,
+                timeout=remaining,
+            )
+            if result is not None:
+                last_result = result
+            if len(settings["jobs"]) == before:
+                break
+        return last_result
 
     def _maybe_run_llm_graph(self, epoch: int) -> Optional[Any]:
         settings = self._llm_loop
         if not settings:
             return None
 
+        completed_result = None
+        while settings.get("jobs"):
+            before = len(settings["jobs"])
+            result = self._collect_llm_graph_result(completed_epoch=epoch)
+            if result is not None:
+                completed_result = result
+            if len(settings["jobs"]) == before:
+                break
         start_epoch = int(settings["start_epoch"])
         stop_epoch = settings["stop_epoch"]
         every = int(settings["every"])
         if epoch < start_epoch:
-            return None
+            return completed_result
         if stop_epoch is not None and epoch > int(stop_epoch):
-            return None
+            return completed_result
         if (epoch - start_epoch) % every != 0:
-            return None
+            return completed_result
 
         hof = self.s.mult_env.hall_of_fame
         if bool(settings["add_to_hall_of_fame"]) and hof is None:
@@ -1440,76 +1779,345 @@ class Trainer:
             )
         if bool(settings["add_to_hall_of_fame"]) and not hasattr(hof, "add"):
             raise ValueError("LLM proposals require a writable HallOfFame object with an add(...) method.")
+        jobs = settings["jobs"]
+        if len(jobs) >= int(settings["max_in_flight"]):
+            if self.s.logger is not None and hasattr(self.s.logger, "log_metric"):
+                self.s.logger.log_metric("LLM/Pending", len(jobs), step=epoch)
+                self.s.logger.log_metric("LLM/Capacity Skipped", 1, step=epoch)
+            print(
+                f"[epoch {epoch}] LLM cadence reached but {len(jobs)} requests are in flight; "
+                "capacity skip logged",
+                flush=True,
+            )
+            return completed_result
 
         graph = settings["graph"]
-        before = len(hof) if hof is not None else 0
-        tic = time.perf_counter()
-        try:
-            result = graph.run_round(
-                task_description=settings["task_description"],
-                forbidden_topologies_text=self.forbidden_topology_summary(),
-                num_candidates=int(settings["num_candidates"]),
-                hall_of_fame_iter=hof,
-                add_to_hall_of_fame=hof if bool(settings["add_to_hall_of_fame"]) else None,
-                jsonl_path=settings["jsonl_path"],
-                logger=self.s.logger,
-                step=epoch,
+        job_graph = graph.fork() if hasattr(graph, "fork") else graph
+        cross_communication = bool(settings.get("cross_communication", True))
+        withhold_initial_hof = bool(settings.get("withhold_initial_hof", False))
+        is_initial_request = epoch == int(settings["start_epoch"])
+        hall_snapshot = (
+            tuple(env.clone() for env in hof)
+            if (
+                cross_communication
+                and hof is not None
+                and not (withhold_initial_hof and is_initial_request)
             )
+            else ()
+        )
+        job = {
+            "launched_epoch": epoch,
+            "started": time.perf_counter(),
+            "hof_size_at_launch": len(hof) if hof is not None else 0,
+            "graph": job_graph,
+        }
+        job["future"] = settings["executor"].submit(
+            job_graph.run_round,
+            task_description=settings["task_description"],
+            forbidden_topologies_text=(
+                self.forbidden_topology_summary()
+                if cross_communication
+                else "Cross-source exclusion state withheld by the no-communication ablation."
+            ),
+            sil_feedback_text=(
+                self._sil_feedback_summary()
+                if cross_communication
+                else "Cross-source SIL state withheld by the no-communication ablation."
+            ),
+            num_candidates=int(settings["num_candidates"]),
+            hall_of_fame_iter=hall_snapshot,
+            add_to_hall_of_fame=None,
+            jsonl_path=settings["jsonl_path"],
+            logger=self.s.logger,
+            step=epoch,
+        )
+        jobs.append(job)
+        if self.s.logger is not None and hasattr(self.s.logger, "log_metric"):
+            self.s.logger.log_metric("LLM/Triggered", 1, step=epoch)
+            self.s.logger.log_metric("LLM/Background Workers Active", len(jobs), step=epoch)
+            self.s.logger.log_metric("LLM/Requested Count", int(settings["num_candidates"]), step=epoch)
+        print(
+            f"[epoch {epoch}] launched LLM graph in background "
+            f"({len(jobs)}/{int(settings['max_in_flight'])} in flight)",
+            flush=True,
+        )
+        return completed_result
+
+    def _sil_feedback_summary(self) -> str:
+        """Return the latest completed RL SIL update as compact LLM context."""
+
+        agent = getattr(self.s, "agent", None)
+        info = getattr(agent, "last_sil_info", None)
+        if not info:
+            return "No completed SIL update is available yet."
+        return (
+            f"enabled={bool(info.get('enabled'))}; step={info.get('step')}; "
+            f"hall_of_fame_size={int(info.get('hall_of_fame_size', 0))}; "
+            f"sil_loss={info.get('loss')}; loss_weight={info.get('loss_weight')}; "
+            f"weighting_scheme={info.get('weighting_scheme', 'unknown')}"
+        )
+
+    def _collect_llm_graph_result(
+        self,
+        *,
+        completed_epoch: int,
+        wait: bool = False,
+        timeout: Optional[float] = None,
+    ) -> Optional[Any]:
+        """Merge a completed background result into the live HoF on the RL thread."""
+
+        settings = self._llm_loop
+        if not settings:
+            return None
+        jobs = settings.get("jobs", [])
+        ready = jobs[:1] if wait and jobs else [job for job in jobs if job["future"].done()]
+        if not ready:
+            return None
+        job = ready[0]
+        future: Future = job["future"]
+        launched_epoch = int(job.get("launched_epoch", completed_epoch))
+        elapsed = time.perf_counter() - float(job.get("started", time.perf_counter()))
+        hof = self.s.mult_env.hall_of_fame
+        before = len(hof) if hof is not None else 0
+        try:
+            result = future.result(timeout=timeout)
+        except FutureTimeoutError:
+            return None
         except Exception as exc:
-            elapsed = time.perf_counter() - tic
-            message = f"LLM graph failed at epoch {epoch}: {exc}"
+            jobs.remove(job)
+            message = f"LLM graph failed after epoch {launched_epoch}: {exc}"
+            failed_validation = dict(
+                getattr(
+                    getattr(job.get("graph"), "client", None),
+                    "last_response_validation",
+                    {},
+                )
+                or {}
+            )
+            failed_workspace = getattr(job.get("graph"), "client", None)
+            failed_workspace = getattr(failed_workspace, "last_workspace", None)
+            if failed_workspace is not None:
+                failed_validation["provider_call_count"] = int(
+                    getattr(failed_workspace, "call_count", 0)
+                )
+            if self._results_db is not None:
+                self._results_db.record_llm_failure(
+                    launched_epoch=launched_epoch,
+                    completed_epoch=completed_epoch,
+                    requested=int(settings["num_candidates"]),
+                    elapsed_seconds=elapsed,
+                    error=str(exc),
+                    response_validation=failed_validation,
+                )
             settings["history"].append(
                 {
-                    "epoch": epoch,
+                    "epoch": launched_epoch,
+                    "launched_epoch": launched_epoch,
+                    "completed_epoch": completed_epoch,
                     "requested": int(settings["num_candidates"]),
                     "valid": 0,
                     "hof_size_before": before,
                     "hof_size_after": before,
                     "elapsed_seconds": elapsed,
+                    "returned": failed_validation.get("returned_candidate_count"),
+                    "structurally_accepted": failed_validation.get("accepted_candidate_count"),
+                    "structurally_rejected": len(
+                        failed_validation.get("rejected_candidates", ()) or ()
+                    ),
+                    "clamped_parameters": failed_validation.get(
+                        "clamped_parameter_count", 0
+                    ),
                     "error": str(exc),
                 }
             )
             if self.s.logger is not None:
                 if hasattr(self.s.logger, "log_metric"):
-                    self.s.logger.log_metric("LLM/Triggered", 1, step=epoch)
-                    self.s.logger.log_metric("LLM/Failed", 1, step=epoch)
-                    self.s.logger.log_metric("LLM/Timing Trainer Hook Seconds", elapsed, step=epoch)
+                    self.s.logger.log_metric("LLM/Failed", 1, step=completed_epoch)
+                    self.s.logger.log_metric("LLM/Timing Generation Seconds", elapsed, step=completed_epoch)
+                    self.s.logger.log_metric(
+                        "LLM/Structurally Rejected Members",
+                        len(failed_validation.get("rejected_candidates", ()) or ()),
+                        step=completed_epoch,
+                    )
+                    self.s.logger.log_metric(
+                        "LLM/Model Requests",
+                        int(failed_validation.get("provider_call_count", 0) or 0),
+                        step=completed_epoch,
+                    )
                 if hasattr(self.s.logger, "log_text"):
                     self.s.logger.log_text(message)
-            print(f"[epoch {epoch}] {message}")
+            print(f"[epoch {completed_epoch}] {message}", flush=True)
             return None
-        elapsed = time.perf_counter() - tic
-        after = len(hof) if hof is not None else 0
-        valid = sum(1 for ev in result.evaluations if ev.valid)
 
+        jobs.remove(job)
+        configured_graph = settings["graph"]
+        if job.get("graph") is not configured_graph and hasattr(configured_graph, "memory"):
+            configured_graph.memory.update_many(result.evaluations)
+        self._register_llm_provenance(
+            result,
+            launched_epoch=launched_epoch,
+            expose_to_rl=bool(settings["add_to_hall_of_fame"]),
+        )
+        if bool(settings["add_to_hall_of_fame"]) and hof is not None:
+            for evaluation in result.evaluations:
+                if evaluation.valid and evaluation.env is not None:
+                    hof.add(evaluation.env)
+        elif not bool(settings.get("cross_communication", True)):
+            settings["isolated_candidates"].extend(
+                evaluation.env.clone()
+                for evaluation in result.evaluations
+                if evaluation.valid and evaluation.env is not None
+            )
+        after = len(hof) if hof is not None else 0
+        valid = sum(1 for evaluation in result.evaluations if evaluation.valid)
+        tool_evaluations = len(getattr(result, "tool_evaluations", ()) or ())
+        response_validation = dict(
+            getattr(result, "response_validation", {}) or {}
+        )
+        if self._results_db is not None:
+            self._results_db.record_llm_round(
+                result,
+                launched_epoch=launched_epoch,
+                completed_epoch=completed_epoch,
+                elapsed_seconds=elapsed,
+                requested=int(settings["num_candidates"]),
+            )
         settings["history"].append(
             {
-                "epoch": epoch,
+                "epoch": launched_epoch,
+                "launched_epoch": launched_epoch,
+                "completed_epoch": completed_epoch,
                 "requested": int(settings["num_candidates"]),
                 "valid": valid,
+                "returned": response_validation.get("returned_candidate_count"),
+                "structurally_accepted": response_validation.get("accepted_candidate_count"),
+                "structurally_rejected": len(
+                    response_validation.get("rejected_candidates", ()) or ()
+                ),
+                "clamped_parameters": response_validation.get("clamped_parameter_count", 0),
+                "tool_evaluations": tool_evaluations,
+                "total_llm_candidate_evaluations": len(result.evaluations) + tool_evaluations,
                 "hof_size_before": before,
                 "hof_size_after": after,
                 "elapsed_seconds": elapsed,
             }
         )
-
         if self.s.logger is not None and hasattr(self.s.logger, "log_metric"):
-            self.s.logger.log_metric("LLM/Triggered", 1, step=epoch)
-            self.s.logger.log_metric("LLM/Requested Count", int(settings["num_candidates"]), step=epoch)
-            self.s.logger.log_metric("LLM/Hall of Fame Size Before", before, step=epoch)
-            self.s.logger.log_metric("LLM/Hall of Fame Size After", after, step=epoch)
-            self.s.logger.log_metric("LLM/Timing Trainer Hook Seconds", elapsed, step=epoch)
-
+            self.s.logger.log_metric("LLM/Completed", 1, step=completed_epoch)
+            self.s.logger.log_metric("LLM/Hall of Fame Size Before", before, step=completed_epoch)
+            self.s.logger.log_metric("LLM/Hall of Fame Size After", after, step=completed_epoch)
+            self.s.logger.log_metric("LLM/Timing Generation Seconds", elapsed, step=completed_epoch)
+            self.s.logger.log_metric("LLM/Timing Trainer Hook Seconds", 0.0, step=completed_epoch)
+            self.s.logger.log_metric("LLM/Tool Evaluations", tool_evaluations, step=completed_epoch)
+            self.s.logger.log_metric(
+                "LLM/Structurally Rejected Members",
+                len(response_validation.get("rejected_candidates", ()) or ()),
+                step=completed_epoch,
+            )
+            self.s.logger.log_metric(
+                "LLM/Host-Clamped Parameters",
+                int(response_validation.get("clamped_parameter_count", 0) or 0),
+                step=completed_epoch,
+            )
+            self.s.logger.log_metric(
+                "LLM/Total Candidate Evaluations",
+                len(result.evaluations) + tool_evaluations,
+                step=completed_epoch,
+            )
         best = min(
             (float(ev.loss) for ev in result.evaluations if ev.valid and ev.loss is not None),
             default=float("nan"),
         )
         print(
-            f"[epoch {epoch}] LLM graph proposed {int(settings['num_candidates'])} CRNs | "
+            f"[epoch {completed_epoch}] "
+            f"{'merged' if bool(settings['add_to_hall_of_fame']) else 'retained isolated'} "
+            f"background LLM proposal launched at "
+            f"epoch {launched_epoch} | requested={int(settings['num_candidates'])} | "
             f"valid={valid} | best={best:.4g} | HoF {before}->{after} | "
-            f"llm_time={elapsed:.3g}s"
+            f"llm_time={elapsed:.3g}s",
+            flush=True,
         )
         return result
+
+    def _register_llm_provenance(
+        self,
+        result: Any,
+        *,
+        launched_epoch: int,
+        expose_to_rl: bool,
+    ) -> None:
+        """Record exact LLM candidates and prior topology ownership for later HOF labels."""
+
+        hof = getattr(self.s.mult_env, "hall_of_fame", None)
+        preexisting_topologies = set(self._rl_seen_topologies) | {
+            serialize_crn(env.state)["topology_hash"]
+            for env in (hof or ())
+            if str(
+                (getattr(env.state, "last_task_info", {}) or {}).get("source", "RL")
+            ).upper() != "LLM"
+        }
+        validation = dict(getattr(result, "response_validation", {}) or {})
+        accepted_indices = list(validation.get("accepted_candidate_indices", ()) or ())
+        for result_index, evaluation in enumerate(result.evaluations):
+            if not evaluation.valid or evaluation.env is None:
+                continue
+            crn = serialize_crn(evaluation.env.state)
+            writer_index = (
+                int(accepted_indices[result_index])
+                if result_index < len(accepted_indices)
+                else result_index
+            )
+            proposal_id = f"epoch-{int(launched_epoch)}:writer-member-{writer_index}"
+            record = self._llm_provenance_by_topology.get(crn["topology_hash"])
+            if record is None:
+                record = {
+                    "topology_first_emitter": (
+                        "RL" if crn["topology_hash"] in preexisting_topologies else "LLM"
+                    ),
+                    "first_proposal_id": proposal_id,
+                    "first_seen_epoch": int(launched_epoch),
+                    "candidate_hashes": set(),
+                    "exposed_to_rl": bool(expose_to_rl),
+                }
+                self._llm_provenance_by_topology[crn["topology_hash"]] = record
+            record["candidate_hashes"].add(crn["candidate_hash"])
+            record["exposed_to_rl"] = bool(record.get("exposed_to_rl") or expose_to_rl)
+            info = dict(getattr(evaluation.env.state, "last_task_info", {}) or {})
+            info.update(
+                {
+                    "source": "LLM",
+                    "emitter": "LLM",
+                    "provenance_class": "direct_llm",
+                    "llm_proposal_id": proposal_id,
+                    "llm_first_seen_epoch": int(record["first_seen_epoch"]),
+                    "topology_first_emitter": record["topology_first_emitter"],
+                }
+            )
+            evaluation.env.state.last_task_info = info
+            object.__setattr__(evaluation, "task_info", info)
+
+    def merge_isolated_llm_candidates(self) -> int:
+        """Pool retained LLM candidates into the HOF after RL training ends."""
+
+        settings = self._llm_loop
+        hof = getattr(self.s.mult_env, "hall_of_fame", None)
+        if not settings or hof is None:
+            return 0
+        candidates = list(settings.get("isolated_candidates", ()))
+        for candidate in candidates:
+            hof.add(candidate)
+        settings["isolated_candidates"] = []
+        return len(candidates)
+
+    def _remember_rl_hof_topologies(self) -> None:
+        """Remember every RL-emitted HOF topology seen before later LLM proposals."""
+
+        hof = getattr(self.s.mult_env, "hall_of_fame", None)
+        for env in (hof or ()):
+            info = dict(getattr(env.state, "last_task_info", {}) or {})
+            if str(info.get("source", "RL")).upper() == "LLM":
+                continue
+            self._rl_seen_topologies.add(serialize_crn(env.state)["topology_hash"])
 
     def llm_graph_history(self) -> List[Dict[str, Any]]:
         """Return summary records for LLM calls made during this trainer session."""
@@ -1674,9 +2282,11 @@ class Trainer:
         else:
             reward_fn = base_reward_fn
         rewards = mult_env.get_reward(reward_fn)
+        self._remember_rl_hof_topologies()
         self._log_loss_components(self.state.epoch)
         self._refresh_forbidden_topologies(self.state.epoch)
         self._maybe_run_llm_graph(self.state.epoch)
+        self._maybe_persist_hof(self.state.epoch)
 
         agent.update(
             rewards,
@@ -1732,6 +2342,10 @@ class Trainer:
             print("\nStopped early (KeyboardInterrupt). You can inspect and resume by calling run(...) again.")
             if checkpoint_path is not None:
                 self.save(checkpoint_path)
+        finally:
+            if self._results_db is not None and self.state.epoch > 0:
+                self._maybe_persist_hof(self.state.epoch - 1, force=True)
+                self.flush_results_database()
 
     def best_crn(self) -> Optional[Any]:
         """Return the best CRN currently in the hall of fame.
@@ -1982,7 +2596,7 @@ class Trainer:
         return [env.state for env in self.s.sample_hof]
 
 
-def make_session_and_trainer(cfg: Config, task: TaskSpec, device: str = "auto", logger: Any = None) -> Tuple[Session, Trainer]:
+def make_session_and_trainer(cfg: Config, task: TaskSpec, device: str = "auto", logger: Any = None) -> Trainer:
     """Convenience function to build a session and trainer.
 
     Args:

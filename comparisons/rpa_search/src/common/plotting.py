@@ -13,6 +13,7 @@ from matplotlib.lines import Line2D
 
 METHOD_LABELS = {
     "rl4crn": "GenAI-Net (ours)",
+    "genai_net_llm": "GenAI-Net-LLM (ours)",
     "circuitree": "CircuiTree",
     "reaction_network_evolution_jl": "ReactionNetworkEvolution.jl",
     "reaction_network_evolution_jl_constrained": "ReactionNetworkEvolution.jl (<=5 rxns)",
@@ -22,6 +23,7 @@ METHOD_LABELS = {
 
 METHOD_COLORS = {
     "rl4crn": "#0072B2",
+    "genai_net_llm": "#009E73",
     "circuitree": "#009E73",
     "reaction_network_evolution_jl": "#D55E00",
     "reaction_network_evolution_jl_constrained": "#E69F00",
@@ -29,8 +31,16 @@ METHOD_COLORS = {
     "random_search": "#7A3E9D",
 }
 
+# Candidate provenance follows the database viewer convention. These colors
+# describe the emitting source, independently of the method-level palette above.
+SOURCE_COLORS = {
+    "llm": "#0072B2",
+    "rl": "#009E73",
+}
+
 METHOD_ORDER = [
     "rl4crn",
+    "genai_net_llm",
     "reaction_network_evolution_jl",
     "reaction_network_evolution_jl_constrained",
     "reaction_network_evolution_jl_constrained_bounded",

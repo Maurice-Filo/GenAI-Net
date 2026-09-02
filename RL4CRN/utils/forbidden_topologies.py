@@ -31,11 +31,14 @@ class ForbiddenTopologyRecord:
     optimization_attempted: bool = False
     optimization_success: bool = False
     optimization_message: str = ""
+    reaction_ids: Tuple[int, ...] = ()
+    exclusion_reason: str = "fully processed"
 
     def to_prompt_text(self) -> str:
         return (
-            f"- forbidden topology rank={self.rank}, archived_epoch={self.epoch}, "
-            f"loss={self.loss:.6g}, source={self.source}\n{self.crn}"
+            f"- reaction_ids={list(self.reaction_ids)}; best_loss={self.loss:.6g}; "
+            f"processed_epoch={self.epoch}; source={self.source}; "
+            f"reason={self.exclusion_reason}"
         )
 
 
@@ -62,6 +65,7 @@ class ForbiddenTopologyArchive:
         optimization_attempted: bool = False,
         optimization_success: bool = False,
         optimization_message: str = "",
+        exclusion_reason: str = "fully processed and excluded from future topology search",
     ) -> bool:
         """Add a topology, returning True only when it was newly archived."""
 
@@ -78,6 +82,8 @@ class ForbiddenTopologyArchive:
             optimization_attempted=bool(optimization_attempted),
             optimization_success=bool(optimization_success),
             optimization_message=str(optimization_message),
+            reaction_ids=_reaction_ids_from_state(state),
+            exclusion_reason=str(exclusion_reason),
         )
         return True
 
@@ -106,9 +112,32 @@ class ForbiddenTopologyArchive:
 
         if not self.records:
             return "No forbidden topologies have been archived yet."
-        ordered = sorted(self.records.values(), key=lambda r: (r.epoch, r.rank))
-        shown = ordered[-int(limit) :]
-        return "\n".join(record.to_prompt_text() for record in shown)
+        count = max(1, int(limit))
+        records = list(self.records.values())
+        best = sorted(records, key=lambda record: (record.loss, record.epoch, record.rank))
+        recent = sorted(records, key=lambda record: (record.epoch, -record.rank), reverse=True)
+        shown = []
+        for record in best[: (count + 1) // 2] + recent:
+            if record not in shown:
+                shown.append(record)
+            if len(shown) >= count:
+                break
+        header = (
+            f"Excluded topology archive: showing {len(shown)} of {len(records)} "
+            "best/recent fully processed entries. Do not reuse these reaction-ID sets."
+        )
+        return header + "\n" + "\n".join(record.to_prompt_text() for record in shown)
+
+
+def _reaction_ids_from_state(state: Any) -> Tuple[int, ...]:
+    """Extract stable reaction IDs for compact model-facing archive records."""
+
+    if hasattr(state, "gather_reaction_IDs"):
+        return tuple(sorted(int(value) for value in state.gather_reaction_IDs()))
+    values = state.get_bool_signature().tolist()
+    if values and all(isinstance(value, bool) for value in values):
+        return tuple(index for index, present in enumerate(values) if present)
+    return tuple(sorted(int(value) for value in values))
 
 
 def reward_with_forbidden_topologies(

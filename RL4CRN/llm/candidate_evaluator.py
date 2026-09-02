@@ -36,6 +36,9 @@ class LLMCandidateEvaluator:
         is_ordered_policy: bool = False,
         logger: Any = None,
         min_parameter_value: float = 1e-6,
+        max_parameter_value: Optional[float] = None,
+        enforce_parameter_bounds: bool = False,
+        forbidden_reaction_ids: Optional[Sequence[int]] = None,
         require_full_budget: bool = True,
         require_unique_reactions: bool = True,
         forbidden_topologies: Optional[ForbiddenTopologyArchive] = None,
@@ -50,6 +53,26 @@ class LLMCandidateEvaluator:
         self.is_ordered_policy = bool(is_ordered_policy)
         self.logger = logger
         self.min_parameter_value = float(min_parameter_value)
+        self.max_parameter_value = (
+            float(max_parameter_value) if max_parameter_value is not None else None
+        )
+        self.enforce_parameter_bounds = bool(enforce_parameter_bounds)
+        template_reaction_ids = getattr(crn_template, "gather_reaction_IDs", None)
+        self.initial_reaction_ids = frozenset(
+            int(reaction_id)
+            for reaction_id in (
+                template_reaction_ids() if callable(template_reaction_ids) else ()
+            )
+            if reaction_id is not None
+        )
+        self.forbidden_reaction_ids = self.initial_reaction_ids | frozenset(
+            int(reaction_id) for reaction_id in (forbidden_reaction_ids or ())
+        )
+        if (
+            self.max_parameter_value is not None
+            and self.max_parameter_value < self.min_parameter_value
+        ):
+            raise ValueError("max_parameter_value must be at least min_parameter_value.")
         self.require_full_budget = bool(require_full_budget)
         self.require_unique_reactions = bool(require_unique_reactions)
         self.forbidden_topologies = forbidden_topologies
@@ -61,6 +84,9 @@ class LLMCandidateEvaluator:
         session: Any,
         *,
         min_parameter_value: float = 1e-6,
+        max_parameter_value: Optional[float] = None,
+        enforce_parameter_bounds: bool = False,
+        forbidden_reaction_ids: Optional[Sequence[int]] = None,
         require_full_budget: bool = True,
         require_unique_reactions: bool = True,
     ) -> "LLMCandidateEvaluator":
@@ -76,6 +102,9 @@ class LLMCandidateEvaluator:
             is_ordered_policy=bool(getattr(session.cfg.policy, "ordering_enabled", False)),
             logger=session.logger,
             min_parameter_value=min_parameter_value,
+            max_parameter_value=max_parameter_value,
+            enforce_parameter_bounds=enforce_parameter_bounds,
+            forbidden_reaction_ids=forbidden_reaction_ids,
             require_full_budget=require_full_budget,
             require_unique_reactions=require_unique_reactions,
             forbidden_topologies=getattr(session, "forbidden_topologies", None),
@@ -154,6 +183,7 @@ class LLMCandidateEvaluator:
                 )
 
             loss, task_info = self._compute_loss(env)
+            task_info.setdefault("source", "LLM")
             env.state.last_task_info = dict(getattr(env.state, "last_task_info", {}) or {})
             env.state.last_task_info.update(task_info)
             env.state.last_task_info["reward"] = loss
@@ -225,6 +255,12 @@ class LLMCandidateEvaluator:
                     valid=False,
                     message=f"reaction ID {reaction_id} is outside the library.",
                 )
+            if reaction_id in self.forbidden_reaction_ids:
+                return CandidateEvaluation(
+                    candidate=candidate,
+                    valid=False,
+                    message=f"reaction ID {reaction_id} is forbidden for this task.",
+                )
 
             reaction = self.library.get_reaction(int(reaction_id))
             expected = int(getattr(reaction, "num_parameters", len(params)))
@@ -247,7 +283,27 @@ class LLMCandidateEvaluator:
                         valid=False,
                         message="parameters must be finite numbers.",
                     )
-                sanitized.append(max(self.min_parameter_value, value))
+                if value <= 0:
+                    return CandidateEvaluation(
+                        candidate=candidate,
+                        valid=False,
+                        message="parameters must be positive numbers.",
+                    )
+                if self.enforce_parameter_bounds and value < self.min_parameter_value:
+                    return CandidateEvaluation(
+                        candidate=candidate,
+                        valid=False,
+                        message=f"parameters must be at least {self.min_parameter_value:g}.",
+                    )
+                if self.max_parameter_value is not None and value > self.max_parameter_value:
+                    return CandidateEvaluation(
+                        candidate=candidate,
+                        valid=False,
+                        message=f"parameters must be at most {self.max_parameter_value:g}.",
+                    )
+                sanitized.append(
+                    value if self.enforce_parameter_bounds else max(self.min_parameter_value, value)
+                )
             checked_params.append(sanitized)
 
         if self.is_ordered_policy:

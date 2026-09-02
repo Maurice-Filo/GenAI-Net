@@ -145,6 +145,13 @@ class REINFORCEAgent(AbstractAgent):
         self.use_adaptive_baseline = sil_settings.get('use_adaptive_baseline', False)
         self.baseline_annealing_rate = sil_settings.get('baseline_annealing_rate', 0.95)
         self.adaptive_baseline = None
+        self.last_sil_info = {
+            'enabled': False,
+            'step': None,
+            'hall_of_fame_size': 0,
+            'loss': None,
+            'loss_weight': float(self.sil_settings.get('sil_loss_weight', 1.0)),
+        }
         
     def act(self, states, actuator, mode='full'):
         """Sample actions from the policy for a batch of states.
@@ -294,7 +301,7 @@ class REINFORCEAgent(AbstractAgent):
             # collapse, yielding log_prob == -inf. Even 0 * -inf is NaN in torch.
             valid = torch.isfinite(all_logPs) & torch.isfinite(advantages) & (advantages > 0.0)
             if not valid.any():
-                return all_logPs.sum() * 0.0
+                return torch.zeros((), device=all_logPs.device, dtype=all_logPs.dtype)
 
             sil_loss = -(all_logPs[valid] * weights[valid] * advantages[valid]).mean()
 
@@ -395,6 +402,18 @@ class REINFORCEAgent(AbstractAgent):
         if use_sil:
             sil_loss = self.self_imitation_learingin_loss(hof, final_loss_for_each_sample, top_k, weighting_scheme=sil_weighting_scheme, observer=observer, tensorizer=tensorizer, stepper=stepper, sil_batch_size=sil_batch_size)
             loss_for_gradient_entropy_mean += sil_loss*self.sil_settings['sil_loss_weight']
+        sil_loss_value = None
+        if sil_loss is not None:
+            sil_loss_value = float(sil_loss.detach().cpu()) if isinstance(sil_loss, torch.Tensor) else float(sil_loss)
+        self.last_sil_info = {
+            'enabled': bool(use_sil),
+            'step': step_iteration,
+            'hall_of_fame_size': len(hof) if hof is not None else 0,
+            'loss': sil_loss_value,
+            'loss_weight': float(self.sil_settings.get('sil_loss_weight', 1.0)),
+            'batch_size': sil_batch_size,
+            'weighting_scheme': sil_weighting_scheme,
+        }
 
         if not torch.isfinite(loss_for_gradient_entropy_mean):
             self.optimizer.zero_grad()
