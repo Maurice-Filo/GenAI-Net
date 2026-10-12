@@ -42,13 +42,26 @@ class HybridRunnerConfigurationTests(unittest.TestCase):
             source.index("trainer.wait_for_llm_graph"),
             source.index("trainer.merge_isolated_llm_candidates"),
         )
-        self.assertIn('choices=("full", "none")', source)
+        self.assertIn('"llm-to-rl": {"expose_state_to_llm": False, "insert_llm_into_rl": True}', source)
+        self.assertIn('"rl-to-llm": {"expose_state_to_llm": True, "insert_llm_into_rl": False}', source)
+        self.assertIn("choices=tuple(COMMUNICATION_MODES)", source)
 
     def test_initial_hof_can_be_withheld_without_disabling_communication(self):
         source = RUNNER.read_text(encoding="utf-8")
 
         self.assertIn("--withhold-initial-hof", source)
         self.assertIn("withhold_initial_hof=args.withhold_initial_hof", source)
+
+    def test_named_training_and_terminal_boundaries_surround_llm_drain(self):
+        source = RUNNER.read_text(encoding="utf-8")
+
+        training = source.index('boundary="training_boundary"')
+        wait = source.index("trainer.wait_for_llm_graph")
+        terminal = source.index('boundary="terminal_boundary"')
+        self.assertLess(training, wait)
+        self.assertLess(wait, terminal)
+        self.assertIn("llm_tool_evaluations=llm_tool_evaluations", source)
+        self.assertIn("llm_final_evaluations=llm_final_evaluations", source)
 
     def test_contract_v2_uses_two_stage_graph_member_validation_and_new_bounds(self):
         source = RUNNER.read_text(encoding="utf-8")

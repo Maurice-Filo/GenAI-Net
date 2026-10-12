@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import csv
+import hashlib
 import json
 import re
 import secrets
@@ -46,6 +47,31 @@ class CampaignProgressReader:
             "totals": totals,
             "campaigns": campaigns,
         }
+
+    def databases(self) -> List[Dict[str, Any]]:
+        """Discover selectable trials only within campaigns declared in the plan."""
+        plan = json.loads(self.path.read_text(encoding="utf-8"))
+        result = []
+        for campaign in plan.get("campaigns", []):
+            if not campaign.get("status_path"):
+                continue
+            root = Path(campaign["status_path"]).expanduser().parent / "runs"
+            entries = []
+            for path in root.glob("*/*/results.sqlite"):
+                match = re.fullmatch(r"(.+)_full\d+_seed(\d+)_.+", path.parent.name)
+                if match is None or match[1] not in campaign.get("tasks", []):
+                    continue
+                task, seed = match[1], int(match[2])
+                entries.append({
+                    "id": hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:24],
+                    "path": str(path.resolve()),
+                    "campaign_id": campaign.get("id"),
+                    "label": f"{campaign.get('label', campaign.get('id'))} · seed {seed}",
+                    "task": task,
+                    "seed": seed,
+                })
+            result.extend(sorted(entries, key=lambda entry: (entry["task"], entry["seed"])))
+        return result
 
     def _campaign(self, item: Dict[str, Any]) -> Dict[str, Any]:
         result = dict(item)
@@ -117,6 +143,7 @@ class CampaignProgressReader:
                 "active": len(active_rows),
                 "pending": pending,
                 "failed": failed,
+                "llm_failure_count": sum(row.get("llm_failure_count", 0) for row in active_progress),
                 "phase": phase,
                 "active_runs": active_progress,
                 "progress_units": progress_units,
@@ -150,6 +177,16 @@ class CampaignProgressReader:
                 progress["progress_path"] = str(matches[0])
         except (OSError, ValueError):
             pass
+        database = matches[0].parent / "results.sqlite"
+        if database.is_file():
+            try:
+                with sqlite3.connect(f"file:{quote(str(database))}?mode=ro", uri=True, timeout=0.2) as connection:
+                    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    for table, field in (("llm_runs", "llm_completed_count"), ("llm_failures", "llm_failure_count")):
+                        if table in tables:
+                            progress[field] = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            except sqlite3.Error:
+                pass
         return progress
 
 
@@ -838,6 +875,10 @@ def _handler(
     access_token: Optional[str] = None,
     campaign_reader: Optional[CampaignProgressReader] = None,
 ) -> type[BaseHTTPRequestHandler]:
+    def databases() -> List[Dict[str, Any]]:
+        entries = campaign_reader.databases() if campaign_reader else []
+        return entries or [{"id": "default", "path": str(reader.path), "label": reader.trial_id}]
+
     class ViewerHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
@@ -846,15 +887,36 @@ def _handler(
                 self._json(403, {"error": "invalid or missing access token"})
                 return
             if parsed.path in {"/", "/index.html"}:
-                self._send(200, "text/html; charset=utf-8", _HTML.encode("utf-8"))
+                html = _HTML.replace("/*DEFAULT_VIEW*/'overview'", "'campaigns'" if campaign_reader else "'overview'")
+                self._send(200, "text/html; charset=utf-8", html.encode("utf-8"))
                 return
             if parsed.path == "/favicon.ico":
                 self.send_response(204)
                 self.end_headers()
                 return
+            if parsed.path == "/api/databases":
+                self._json(200, databases())
+                return
+            if parsed.path == "/api/campaigns":
+                if campaign_reader:
+                    self._json(200, campaign_reader.snapshot())
+                else:
+                    self._json(404, {"error": "No campaign plan"})
+                return
+            try:
+                selected_reader = reader
+                database_id = _query_value(query, "database")
+                if database_id:
+                    entry = next((entry for entry in databases() if entry["id"] == database_id), None)
+                    if entry is None:
+                        raise ValueError("Unknown campaign database")
+                    selected_reader = ResultsDatabaseReader(entry["path"])
+            except (ValueError, OSError, sqlite3.Error) as exc:
+                self._json(400, {"error": str(exc)})
+                return
             if parsed.path == "/api/hof-plot":
                 try:
-                    plot = reader.hof_plot(_required_query(query, "topology_hash"))
+                    plot = selected_reader.hof_plot(_required_query(query, "topology_hash"))
                 except ValueError as exc:
                     self._json(400, {"error": str(exc)})
                     return
@@ -871,20 +933,17 @@ def _handler(
             limit = _limit(_query_value(query, "limit") or 200)
             try:
                 routes = {
-                    "/api/campaigns": lambda: (
-                        campaign_reader.snapshot() if campaign_reader is not None else None
-                    ),
-                    "/api/runs": lambda: reader.runs(),
-                    "/api/summary": lambda: reader.summary(run_id),
-                    "/api/history": lambda: reader.loss_history(run_id),
-                    "/api/hof": lambda: reader.latest_hof(run_id, limit),
-                    "/api/optimizations": lambda: reader.optimizations(run_id, limit),
-                    "/api/llm": lambda: reader.llm_runs(run_id, limit),
-                    "/api/llm-candidates": lambda: reader.llm_candidates(
+                    "/api/runs": lambda: selected_reader.runs(),
+                    "/api/summary": lambda: selected_reader.summary(run_id),
+                    "/api/history": lambda: selected_reader.loss_history(run_id),
+                    "/api/hof": lambda: selected_reader.latest_hof(run_id, limit),
+                    "/api/optimizations": lambda: selected_reader.optimizations(run_id, limit),
+                    "/api/llm": lambda: selected_reader.llm_runs(run_id, limit),
+                    "/api/llm-candidates": lambda: selected_reader.llm_candidates(
                         _required_query(query, "llm_run_id")
                     ),
-                    "/api/crns": lambda: reader.crns(run_id, limit),
-                    "/api/crn": lambda: reader.crn_detail(
+                    "/api/crns": lambda: selected_reader.crns(run_id, limit),
+                    "/api/crn": lambda: selected_reader.crn_detail(
                         _required_query(query, "topology_hash")
                     ),
                 }
@@ -1014,7 +1073,8 @@ _HTML = r"""<!doctype html>
     nav button { width:100%; text-align:left; border-color:transparent; background:transparent; margin-bottom:4px; }
     nav button.active { background:#e8f2ed; border-color:#c6ddd1; }
     main { min-width:0; padding:22px 26px 40px; }
-    .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:18px; }
+    .toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:18px; }
+    #databaseSelect { max-width:100%; }
     .toolbar label { color:var(--muted); }
     #runSelect { flex:1; min-width:0; }
     .metrics { display:grid; grid-template-columns:repeat(6,minmax(120px,1fr)); border:1px solid var(--line); background:var(--paper); margin-bottom:18px; }
@@ -1136,11 +1196,11 @@ _HTML = r"""<!doctype html>
       <button data-view="crns">Saved CRNs</button>
     </nav>
     <main>
-      <div class="toolbar"><label for="taskSelect">Task</label><select id="taskSelect"><option value="">All tasks</option></select><label for="runSelect">Run</label><select id="runSelect"><option value="">All runs</option></select><span id="status"></span></div>
+      <div class="toolbar"><label for="databaseSelect">Trial</label><select id="databaseSelect"></select><label for="taskSelect">Task</label><select id="taskSelect"><option value="">All tasks</option></select><label for="runSelect">Run</label><select id="runSelect"><option value="">All runs</option></select><span id="status"></span></div>
       <div id="error"></div>
       <section id="campaigns">
         <div class="campaign-summary" id="campaignSummary"></div>
-        <div class="panel"><div class="panel-head"><h2>Paper experiment queue</h2><span id="campaignUpdated"></span></div><div class="campaign-list" id="campaignList"></div></div>
+        <div class="panel"><div class="panel-head"><h2 id="campaignTitle">Experiments</h2><span id="campaignUpdated"></span></div><div class="campaign-list" id="campaignList"></div></div>
       </section>
       <section id="overview" class="active">
         <div class="metrics" id="metrics"></div>
@@ -1155,22 +1215,23 @@ _HTML = r"""<!doctype html>
   <dialog id="detail"><div class="dialog-head"><h2 id="detailTitle">Details</h2><button id="closeDetail" aria-label="Close">Close</button></div><div id="detailBody" class="detail-body"></div></dialog>
   <script>
     const pageParams = new URLSearchParams(location.search);
-    const requestedView = ['campaigns','overview','hof','optimizations','llm','crns'].includes(pageParams.get('view')) ? pageParams.get('view') : 'overview';
-    const state = { view:requestedView, task:'', run:'', runs:[], history:[] };
+    const requestedView = ['campaigns','overview','hof','optimizations','llm','crns'].includes(pageParams.get('view')) ? pageParams.get('view') : /*DEFAULT_VIEW*/'overview';
+    const state = { view:requestedView, database:pageParams.get('database')||'', databases:[], task:'', run:'', runs:[], history:[] };
     const $ = id => document.getElementById(id);
     const fmt = v => v === null || v === undefined ? '-' : typeof v === 'number' ? (Math.abs(v) < .001 && v !== 0 ? v.toExponential(3) : v.toLocaleString(undefined,{maximumSignificantDigits:6})) : String(v);
     const duration = seconds => { if(seconds===null||seconds===undefined)return '-'; if(seconds<60)return `${seconds.toFixed(1)} s`; if(seconds<3600){const minutes=Math.floor(seconds/60),rest=Math.round(seconds%60);return `${minutes}m ${rest}s`;}if(seconds<86400){const hours=Math.floor(seconds/3600),minutes=Math.round((seconds%3600)/60);return `${hours}h ${minutes}m`;}const days=Math.floor(seconds/86400),hours=Math.round((seconds%86400)/3600);return `${days}d ${hours}h`; };
     const shortHash = v => v ? v.slice(0,12) : '-';
     const accessToken = pageParams.get('token') || '';
-    function assetUrl(path,params={}){const q=new URLSearchParams(params);if(accessToken)q.set('token',accessToken);return path+(q.size?'?'+q:'');}
-    async function api(path, params={}) { const q = new URLSearchParams(params); if(accessToken)q.set('token',accessToken); const r = await fetch(path+(q.size?'?'+q:'')); const data = await r.json(); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
+    function assetUrl(path,params={}){const q=new URLSearchParams(params);if(accessToken)q.set('token',accessToken);if(state.database)q.set('database',state.database);return path+(q.size?'?'+q:'');}
+    async function api(path, params={}) { const r = await fetch(assetUrl(path,params)); const data = await r.json(); if(!r.ok) throw new Error(data.error||'Request failed'); return data; }
     function showError(err) { $('error').innerHTML = err ? `<div class="error"></div>` : ''; if(err) $('error').firstElementChild.textContent=err.message||err; }
     function table(target, columns, rows, onClick) { const root=$(target); if(!rows.length){root.innerHTML='<div class="empty">No records yet</div>'; return;} const t=document.createElement('table'); const h=t.createTHead().insertRow(); columns.forEach(c=>{const th=document.createElement('th');th.textContent=c[0];h.appendChild(th)}); const b=t.createTBody(); rows.forEach(row=>{const tr=b.insertRow(); columns.forEach(c=>{const td=tr.insertCell(); const value=c[1](row); td.textContent=value.text ?? value; if(value.className)td.className=value.className;}); if(onClick)tr.onclick=()=>onClick(row)}); root.replaceChildren(t); }
     const value = (text,className='') => ({text:fmt(text),className});
-    async function loadRuns(){ state.runs=await api('/api/runs'); const tasks=[...new Set(state.runs.map(r=>r.task))].sort(); for(const task of tasks){const o=document.createElement('option');o.value=task;o.textContent=task;$('taskSelect').appendChild(o)} renderRuns(); }
+    async function loadDatabases(){state.databases=await api('/api/databases');const select=$('databaseSelect');select.replaceChildren();for(const entry of state.databases){const option=document.createElement('option');option.value=entry.id;option.textContent=entry.label;select.appendChild(option)}if(!state.databases.some(entry=>entry.id===state.database))state.database=state.databases[0]?.id||'';select.value=state.database;}
+    async function loadRuns(){ state.runs=await api('/api/runs'); const tasks=[...new Set(state.runs.map(r=>r.task))].sort(); $('taskSelect').replaceChildren(new Option('All tasks','')); for(const task of tasks){const o=document.createElement('option');o.value=task;o.textContent=task;$('taskSelect').appendChild(o)} $('taskSelect').value=state.task; renderRuns(); }
     function renderRuns(){ const select=$('runSelect');select.replaceChildren();const matching=state.task?state.runs.filter(r=>r.task===state.task):state.runs;if(!state.task){const all=document.createElement('option');all.value='';all.textContent='All runs';select.appendChild(all)}for(const r of matching){const o=document.createElement('option');o.value=r.run_id;o.textContent=`${r.run_id} | epoch ${r.latest_epoch ?? '-'}`;select.appendChild(o)}if(state.task&&matching.length){state.run=matching[0].run_id;select.value=state.run}else{state.run='';select.value='';} }
     async function loadOverview(){ const [s,h]=await Promise.all([api('/api/summary',{run_id:state.run}),api('/api/history',{run_id:state.run})]); $('dbPath').textContent=`Trial ${s.trial_id} | ${s.database}`; const items=[['Best loss',fmt(s.best_loss)],['Topologies',s.topology_count],['Evaluations',s.evaluation_count],['Optimizations',s.optimization_count],['LLM candidates',s.llm_candidate_count],['Failed LLM rounds',s.llm_failure_count],['Latest epoch',s.latest_epoch ?? '-']]; $('metrics').innerHTML=items.map(x=>`<div class="metric"><span>${x[0]}</span><strong>${x[1]}</strong></div>`).join(''); state.history=h; drawChart(); }
-    async function loadCampaigns(){const data=await api('/api/campaigns');const totals=data.totals;const summary=[['Plan progress',`${totals.progress_percent.toFixed(1)}%`],['Runs',totals.runs],['Completed',totals.completed],['Active',totals.active],['Pending',totals.pending],['Failed',totals.failed]];$('campaignSummary').innerHTML=summary.map(x=>`<div class="metric"><span>${x[0]}</span><strong>${x[1]}</strong></div>`).join('');$('campaignUpdated').textContent=`updated ${new Date(data.updated_at).toLocaleTimeString()}`;const root=$('campaignList');root.replaceChildren();data.campaigns.forEach(item=>{const row=document.createElement('div');row.className='campaign-row';const name=document.createElement('div');name.className='campaign-name';const title=document.createElement('strong');title.textContent=item.label;const details=document.createElement('span');details.textContent=`${item.model} | ${item.tasks.join(', ')} | ${item.seeds} seeds | ${item.epochs} epochs`;name.append(title,details);const progress=document.createElement('div');const label=document.createElement('div');label.className='progress-label';const pct=Math.max(0,Math.min(100,item.progress_percent));const runTotal=item.total_runs||item.potential_runs;label.innerHTML=`<span>${pct.toFixed(1)}%</span><span>${item.completed}/${runTotal} ${item.conditional&&!item.total_runs?'potential ':''}runs</span>`;const track=document.createElement('div');track.className='progress-track';const fill=document.createElement('span');fill.className='progress-fill';fill.style.width=`${pct}%`;track.appendChild(fill);progress.append(label,track);const counts=document.createElement('div');counts.className='campaign-counts';const count=document.createElement('strong');count.textContent=`${item.active} active · ${item.pending} queued`;const note=document.createElement('span');note.textContent=item.eta_seconds!==null?`ETA ${duration(item.eta_seconds)}`:(item.variant||'standard');counts.append(count,note);const phase=document.createElement('span');phase.className=`phase ${item.phase}`;phase.textContent=item.phase;row.append(name,progress,counts,phase);root.appendChild(row)});}
+    async function loadCampaigns(){const data=await api('/api/campaigns');$('campaignTitle').textContent=data.title;const totals=data.totals;const summary=[['Plan progress',`${totals.progress_percent.toFixed(1)}%`],['Runs',totals.runs],['Completed',totals.completed],['Active',totals.active],['Pending',totals.pending],['Failed runs',totals.failed]];$('campaignSummary').innerHTML=summary.map(x=>`<div class="metric"><span>${x[0]}</span><strong>${x[1]}</strong></div>`).join('');$('campaignUpdated').textContent=`updated ${new Date(data.updated_at).toLocaleTimeString()}`;const root=$('campaignList');root.replaceChildren();data.campaigns.forEach(item=>{const row=document.createElement('div');row.className='campaign-row';const name=document.createElement('div');name.className='campaign-name';const title=document.createElement('strong');title.textContent=item.label;const details=document.createElement('span');details.textContent=`${item.model} | ${item.tasks.join(', ')} | ${item.seeds} seeds | ${item.epochs} epochs`;name.append(title,details);const progress=document.createElement('div');const label=document.createElement('div');label.className='progress-label';const pct=Math.max(0,Math.min(100,item.progress_percent));const runTotal=item.total_runs||item.potential_runs;label.innerHTML=`<span>${pct.toFixed(1)}%</span><span>${item.completed}/${runTotal} ${item.conditional&&!item.total_runs?'potential ':''}runs</span>`;const track=document.createElement('div');track.className='progress-track';const fill=document.createElement('span');fill.className='progress-fill';fill.style.width=`${pct}%`;track.appendChild(fill);progress.append(label,track);const counts=document.createElement('div');counts.className='campaign-counts';const count=document.createElement('strong');count.textContent=`${item.active} active · ${item.pending} queued${item.llm_failure_count?' · '+item.llm_failure_count+' LLM failures':''}`;const note=document.createElement('span');note.textContent=item.eta_seconds!==null?`ETA ${duration(item.eta_seconds)}`:(item.variant||'standard');counts.append(count,note);const phase=document.createElement('span');phase.className=`phase ${item.phase}`;phase.textContent=item.phase;row.append(name,progress,counts,phase);root.appendChild(row);if(item.active_runs.length){const detail=document.createElement('div');detail.id=`campaignRuns-${root.children.length}`;detail.className='table-wrap';root.appendChild(detail);table(detail.id,[['Seed',r=>value(r.seed)],['Epoch',r=>value(`${r.epoch}/${r.target_epoch}`)],['Best loss',r=>value(r.best_loss)],['LLM completed',r=>value(r.llm_completed_count)],['LLM failures',r=>value(r.llm_failure_count,r.llm_failure_count?'bad':'')],['Elapsed',r=>value(duration(r.elapsed_seconds))]],item.active_runs,r=>{const entry=state.databases.find(entry=>entry.campaign_id===item.id&&entry.task===r.task&&entry.seed===r.seed);if(entry)selectDatabase(entry.id,true).catch(showError);});}});}
     function drawChart(){
       const canvas=$('lossChart'),dpr=devicePixelRatio||1,box=canvas.getBoundingClientRect();
       canvas.width=Math.max(1,box.width*dpr);canvas.height=Math.max(1,box.height*dpr);
@@ -1206,9 +1267,11 @@ _HTML = r"""<!doctype html>
     async function load(){ showError(null);$('status').textContent='Loading...';try{ if(state.view==='campaigns')await loadCampaigns();if(state.view==='overview')await loadOverview();if(state.view==='hof')await loadHof();if(state.view==='optimizations')await loadOptimizations();if(state.view==='llm')await loadLlm();if(state.view==='crns')await loadCrns();$('status').textContent='';}catch(e){showError(e);$('status').textContent='';} }
     document.querySelectorAll('nav button,main section').forEach(x=>x.classList.remove('active'));document.querySelector(`nav button[data-view="${state.view}"]`).classList.add('active');$(state.view).classList.add('active');
     $('tabs').onclick=e=>{const b=e.target.closest('button[data-view]');if(!b)return;state.view=b.dataset.view;document.querySelectorAll('nav button,main section').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(state.view).classList.add('active');load();};
-    $('taskSelect').onchange=e=>{state.task=e.target.value;renderRuns();load();};$('runSelect').onchange=e=>{state.run=e.target.value;load();};$('refresh').onclick=load;$('closeDetail').onclick=()=>$('detail').close();window.onresize=()=>{if(state.view==='overview')drawChart()};
-    loadRuns().then(async()=>{const summary=await api('/api/summary',{run_id:state.run});$('dbPath').textContent=`Trial ${summary.trial_id} | ${summary.database}`;await load();}).catch(showError);
-    setInterval(()=>{if(state.view==='campaigns')load();},15000);
+    async function selectDatabase(id,overview=false){state.database=id;state.task='';state.run='';$('databaseSelect').value=id;await loadRuns();const summary=await api('/api/summary');$('dbPath').textContent=`Trial ${summary.trial_id}`;if(overview){state.view='overview';document.querySelectorAll('nav button,main section').forEach(x=>x.classList.remove('active'));document.querySelector('nav button[data-view="overview"]').classList.add('active');$('overview').classList.add('active');}const url=new URL(location.href);url.searchParams.set('database',id);url.searchParams.set('view',state.view);history.replaceState(null,'',url);await load();}
+    $('databaseSelect').onchange=e=>selectDatabase(e.target.value,true).catch(showError);
+    $('taskSelect').onchange=e=>{state.task=e.target.value;renderRuns();load();};$('runSelect').onchange=e=>{state.run=e.target.value;load();};$('refresh').onclick=()=>loadDatabases().then(load).catch(showError);$('closeDetail').onclick=()=>$('detail').close();window.onresize=()=>{if(state.view==='overview')drawChart()};
+    loadDatabases().then(()=>selectDatabase(state.database)).catch(showError);
+    setInterval(()=>{if(!$('detail').open)loadDatabases().then(load).catch(showError);},15000);
   </script>
 </body>
 </html>

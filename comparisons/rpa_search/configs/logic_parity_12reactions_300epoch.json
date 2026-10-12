@@ -1,0 +1,43 @@
+{
+  "benchmark": {
+    "name": "logic_parity_4_12reactions_300epoch",
+    "task": "logic_parity",
+    "output_root": "comparisons/rpa_search/data/raw",
+    "figure_dir": "comparisons/rpa_search/figures",
+    "x_field": "candidate_evaluations",
+    "log_y": true,
+    "plot_title": "Four-input Parity Circuit Search Progress",
+    "plot_ylabel": "Best-so-far parity loss",
+    "min_ode_simulations": 307200
+  },
+  "logic_parity": {
+    "formula": "parity_4",
+    "n_inputs": 4,
+    "include_dilution": false,
+    "n_support_species": 2,
+    "solver": "CVODE",
+    "rtol": 1e-8,
+    "atol": 1e-8,
+    "t_f": 100.0,
+    "n_t": 1000,
+    "ic": ["constant", 0.01],
+    "weights": "transient",
+    "library_order": 2
+  },
+  "search": {
+    "seed": 0,
+    "max_added_reactions": 12,
+    "rate_constant_range": [0.1, 50.0],
+    "candidate_budget": 307200
+  },
+  "rl4crn": {
+    "epochs": 300,
+    "batch_size": 1023,
+    "n_cpus": 4,
+    "render_every": 0,
+    "policy_width": 256,
+    "policy_depth": 2,
+    "deep_layer_size": 512,
+    "hall_of_fame_size": 30
+  }
+}

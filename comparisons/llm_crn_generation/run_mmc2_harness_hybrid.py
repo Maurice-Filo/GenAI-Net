@@ -24,7 +24,11 @@ from RL4CRN.llm import (
 )
 from RL4CRN.llm.deepseek_direct import DirectDeepSeekClient, DirectDeepSeekCRNGenerator
 from RL4CRN.utils.input_interface import make_session_and_trainer
-from comparisons.llm_crn_generation.run_mmc2_harness_smoke import BUILDERS, CONFIGS
+from comparisons.llm_crn_generation.run_mmc2_harness_smoke import (
+    BUILDERS,
+    CONFIGS,
+    DEFAULT_TASKS,
+)
 from comparisons.llm_crn_generation.experiment_release import (
     DEFAULT_ANALYSIS_PLAN,
     DEFAULT_SENTINEL_REPORT,
@@ -39,6 +43,19 @@ DEFAULT_PROJECT = "mmc2-v4-flash-hybrid"
 DEFAULT_MODEL = "deepseek-v4-flash"
 LLM_RATE_MIN = 0.001
 LLM_RATE_MAX = 100.0
+COMMUNICATION_MODES = {
+    "full": {"expose_state_to_llm": True, "insert_llm_into_rl": True},
+    "llm-to-rl": {"expose_state_to_llm": False, "insert_llm_into_rl": True},
+    "rl-to-llm": {"expose_state_to_llm": True, "insert_llm_into_rl": False},
+    "none": {"expose_state_to_llm": False, "insert_llm_into_rl": False},
+}
+
+
+def communication_flags(mode: str) -> dict[str, bool]:
+    try:
+        return dict(COMMUNICATION_MODES[mode])
+    except KeyError as exc:
+        raise ValueError(f"Unsupported communication mode: {mode}") from exc
 
 
 def trial_id_now() -> str:
@@ -52,8 +69,11 @@ def build_hybrid_run(
     n_cpus: int,
     rl_batch_size: int | None,
     logger: Experiment,
+    task_prompt_variant: str = "standard",
 ):
-    config = json.loads(CONFIGS[task_name].read_text(encoding="utf-8"))
+    from RL4CRN.llm.workspace_loss_protocol import config_path_for_variant
+
+    config = json.loads(config_path_for_variant(task_name, task_prompt_variant).read_text(encoding="utf-8"))
     config[task_name]["solver"] = "CVODE"
     config["search"]["seed"] = seed
     config["rl4crn"]["n_cpus"] = n_cpus
@@ -99,6 +119,17 @@ def _llm_candidate_evaluations(trainer) -> int:
     )
 
 
+def _llm_evaluation_counts(trainer) -> tuple[int, int]:
+    history = [row for row in trainer.llm_graph_history() if not row.get("error")]
+    tool = sum(int(row.get("tool_evaluations", 0) or 0) for row in history)
+    final = sum(
+        int(row.get("total_llm_candidate_evaluations", 0) or 0)
+        - int(row.get("tool_evaluations", 0) or 0)
+        for row in history
+    )
+    return tool, final
+
+
 def _best_hof_loss(trainer, fallback: float) -> float:
     best_crn = trainer.best_crn()
     if best_crn is None:
@@ -118,6 +149,8 @@ def run_one(
     args: argparse.Namespace,
     trial_root: Path,
 ) -> None:
+    communication = communication_flags(args.communication_mode)
+    terminal_candidate_pooling = not communication["insert_llm_into_rl"]
     run_id = f"{task_name}_full{args.total_candidate_budget}_seed{seed}_{args.run_suffix}"
     run_root = trial_root / run_id
     run_root.mkdir(parents=True, exist_ok=False)
@@ -138,8 +171,11 @@ def run_one(
         display_summary_level=0,
     )
     experiment.set_name(f"{args.trial_id}-{run_id}")
-    if not experiment.get_key():
-        raise RuntimeError("Comet did not return an experiment key; paper runs require Comet logging.")
+    if not experiment.get_key() or getattr(experiment, "alive", False) is not True:
+        experiment.end()
+        raise RuntimeError(
+            "Comet experiment is not authenticated and live; paper runs require Comet logging."
+        )
     experiment.add_tags(
         [
             "genai-net-paper", "hybrid", "async-llm", "cvode", task_name,
@@ -152,6 +188,7 @@ def run_one(
         n_cpus=args.n_cpus,
         rl_batch_size=args.rl_batch_size,
         logger=experiment,
+        task_prompt_variant=args.task_prompt_variant,
     )
     proposal_space = {
         "contract_version": 2,
@@ -168,11 +205,15 @@ def run_one(
         solver="CVODE",
     )
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    from RL4CRN.llm.workspace_loss_protocol import protocol_for_variant, protocol_metadata
+
+    protocol_details = protocol_metadata(args.task_prompt_variant)
     config["llm_contract_v2"] = {
         "proposal_space_contract_version": 2,
         "rate_bounds": [LLM_RATE_MIN, LLM_RATE_MAX],
         "out_of_range_rate_policy": "clamp-to-endpoint",
         "candidate_validation_policy": args.candidate_validation_policy,
+        **protocol_details,
         "workflow": (
             "two-stage-decider-writer"
             if args.generation_backend == "harness"
@@ -198,9 +239,12 @@ def run_one(
             model=args.model,
             provider=args.llm_provider,
             openai_compatible_base_url=args.llm_base_url,
+            local_context_window=args.local_llm_context_window,
+            local_max_output_tokens=args.local_llm_max_output_tokens,
             timeout_seconds=args.llm_timeout,
             global_concurrency=args.global_llm_concurrency,
             candidate_validation_policy=args.candidate_validation_policy,
+            harness_protocol=protocol_for_variant(args.task_prompt_variant),
         )
         graph = HarnessDeciderWriterCRNGraph(
             client=client,
@@ -225,8 +269,8 @@ def run_one(
         task_description=prompt,
         num_candidates=args.llm_candidates,
         start_epoch=0,
-        add_to_hall_of_fame=args.communication_mode == "full",
-        cross_communication=args.communication_mode == "full",
+        add_to_hall_of_fame=communication["insert_llm_into_rl"],
+        cross_communication=communication["expose_state_to_llm"],
         withhold_initial_hof=args.withhold_initial_hof,
         jsonl_path=run_root / "llm_evaluations.jsonl",
         max_in_flight=args.max_llm_in_flight,
@@ -250,16 +294,19 @@ def run_one(
             "communication_mode": args.communication_mode,
             "task_prompt_variant": args.task_prompt_variant,
             "task_prompt_sha256": prompt_sha256,
+            **protocol_details,
             "withhold_initial_hof": args.withhold_initial_hof,
             "candidate_validation_policy": args.candidate_validation_policy,
             "proposal_space_contract_version": 2,
             "llm_rate_bounds": [LLM_RATE_MIN, LLM_RATE_MAX],
-            "terminal_candidate_pooling": args.communication_mode == "none",
+            "terminal_candidate_pooling": terminal_candidate_pooling,
+            **communication,
             "proposal_space": proposal_space,
         },
     )
     experiment.log_parameters(
         {
+            **protocol_details,
             "task": task_name,
             "seed": seed,
             "solver": "CVODE",
@@ -299,7 +346,8 @@ def run_one(
             "template_reaction_ids": json.dumps(proposal_space["template_reaction_ids"]),
             "null_reaction_id": proposal_space["null_reaction_id"],
             "forbidden_reaction_ids": json.dumps(proposal_space["forbidden_reaction_ids"]),
-            "terminal_candidate_pooling": args.communication_mode == "none",
+            "terminal_candidate_pooling": terminal_candidate_pooling,
+            **communication,
             "model": args.model,
             "generation_backend": args.generation_backend,
             "thinking_mode": "disabled" if args.generation_backend == "direct-nonthinking" else "provider-default",
@@ -314,6 +362,7 @@ def run_one(
     write_json(
         run_root / "run_manifest.json",
         {
+            **protocol_details,
             "trial_id": args.trial_id,
             "run_id": run_id,
             "task": task_name,
@@ -345,7 +394,8 @@ def run_one(
             "proposal_space_contract_version": 2,
             "llm_rate_bounds": [LLM_RATE_MIN, LLM_RATE_MAX],
             "proposal_space": proposal_space,
-            "terminal_candidate_pooling": args.communication_mode == "none",
+            "terminal_candidate_pooling": terminal_candidate_pooling,
+            **communication,
             "llm_timeout_seconds": args.llm_timeout,
             "max_agent_evaluations_per_round": args.max_agent_evaluations,
             "literature_rag_index": str(args.literature_rag_index) if args.literature_rag_index else None,
@@ -405,14 +455,31 @@ def run_one(
                 flush=True,
             )
 
+        training_llm_tool, training_llm_final = _llm_evaluation_counts(trainer)
+        training_rl_evaluations = args.epochs * trainer.s.cfg.train.batch_size
+        training_optimization_evaluations = trainer.forbidden_optimization_evaluations()
+        trainer.persist_hof_boundary(
+            epoch=args.epochs,
+            boundary="training_boundary",
+            rl_evaluations=training_rl_evaluations,
+            llm_tool_evaluations=training_llm_tool,
+            llm_final_evaluations=training_llm_final,
+            total_evaluations=(
+                training_rl_evaluations
+                + training_llm_tool
+                + training_llm_final
+                + training_optimization_evaluations
+            ),
+        )
         trainer.wait_for_llm_graph(timeout=args.llm_timeout)
         trainer.wait_for_forbidden_topologies()
         terminal_pooled_candidates = (
             trainer.merge_isolated_llm_candidates()
-            if args.communication_mode == "none"
+            if terminal_candidate_pooling
             else 0
         )
-        llm_evaluations = _llm_candidate_evaluations(trainer)
+        llm_tool_evaluations, llm_final_evaluations = _llm_evaluation_counts(trainer)
+        llm_evaluations = llm_tool_evaluations + llm_final_evaluations
         rl_evaluations = args.epochs * trainer.s.cfg.train.batch_size
         optimization_evaluations = trainer.forbidden_optimization_evaluations()
         candidate_evaluations = rl_evaluations + llm_evaluations + optimization_evaluations
@@ -438,7 +505,14 @@ def run_one(
             "elapsed_seconds": time.perf_counter() - started,
         }
         _append_progress(progress_paths, final_progress)
-        trainer._maybe_persist_hof(args.epochs, force=True)
+        trainer.persist_hof_boundary(
+            epoch=args.epochs + 1,
+            boundary="terminal_boundary",
+            rl_evaluations=rl_evaluations,
+            llm_tool_evaluations=llm_tool_evaluations,
+            llm_final_evaluations=llm_final_evaluations,
+            total_evaluations=candidate_evaluations,
+        )
         trainer.flush_results_database()
         best_crn = trainer.best_crn()
         if best_crn is None:
@@ -457,6 +531,8 @@ def run_one(
             "best_loss": best_loss,
             "rl_candidate_evaluations": rl_evaluations,
             "llm_candidate_evaluations": llm_evaluations,
+            "llm_tool_evaluations": llm_tool_evaluations,
+            "llm_final_evaluations": llm_final_evaluations,
             "forbidden_optimization_evaluations": optimization_evaluations,
             "candidate_evaluations": candidate_evaluations,
             "budget_cap": args.total_candidate_budget,
@@ -501,7 +577,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--task-prompt-variant",
-        choices=("standard", "reported-2026", "logic-trajectory"),
+        choices=("standard", "reported-2026", "logic-trajectory", "parity-evidence-exploitation-v1", "parity-evidence-exploitation-12r-v1"),
         default="standard",
         help="Select a frozen task-prompt condition; standard preserves current behavior.",
     )
@@ -512,16 +588,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--llm-provider", default="deepseek-official")
     parser.add_argument("--llm-base-url", default=None)
+    parser.add_argument("--local-llm-context-window", type=int, default=32768)
+    parser.add_argument("--local-llm-max-output-tokens", type=int, default=4096)
     parser.add_argument(
         "--communication-mode",
-        choices=("full", "none"),
+        choices=tuple(COMMUNICATION_MODES),
         default="full",
-        help="Use full-duplex RL/LLM state exchange or isolate both streams until terminal pooling.",
+        help="Select both communication directions, either half-duplex direction, or neither.",
     )
     parser.add_argument(
         "--withhold-initial-hof",
         action="store_true",
-        help="Send an empty HOF only with request zero, while retaining full communication thereafter.",
+        help="When outward state is enabled, send an empty HOF only with request zero.",
     )
     parser.add_argument(
         "--candidate-validation-policy",
@@ -570,6 +648,12 @@ def parse_args() -> argparse.Namespace:
         default=REPO_ROOT / "comparisons/rpa_search/data/raw",
     )
     args = parser.parse_args()
+    from RL4CRN.llm.workspace_loss_protocol import validate_campaign_settings
+
+    try:
+        validate_campaign_settings(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     if min(
         args.runs,
         args.epochs,
@@ -606,7 +690,10 @@ def main() -> None:
         analysis_plan_path=args.analysis_plan_file,
         sentinel_report_path=args.sentinel_report_file,
     )
-    tasks = tuple(CONFIGS) if args.task == "all" else (args.task,)
+    from RL4CRN.llm.workspace_loss_protocol import validate_protocol_release
+
+    experiment_release.update(validate_protocol_release(args.task_prompt_variant))
+    tasks = DEFAULT_TASKS if args.task == "all" else (args.task,)
     trial_root = args.workspace_root.expanduser().resolve() / args.trial_id
     trial_root.mkdir(parents=True, exist_ok=False)
     write_json(

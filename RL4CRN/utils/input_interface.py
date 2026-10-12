@@ -23,7 +23,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as Futur
 from dataclasses import dataclass, field, asdict
 from functools import partial
 from itertools import product
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 import copy
 import os
 
@@ -1189,7 +1189,7 @@ class Trainer:
         self._results_db: Optional[ResultsDatabase] = None
         self._results_db_every: int = 1
         self._results_plot_every: int = 20
-        self._last_hof_snapshot_epoch: Optional[int] = None
+        self._last_hof_snapshot_key: Optional[tuple[int, str]] = None
         self._forbidden_executor: Optional[ThreadPoolExecutor] = None
         self._forbidden_job: Optional[Dict[str, Any]] = None
         self._forbidden_scheduled_signatures: set[bytes] = set()
@@ -1232,7 +1232,7 @@ class Trainer:
         )
         self._results_db_every = int(every)
         self._results_plot_every = int(plot_every)
-        self._last_hof_snapshot_epoch = None
+        self._last_hof_snapshot_key = None
         return self._results_db
 
     def flush_results_database(self) -> None:
@@ -1248,18 +1248,57 @@ class Trainer:
             self._results_db.close()
             self._results_db = None
 
-    def _maybe_persist_hof(self, epoch: int, *, force: bool = False) -> None:
+    def _snapshot_evaluation_counts(self, epoch: int) -> Dict[str, int]:
+        """Return cumulative evaluator counts at an ordinary RL-epoch snapshot."""
+
+        history = self.llm_graph_history()
+        llm_tool = sum(
+            int(row.get("tool_evaluations", 0) or 0)
+            for row in history
+            if not row.get("error")
+        )
+        llm_final = sum(
+            int(row.get("total_llm_candidate_evaluations", 0) or 0)
+            - int(row.get("tool_evaluations", 0) or 0)
+            for row in history
+            if not row.get("error")
+        )
+        environments = getattr(self.s.mult_env, "envs", ()) or ()
+        rl = max(0, int(epoch) + 1) * len(environments)
+        total = rl + llm_tool + llm_final + self.forbidden_optimization_evaluations()
+        return {
+            "rl": rl,
+            "llm_tool": llm_tool,
+            "llm_final": llm_final,
+            "total": total,
+        }
+
+    def _maybe_persist_hof(
+        self,
+        epoch: int,
+        *,
+        force: bool = False,
+        boundary: str = "epoch",
+        evaluation_counts: Optional[Mapping[str, int]] = None,
+    ) -> None:
         database = self._results_db
-        if database is None or self._last_hof_snapshot_epoch == epoch:
+        snapshot_key = (int(epoch), str(boundary))
+        if database is None or self._last_hof_snapshot_key == snapshot_key:
             return
         if not force and epoch % self._results_db_every != 0:
             return
         hof = getattr(self.s.mult_env, "hall_of_fame", None)
         if hof is None:
             return
+        counts = dict(evaluation_counts or self._snapshot_evaluation_counts(epoch))
         database.record_hof_snapshot(
             hof,
             epoch=epoch,
+            boundary=boundary,
+            cumulative_rl_evaluations=int(counts.get("rl", 0)),
+            cumulative_llm_tool_evaluations=int(counts.get("llm_tool", 0)),
+            cumulative_llm_final_evaluations=int(counts.get("llm_final", 0)),
+            cumulative_total_evaluations=int(counts.get("total", 0)),
             save_plots=force or epoch % self._results_plot_every == 0,
             llm_provenance=self._llm_provenance_by_topology,
         )
@@ -1281,7 +1320,33 @@ class Trainer:
                     count,
                     step=epoch,
                 )
-        self._last_hof_snapshot_epoch = epoch
+        self._last_hof_snapshot_key = snapshot_key
+
+    def persist_hof_boundary(
+        self,
+        *,
+        epoch: int,
+        boundary: str,
+        rl_evaluations: int,
+        llm_tool_evaluations: int,
+        llm_final_evaluations: int,
+        total_evaluations: int,
+    ) -> None:
+        """Persist an explicitly named analysis boundary with exact counters."""
+
+        if boundary not in {"training_boundary", "terminal_boundary"}:
+            raise ValueError(f"Unsupported Hall-of-Fame boundary: {boundary!r}.")
+        self._maybe_persist_hof(
+            epoch,
+            force=True,
+            boundary=boundary,
+            evaluation_counts={
+                "rl": int(rl_evaluations),
+                "llm_tool": int(llm_tool_evaluations),
+                "llm_final": int(llm_final_evaluations),
+                "total": int(total_evaluations),
+            },
+        )
 
     def _log_loss_components(self, step: int) -> None:
         logger = self.s.logger
@@ -1962,7 +2027,7 @@ class Trainer:
             for evaluation in result.evaluations:
                 if evaluation.valid and evaluation.env is not None:
                     hof.add(evaluation.env)
-        elif not bool(settings.get("cross_communication", True)):
+        elif not bool(settings["add_to_hall_of_fame"]):
             settings["isolated_candidates"].extend(
                 evaluation.env.clone()
                 for evaluation in result.evaluations

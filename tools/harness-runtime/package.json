@@ -1,0 +1,9 @@
+{
+  "name": "genainet-harness-runtime",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.0-rc.8"
+  }
+}

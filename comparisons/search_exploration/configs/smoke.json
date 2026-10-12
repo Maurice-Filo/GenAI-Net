@@ -1,0 +1,15 @@
+{
+  "epochs": 2,
+  "batch_size": 4,
+  "evaluation_budget": 32,
+  "fit_evaluations": 3,
+  "workers": 2,
+  "fit_seconds": 30,
+  "evaluation_seconds": 10,
+  "archive_capacity": 100,
+  "sil_top_k": 10,
+  "sil_batch_size": 4,
+  "plot_every": 1,
+  "quality_threshold": 0.04271267898491677,
+  "require_all_rows": true
+}

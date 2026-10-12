@@ -1,19 +1,19 @@
-# Contract-v2 prompt review
+# Contract-v2 prompt record
 
-Status: **PENDING AUTHOR APPROVAL. DO NOT LAUNCH PAPER CAMPAIGNS.**
+Status: **FROZEN EXPERIMENT PROMPT RECORD.**
 
-This packet freezes the proposed shared system prompt, the two stage templates, and all deterministic task prompts. Dynamic HOF, SIL, evaluator, and exclusion state remains in workspace files and is not reproduced here.
+This record freezes the shared system prompt, the two-stage templates, and all deterministic task prompts used by the experiments. Dynamic HOF, SIL, evaluator, and exclusion state remains in workspace files and is not reproduced here.
 
-## Review checklist
+## Frozen protocol checklist
 
-- [ ] Decider owns all concrete CRN structures and intended rates.
-- [ ] Writer only resolves, constrains, clamps, and encodes Decider designs.
-- [ ] Rate truncation to `[0.001, 100]` is scientifically acceptable.
-- [ ] Independent member validation is acceptable for hosted and local runs.
-- [ ] Exactly two calls per round and no automatic Writer repair call is acceptable.
-- [ ] The role-specific Harness wrappers preserve the Decider/Writer boundary.
-- [ ] Each task statement matches the executable evaluator.
-- [ ] Request 0 withholds HOF; later requests receive HOF and SIL state.
+- Decider owns all concrete CRN structures and intended rates.
+- Writer only resolves, constrains, clamps, and encodes Decider designs.
+- Finite direct-LLM rates are clamped to `[0.001, 100]`.
+- Each member is validated independently in hosted and local runs.
+- Each round uses exactly two calls and no automatic Writer repair call.
+- Role-specific Harness wrappers preserve the Decider/Writer boundary.
+- Each task statement matches the executable evaluator.
+- Request 0 withholds HOF; later requests receive HOF and SIL state.
 
 ## Shared system prompt
 

@@ -1,0 +1,22 @@
+{
+  "seed": 0,
+  "epochs": 20,
+  "batch_size": 32,
+  "evaluation_budget": 10240,
+  "fit_evaluations": 16,
+  "fit_seconds": 60.0,
+  "evaluation_seconds": 30.0,
+  "workers": 4,
+  "optimizer": "evolution",
+  "rate_min": 0.001,
+  "rate_max": 100.0,
+  "archive_capacity": 2000,
+  "sil_top_k": 30,
+  "sil_batch_size": 16,
+  "compatibility_hof_size": 30,
+  "rl_fraction": 0.5,
+  "mutation_fraction": 0.25,
+  "quality_threshold": 0.016491168958935352,
+  "require_all_rows": false,
+  "plot_every": 5
+}

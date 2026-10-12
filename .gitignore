@@ -12,6 +12,96 @@
 debate_trainscript*.txt
 harness_runs/
 
+# Keep the repository focused on source code, configuration and documentation.
+# Ignore rules do not remove files that are already tracked by Git.
+/paper/
+/papers/
+draft/
+drafts/
+*_draft.md
+*_drafts.md
+draft_*.md
+
+# Experiment outputs, generated reports and copies of code inside run workspaces.
+data/
+datasets/
+results/
+outputs/
+# Also match a symlink named runs that points to external experiment storage.
+runs
+campaigns/
+checkpoints/
+reports/
+figures/
+artifacts/
+/comparisons/llm_crn_generation/generated/
+*.csv
+*.tsv
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.parquet
+*.feather
+*.arrow
+*.pickle
+*.joblib
+*.safetensors
+*.ckpt
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.ant
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.bz2
+*.xz
+*.7z
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.svg
+*.eps
+*.tif
+*.tiff
+# Documentation illustrations are source assets, not experiment output.
+!/docs/assets/**
+
+# JSON outputs stay ignored above, but source configuration must be publishable.
+!**/configs/*.json
+!**/config/*.json
+!/tools/harness-runtime/package.json
+
+# Locally installed Harness/Node runtimes, credentials and temporary files.
+node_modules/
+.pnpm-store/
+dsh-runtime/
+node-tools/
+.dsh/
+.local-llm-staging/
+.credentials.yaml
+settings.yaml
+.env.*
+!.env.example
+!.env.template
+.mplconfig/
+*.pid
+*.tmp
+*.bak
+*.swp
+*.swo
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+*.bbl
+*.blg
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

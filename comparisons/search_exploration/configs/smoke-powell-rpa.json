@@ -1,0 +1,16 @@
+{
+  "epochs": 1,
+  "batch_size": 3,
+  "evaluation_budget": 24,
+  "fit_evaluations": 6,
+  "workers": 2,
+  "optimizer": "powell",
+  "fit_seconds": 30,
+  "evaluation_seconds": 10,
+  "archive_capacity": 100,
+  "sil_top_k": 10,
+  "sil_batch_size": 3,
+  "plot_every": 1,
+  "quality_threshold": 0.016491168958935352,
+  "require_all_rows": false
+}

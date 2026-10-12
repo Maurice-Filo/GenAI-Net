@@ -19,7 +19,10 @@ from RL4CRN.llm import (
     LLMCandidateEvaluator,
     get_mmc2_task_prompt,
 )
-from comparisons.rpa_search.src.common.logic_task import build_logic_components
+from comparisons.rpa_search.src.common.logic_task import (
+    build_logic_components,
+    build_parity_logic_components,
+)
 from comparisons.rpa_search.src.common.rpa_task import build_rpa_components
 from comparisons.llm_crn_generation.paper_breadth_tasks import (
     BREADTH_BUILDERS,
@@ -29,6 +32,8 @@ from comparisons.llm_crn_generation.paper_breadth_tasks import (
 
 CONFIGS = {
     "logic": REPO_ROOT / "comparisons/rpa_search/configs/logic_100k.json",
+    "logic_parity": REPO_ROOT
+    / "comparisons/rpa_search/configs/logic_parity_300epoch.json",
     "rpa": REPO_ROOT / "comparisons/rpa_search/configs/rpa_100k.json",
 }
 CONFIGS.update(
@@ -40,13 +45,15 @@ CONFIGS.update(
 )
 BUILDERS = {
     "logic": build_logic_components,
+    "logic_parity": build_parity_logic_components,
     "rpa": build_rpa_components,
 }
 BUILDERS.update(BREADTH_BUILDERS)
+DEFAULT_TASKS = tuple(task for task in CONFIGS if task != "logic_parity")
 
 
-def build_evaluator(task_name: str, *, solver: str | None = None) -> LLMCandidateEvaluator:
-    config = json.loads(CONFIGS[task_name].read_text(encoding="utf-8"))
+def build_evaluator(task_name: str, *, solver: str | None = None, config_path: Path | None = None) -> LLMCandidateEvaluator:
+    config = json.loads((config_path or CONFIGS[task_name]).read_text(encoding="utf-8"))
     if solver is not None:
         config[task_name]["solver"] = solver.strip().upper()
     crn, library_components, task, _ = BUILDERS[task_name](config)
@@ -125,7 +132,7 @@ def main() -> None:
         default=Path.home() / "ai-workspaces/deepseek-test/.dsh-home",
     )
     args = parser.parse_args()
-    task_names = list(CONFIGS) if args.task == "all" else [args.task]
+    task_names = list(DEFAULT_TASKS) if args.task == "all" else [args.task]
     summaries = [
         run_task(
             task_name,

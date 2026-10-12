@@ -117,6 +117,32 @@ MMC2_REPORTED_TASK_PROMPTS_2026 = dict(MMC2_TASK_PROMPTS)
 MMC2_REPORTED_TASK_PROMPTS_2026["logic"] = MMC2_LOGIC_TASK_PROMPT_REPORTED_2026
 
 
+MMC2_PARITY_LOGIC_TASK_PROMPT = """Design candidate mass-action CRNs for a four-input parity circuit.
+
+Fixed benchmark definition:
+- Inputs: four binary signals u_1, u_2, u_3, and u_4.
+- Species: input-driven species X_1, X_2, X_3, X_4; internal support species S_1 and S_2; and measured output species OUT.
+- Fixed template reactions: each u_i drives production of its corresponding X_i species. There are no fixed dilution reactions.
+- Desired Boolean function: OUT = u_1 XOR u_2 XOR u_3 XOR u_4. OUT should be high when exactly one or three inputs are active and low when zero, two, or four inputs are active.
+- Evaluation scenarios: all 16 vectors in {0, 1}^4.
+- Initial concentration: 0.01 for every species, including S_1, S_2, and OUT.
+- Simulation: LSODA over t = 0 to 100 with 1000 time points, rtol = atol = 1e-8.
+- Loss: transient-weighted mean absolute error between the desired Boolean value and the full OUT trajectory over all scenarios. The first 20% of each trajectory has weight 0.25, the middle 60% weight 1, and the final 20% weight 2. Lower is better.
+- Search space: choose exactly eight distinct reactions from the supplied order-2 mass-action library.
+- Fixed template reactions and the null emptyset-to-emptyset reaction are inadmissible additions.
+- Each selected reaction must use the parameter arity specified by the library, with finite direct-LLM rate constants in [0.1, 50.0].
+
+Seek finite, numerically stable networks that distinguish all five input Hamming-weight classes. Use S_1 and S_2 where useful for intermediate state, sequestration, thresholds, or opposing pathways.
+
+Use the received Hall of Fame actively. Improve promising networks by retuning rates, replacing weak reactions, recombining useful mechanisms, and making targeted structural changes. Do not restrict proposals to Hall-of-Fame derivatives: continue exploring genuinely new mechanisms when the Hall of Fame lacks diversity, stops improving, or fails on particular input combinations. Balance exploitation and exploration according to the available evidence rather than a fixed quota.
+
+Prefer meaningfully different chemical mechanisms over trivial parameter variants. The supplied reaction library, output contract, Hall-of-Fame evidence, and external evaluator are authoritative. Do not claim success before evaluation.
+"""
+MMC2_EXTENSION_TASK_PROMPTS = {
+    "logic_parity": MMC2_PARITY_LOGIC_TASK_PROMPT,
+}
+
+
 # Contract-v2 widens direct-LLM rate support. The historical mapping above is a
 # byte-preserving snapshot and must remain unchanged for forensic reproduction.
 _OLD_RATE_RULE = "[0.1, 50.0]"
@@ -131,8 +157,13 @@ MMC2_TASK_PROMPTS = {
     task: _with_contract_v2_rate_bounds(prompt)
     for task, prompt in MMC2_TASK_PROMPTS.items()
 }
+MMC2_EXTENSION_TASK_PROMPTS = {
+    task: _with_contract_v2_rate_bounds(prompt)
+    for task, prompt in MMC2_EXTENSION_TASK_PROMPTS.items()
+}
 MMC2_LOGIC_TASK_PROMPT = MMC2_TASK_PROMPTS["logic"]
 MMC2_RPA_TASK_PROMPT = MMC2_TASK_PROMPTS["rpa"]
+MMC2_PARITY_LOGIC_TASK_PROMPT = MMC2_EXTENSION_TASK_PROMPTS["logic_parity"]
 MMC2_LOGIC_TRAJECTORY_TASK_PROMPT = _with_contract_v2_rate_bounds(
     MMC2_LOGIC_TRAJECTORY_TASK_PROMPT
 )
@@ -158,7 +189,11 @@ def _get_task_prompt(
 def get_mmc2_task_prompt(task: str, *, solver: str | None = None) -> str:
     """Return the corrected task prompt for new runs."""
 
-    return _get_task_prompt(MMC2_TASK_PROMPTS, task, solver=solver)
+    return _get_task_prompt(
+        {**MMC2_TASK_PROMPTS, **MMC2_EXTENSION_TASK_PROMPTS},
+        task,
+        solver=solver,
+    )
 
 
 def get_reported_mmc2_task_prompt_2026(
@@ -180,6 +215,12 @@ def get_mmc2_task_prompt_variant(
     normalized = variant.strip().lower()
     if normalized == "standard":
         return get_mmc2_task_prompt(task, solver=solver)
+    if normalized in {"parity-evidence-exploitation-v1", "parity-evidence-exploitation-12r-v1"}:
+        if task.strip().lower() != "logic_parity":
+            raise ValueError("The parity evidence prompt requires task='logic_parity'.")
+        from RL4CRN.llm.workspace_loss_protocol import parity_task_prompt
+
+        return parity_task_prompt(solver=solver, variant=normalized)
     if normalized == "reported-2026":
         return get_reported_mmc2_task_prompt_2026(task, solver=solver)
     if normalized == "logic-trajectory":

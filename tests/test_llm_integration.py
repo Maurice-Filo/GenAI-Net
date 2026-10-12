@@ -233,17 +233,34 @@ class LLMIntegrationTests(unittest.TestCase):
         database_path = f"{temp_dir.name}/results.sqlite"
         database = ResultsDatabase(database_path, run_id="hof-only-test")
 
-        database.record_hof_snapshot(hof, epoch=7, save_plots=True)
+        database.record_hof_snapshot(
+            hof,
+            epoch=7,
+            boundary="training_boundary",
+            cumulative_rl_evaluations=70,
+            cumulative_llm_tool_evaluations=2,
+            cumulative_llm_final_evaluations=10,
+            cumulative_total_evaluations=82,
+            save_plots=True,
+        )
         database.close()
 
         with sqlite3.connect(database_path) as connection:
             snapshot = connection.execute(
-                "SELECT run_id, epoch FROM hof_snapshots"
+                """SELECT run_id, epoch, boundary,
+                          cumulative_rl_evaluations,
+                          cumulative_llm_tool_evaluations,
+                          cumulative_llm_final_evaluations,
+                          cumulative_total_evaluations
+                   FROM hof_snapshots"""
             ).fetchone()
             entry = connection.execute(
                 "SELECT rank, loss, topology_hash FROM hof_snapshot_entries"
             ).fetchone()
-            self.assertEqual(snapshot, ("hof-only-test", 7))
+            self.assertEqual(
+                snapshot,
+                ("hof-only-test", 7, "training_boundary", 70, 2, 10, 82),
+            )
             self.assertEqual(entry[0], 0)
             self.assertEqual(entry[1], 6.0)
             self.assertTrue(entry[2])
@@ -640,6 +657,31 @@ class LLMIntegrationTests(unittest.TestCase):
         self.assertIn("json_payload", kinds)
         self.assertTrue(any(name.endswith(".json") for name, _, _ in logger.assets))
 
+    def test_comet_text_preview_is_bounded_but_asset_is_complete(self):
+        session = SessionLike()
+        evaluator = LLMCandidateEvaluator.from_session(session)
+        logger = FakeLogger()
+        graph = DeciderWriterCRNGraph(
+            client=FakeClient({"candidates": []}),
+            evaluator=evaluator,
+            comet_logger=logger,
+        )
+        decision = "decision " + ("x" * 120_000)
+
+        graph.log_discussion(
+            decision=decision,
+            writer_prompt="writer prompt",
+            step=3,
+        )
+
+        self.assertLessEqual(len(logger.texts[-1].encode("utf-8")), 96_000)
+        self.assertIn("Preview truncated", logger.texts[-1])
+        discussion_assets = [
+            data for name, data, _ in logger.assets if name == "llm_discussion_step_3.txt"
+        ]
+        self.assertEqual(len(discussion_assets), 1)
+        self.assertIn(decision, discussion_assets[0])
+
     def test_decider_writer_graph_does_not_insert_forbidden_llm_candidate(self):
         payload = {
             "candidates": [
@@ -831,6 +873,40 @@ class LLMIntegrationTests(unittest.TestCase):
         self.assertEqual(trainer.merge_isolated_llm_candidates(), 1)
         self.assertEqual(len(hof), 2)
         self.assertEqual(trainer.merge_isolated_llm_candidates(), 0)
+        trainer.clear_llm_graph(wait=True)
+
+    def test_rl_to_llm_only_exposes_hof_and_retains_candidate_until_pooling(self):
+        evaluator = build_evaluator()
+        rl_evaluation = evaluator.evaluate(
+            LLMCandidate([0, 1], [[1.0], [2.0, 3.0]], "RL-side candidate")
+        )
+        llm_evaluation = evaluator.evaluate(
+            LLMCandidate([0, 2], [[1.0], [1.0]], "isolated LLM candidate")
+        )
+        hof = HallOfFame(max_size=3)
+        hof.add(rl_evaluation.env)
+        graph = BlockingGraph(SimpleNamespace(evaluations=[llm_evaluation]))
+        trainer = Trainer(
+            SimpleNamespace(mult_env=SimpleNamespace(hall_of_fame=hof), logger=FakeLogger())
+        )
+        trainer.configure_llm_graph(
+            graph,
+            every=1,
+            task_description="Minimize toy loss.",
+            num_candidates=1,
+            add_to_hall_of_fame=False,
+            cross_communication=True,
+        )
+
+        trainer._maybe_run_llm_graph(0)
+        self.assertTrue(graph.started.wait(timeout=1.0))
+        self.assertEqual(len(tuple(graph.kwargs["hall_of_fame_iter"])), 1)
+        graph.release.set()
+        trainer.wait_for_llm_graph(timeout=2.0)
+
+        self.assertEqual(len(hof), 1)
+        self.assertEqual(trainer.merge_isolated_llm_candidates(), 1)
+        self.assertEqual(len(hof), 2)
         trainer.clear_llm_graph(wait=True)
 
     def test_initial_hof_withholding_preserves_later_cross_communication(self):

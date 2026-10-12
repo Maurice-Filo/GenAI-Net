@@ -426,6 +426,11 @@ class HarnessLLMClientTests(unittest.TestCase):
             self.assertTrue((workspace.path / "SYSTEM_PROMPT.md").is_file())
             profile_patch = (workspace.path / "harness.patch.yml").read_text(encoding="utf-8")
             self.assertIn('model: "deepseek-v4-flash"', profile_patch)
+            self.assertIn(
+                '        provider: "deepseek-official"\n'
+                '        model: "deepseek-v4-flash"\n',
+                profile_patch,
+            )
             self.assertIn("id: system-prompt", profile_patch)
             self.assertTrue((workspace.path / "calls/0001/stdout.txt").is_file())
             self.assertTrue((workspace.path / "run_status.json").is_file())
@@ -525,6 +530,8 @@ class HarnessLLMClientTests(unittest.TestCase):
                 provider="local-llama",
                 model="qwen35-9b",
                 openai_compatible_base_url="http://127.0.0.1:8080/v1/",
+                local_context_window=262144,
+                local_max_output_tokens=32768,
             )
             with client.run(task_description="Toy task") as workspace:
                 profile_patch = (workspace.path / "harness.patch.yml").read_text(
@@ -532,9 +539,21 @@ class HarnessLLMClientTests(unittest.TestCase):
                 )
 
             self.assertIn("id: llm-pi-ai", profile_patch)
+            self.assertIn("id: sandbox", profile_patch)
+            self.assertIn("id: headless-runner", profile_patch)
+            self.assertIn("disabled: true", profile_patch)
+            self.assertIn("id: headless-continuing-runner", profile_patch)
+            self.assertIn("dsh_headless_continuing_runner.mjs", profile_patch)
+            self.assertIn("maxContinuations: 2", profile_patch)
+            self.assertIn("dsh_bwrap_resolved_tmp.sh", profile_patch)
+            self.assertIn('runnerFailureSignatures:\n      - "bwrap: "', profile_patch)
             self.assertIn('baseURL: "http://127.0.0.1:8080/v1"', profile_patch)
             self.assertIn("apiKeyEnv: DSH_LOCAL_LLM_API_KEY", profile_patch)
-            self.assertIn("contextWindow: 32768", profile_patch)
+            self.assertIn("reasoning: low", profile_patch)
+            self.assertIn("contextWindow: 262144", profile_patch)
+            self.assertIn("maxTokens: 32768", profile_patch)
+            self.assertIn("thinkingFormat: qwen-chat-template", profile_patch)
+            self.assertIn("reasoningEfforts:", profile_patch)
             self.assertIn('provider: "local-llama"', profile_patch)
             self.assertEqual(
                 client._child_environment()["DSH_LOCAL_LLM_API_KEY"],
@@ -709,6 +728,61 @@ class HarnessLLMClientTests(unittest.TestCase):
             )
             self.assertEqual(audit["accepted_candidate_count"], 0)
             self.assertEqual(audit["rejected_candidates"][0]["candidate_index"], 0)
+
+    def test_local_handoff_preserves_rejected_members_for_outer_audit(self):
+        payload = {
+            "candidates": [
+                {
+                    "reaction_ids": [0, 1],
+                    "parameter_values": [[1.0], [2.0, 3.0]],
+                },
+                {
+                    "reaction_ids": [0, 99],
+                    "parameter_values": [[1.0], [2.0]],
+                },
+            ]
+        }
+
+        class FakeProcess:
+            returncode = 0
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.returncode = -15
+
+            def kill(self):
+                self.returncode = -9
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = HarnessLLMClient(
+                workspace_root=temp_dir,
+                dsh_home=f"{temp_dir}/dsh-home",
+                command=["fake-dsh"],
+                candidate_validation_policy="independent-members",
+            )
+            with client.run(
+                task_description="Toy task", contract=toy_contract(candidate_count=2)
+            ) as workspace:
+                (workspace.path / "FINAL_RESPONSE.json").write_text(
+                    json.dumps(payload), encoding="utf-8"
+                )
+                call_dir = workspace.next_call_dir()
+                with patch(
+                    "RL4CRN.llm.harness_client.subprocess.Popen",
+                    return_value=FakeProcess(),
+                ):
+                    completed = client._run_local_json_handoff(
+                        ["fake-dsh"], workspace=workspace, call_dir=call_dir
+                    )
+
+        returned = json.loads(completed.stdout)
+        self.assertEqual(len(returned["candidates"]), 2)
+        self.assertEqual(returned["candidates"][1]["reaction_ids"], [0, 99])
 
     def test_contract_rejects_forbidden_reaction_and_clamps_finite_rate(self):
         with tempfile.TemporaryDirectory() as temp_dir:

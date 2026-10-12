@@ -12,4 +12,7 @@ def build_components(config: Dict[str, Any]) -> Tuple[Any, Any, Any, Any]:
         return build_rpa_components(config)
     if task_name == "logic":
         return build_logic_components(config)
+    if task_name == "classifier":
+        from comparisons.llm_crn_generation.paper_breadth_tasks import build_paper_breadth_components
+        return build_paper_breadth_components(config, task_name)
     raise ValueError(f"Unknown benchmark task: {task_name}")

@@ -1,8 +1,9 @@
 # Contract-v2 experiment recovery plan
 
-Status: static proposal-space mask audit passed; blocked on author
-prompt/evaluator approval, a frozen analysis plan, and dynamic sentinel
-preflight. No experiment is currently running.
+Status: prompt/evaluator approval, the frozen analysis plan, static mask audit,
+and local-Harness validation are complete. The final schema-v4 eight-task
+sentinel is running; the paper cohorts and frozen analyses are queued behind its
+fail-closed dynamic audit.
 
 This plan replaces the quarantined campaign schedule. Its purpose is to produce
 one coherent, auditable paper dataset rather than repair historical numbers in

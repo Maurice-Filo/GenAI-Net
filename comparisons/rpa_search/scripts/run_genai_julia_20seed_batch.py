@@ -17,6 +17,9 @@ CONFIGS = {
 
 
 def _run_id(task: str, method: str, seed: int) -> str:
+    if method == "llm_seeded_evolution":
+        family = "flash" if task == "classifier" else "local"
+        return f"{task}_search102300_seed{seed}_{family}_none_replay_v1"
     if method == "rl4crn":
         return f"{task}_full102400_seed{seed}_cvode"
     if method == "reaction_network_evolution_jl":
@@ -29,6 +32,14 @@ def _run_id(task: str, method: str, seed: int) -> str:
 
 
 def _complete(method: str, run_id: str, min_sims: int) -> bool:
+    if method == "llm_seeded_evolution":
+        import json
+        completed = RAW_ROOT / method / run_id / "completed.json"
+        if not completed.exists():
+            return False
+        result = json.loads(completed.read_text())
+        return (result.get("status") == "complete" and result.get("pilot") is False
+                and result.get("search_evaluations") == 102300)
     progress = RAW_ROOT / method / run_id / "progress.csv"
     if not progress.exists():
         return False
@@ -40,6 +51,14 @@ def _complete(method: str, run_id: str, min_sims: int) -> bool:
 
 
 def _command(task: str, method: str, seed: int, run_id: str, n_cpus: int, julia: str) -> list[str]:
+    if method == "llm_seeded_evolution":
+        return [
+            str(ROOT / ".venv/bin/python"), "-m", "comparisons.llm_seeded_evolution.run",
+            "--task", task, "--seed", str(seed), "--run-id", run_id,
+            "--workers", str(n_cpus),
+        ]
+    if task not in CONFIGS:
+        raise ValueError(f"This runner supports {task} only with llm_seeded_evolution.")
     config = str(CONFIGS[task])
     if method == "rl4crn":
         return [
@@ -83,10 +102,11 @@ def _command(task: str, method: str, seed: int, run_id: str, n_cpus: int, julia:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", choices=["rpa", "logic"], required=True)
+    parser.add_argument("--task", choices=["rpa", "logic", "classifier"], required=True)
     parser.add_argument(
         "--method",
         choices=[
+            "llm_seeded_evolution",
             "rl4crn",
             "reaction_network_evolution_jl",
             "reaction_network_evolution_jl_constrained",

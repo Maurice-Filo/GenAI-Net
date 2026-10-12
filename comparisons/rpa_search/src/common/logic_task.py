@@ -14,8 +14,10 @@ from RL4CRN.utils.library_builders import build_MAK_library
 from comparisons.rpa_search.src.common.rpa_task import QuietRewardFunction, _tuple_or_value
 
 
-def build_logic_components(config: Dict[str, Any]) -> Tuple[Any, Any, Any, Any]:
-    logic = config["logic"]
+def _build_logic_components(
+    config: Dict[str, Any], section: str
+) -> Tuple[Any, Any, Any, Any]:
+    logic = config[section]
 
     cfg = Configurator.preset(logic.get("preset", "paper"))
     cfg.solver.algorithm = logic.get("solver", "LSODA")
@@ -56,12 +58,33 @@ def build_logic_components(config: Dict[str, Any]) -> Tuple[Any, Any, Any, Any]:
     return crn, library_components, task, cfg
 
 
+def build_logic_components(config: Dict[str, Any]) -> Tuple[Any, Any, Any, Any]:
+    return _build_logic_components(config, "logic")
+
+
+def build_parity_logic_components(
+    config: Dict[str, Any],
+) -> Tuple[Any, Any, Any, Any]:
+    return _build_logic_components(config, "logic_parity")
+
+
 def build_logic_fn(formula: str):
-    if formula != "chain_or_pairs_4":
-        raise ValueError(f"Unsupported logic formula: {formula}")
+    if formula == "chain_or_pairs_4":
 
-    def logic_fn(u):
-        x = np.asarray(u, dtype=float) > 0.5
-        return bool((x[0] and x[1]) or (x[1] and x[2]) or (x[2] and x[3]))
+        def logic_fn(u):
+            x = np.asarray(u, dtype=float) > 0.5
+            return bool((x[0] and x[1]) or (x[1] and x[2]) or (x[2] and x[3]))
 
-    return logic_fn
+        return logic_fn
+
+    if formula == "parity_4":
+
+        def parity_fn(u):
+            x = np.asarray(u, dtype=float) > 0.5
+            if x.size != 4:
+                raise ValueError("parity_4 requires exactly four inputs")
+            return bool(np.count_nonzero(x) % 2)
+
+        return parity_fn
+
+    raise ValueError(f"Unsupported logic formula: {formula}")

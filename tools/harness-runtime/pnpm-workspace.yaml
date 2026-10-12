@@ -1,0 +1,7 @@
+# Native helpers required by the pinned Harness; do not enable all build scripts.
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': false
+  koffi: true
+  node-pty: true
+  protobufjs: true

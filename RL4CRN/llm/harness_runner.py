@@ -157,6 +157,19 @@ class HarnessDeciderWriterCRNGraph(DeciderWriterCRNGraph):
         **kwargs: Any,
     ):
         kwargs.setdefault("workspace_context_mode", True)
+        from RL4CRN.llm.workspace_loss_protocol import PROTOCOL, graph_spec
+
+        client = kwargs.get("client")
+        if getattr(client, "harness_protocol", "legacy") == PROTOCOL:
+            if max_workspace_evaluations != 0 or literature_database is not None or max_literature_searches != 0:
+                raise ValueError("workspace-loss-v1 disables exploratory evaluation and literature services.")
+            expected_spec = graph_spec()
+            if kwargs.get("spec") not in (None, expected_spec) or not kwargs["workspace_context_mode"]:
+                raise ValueError("workspace-loss-v1 requires its frozen role prompts and workspace context.")
+            kwargs.setdefault("writer_retry_limit", 0)
+            if kwargs["writer_retry_limit"] != 0:
+                raise ValueError("workspace-loss-v1 does not retry or replace rejected batches.")
+            kwargs["spec"] = expected_spec
         super().__init__(*args, **kwargs)
         self.max_workspace_evaluations = int(max_workspace_evaluations)
         self.literature_database = Path(literature_database) if literature_database else None
@@ -190,6 +203,9 @@ class HarnessDeciderWriterCRNGraph(DeciderWriterCRNGraph):
         workspace_files = default_workspace_tool_files(
             include_literature=self.literature_database is not None
         )
+        loss_only = getattr(self.client, "harness_protocol", "legacy") == "workspace-loss-v1"
+        if loss_only:
+            workspace_files = {"REASONING_NOTES.md": workspace_files["REASONING_NOTES.md"]}
         workspace_files.update(_workspace_context_files(kwargs, self.memory))
         with self.client.run(
             task_description=task_description,
@@ -206,7 +222,7 @@ class HarnessDeciderWriterCRNGraph(DeciderWriterCRNGraph):
                 "Read CONTEXT/SIL_STATUS.md; do not reproduce its contents in prompts."
             )
             with ExitStack() as stack:
-                tool_service = stack.enter_context(
+                tool_service = None if loss_only else stack.enter_context(
                     WorkspaceEvaluationService(
                         workspace.path,
                         self.evaluator,
@@ -229,7 +245,7 @@ class HarnessDeciderWriterCRNGraph(DeciderWriterCRNGraph):
                 )
             result = replace(
                 result,
-                tool_evaluations=list(tool_service.records),
+                tool_evaluations=list(tool_service.records) if tool_service is not None else [],
                 response_validation={
                     **result.response_validation,
                     "provider_call_count": int(workspace.call_count),

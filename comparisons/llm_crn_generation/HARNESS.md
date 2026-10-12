@@ -1,5 +1,9 @@
 # DeepSeek Harness CRN backend
 
+For a fresh machine, start with the [installation and provider setup guide](../../tools/HARNESS_SETUP.md),
+which includes copy-paste commands and an offline/opt-in live Decider--Writer check.
+Some examples below describe earlier workflows rather than the final paper configuration.
+
 `HarnessLLMClient` runs the DeepSeek bot as a separate headless process only
 when a generation round is requested. The bot's current directory is a new,
 Git-initialized run directory and not the repository.

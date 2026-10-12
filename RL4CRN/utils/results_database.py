@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 import numpy as np
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class ResultsDatabase:
@@ -250,6 +250,11 @@ class ResultsDatabase:
         environments: Iterable[Any],
         *,
         epoch: int,
+        boundary: str = "epoch",
+        cumulative_rl_evaluations: int = 0,
+        cumulative_llm_tool_evaluations: int = 0,
+        cumulative_llm_final_evaluations: int = 0,
+        cumulative_total_evaluations: int = 0,
         save_plots: bool = False,
         llm_provenance: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ) -> None:
@@ -288,6 +293,15 @@ class ResultsDatabase:
                 "snapshot_id": str(uuid.uuid4()),
                 "run_id": self.run_id,
                 "epoch": int(epoch),
+                "boundary": str(boundary),
+                "cumulative_rl_evaluations": int(cumulative_rl_evaluations),
+                "cumulative_llm_tool_evaluations": int(
+                    cumulative_llm_tool_evaluations
+                ),
+                "cumulative_llm_final_evaluations": int(
+                    cumulative_llm_final_evaluations
+                ),
+                "cumulative_total_evaluations": int(cumulative_total_evaluations),
                 "created_at": time.time(),
                 "entries": entries,
             },
@@ -430,6 +444,11 @@ class ResultsDatabase:
                     snapshot_id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL,
                     epoch INTEGER NOT NULL,
+                    boundary TEXT NOT NULL,
+                    cumulative_rl_evaluations INTEGER NOT NULL,
+                    cumulative_llm_tool_evaluations INTEGER NOT NULL,
+                    cumulative_llm_final_evaluations INTEGER NOT NULL,
+                    cumulative_total_evaluations INTEGER NOT NULL,
                     created_at REAL NOT NULL,
                     FOREIGN KEY(run_id) REFERENCES training_runs(run_id)
                 );
@@ -571,8 +590,18 @@ class ResultsDatabase:
             return
         if kind == "hof_snapshot":
             connection.execute(
-                "INSERT INTO hof_snapshots VALUES (?, ?, ?, ?)",
-                (p["snapshot_id"], p["run_id"], p["epoch"], p["created_at"]),
+                "INSERT INTO hof_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    p["snapshot_id"],
+                    p["run_id"],
+                    p["epoch"],
+                    p["boundary"],
+                    p["cumulative_rl_evaluations"],
+                    p["cumulative_llm_tool_evaluations"],
+                    p["cumulative_llm_final_evaluations"],
+                    p["cumulative_total_evaluations"],
+                    p["created_at"],
+                ),
             )
             for entry in p["entries"]:
                 _insert_crn(connection, entry["crn"])

@@ -52,6 +52,9 @@ pip install -e .
 
 ## Quick start
 
+For LLM-assisted search, see the [DeepSeek Harness setup guide](tools/HARNESS_SETUP.md)
+for installation, hosted/local model configuration, and a small connection test.
+
 A typical workflow is:
 
 1. Define / load a reaction library and IO-CRN environment.

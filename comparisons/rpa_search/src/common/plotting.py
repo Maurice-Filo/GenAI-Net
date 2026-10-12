@@ -12,6 +12,7 @@ import numpy as np
 from matplotlib.lines import Line2D
 
 METHOD_LABELS = {
+    "llm_seeded_evolution": "LLM-seeded evolution",
     "rl4crn": "GenAI-Net (ours)",
     "genai_net_llm": "GenAI-Net-LLM (ours)",
     "circuitree": "CircuiTree",
@@ -22,6 +23,7 @@ METHOD_LABELS = {
 }
 
 METHOD_COLORS = {
+    "llm_seeded_evolution": "#882255",
     "rl4crn": "#0072B2",
     "genai_net_llm": "#009E73",
     "circuitree": "#009E73",
@@ -41,6 +43,7 @@ SOURCE_COLORS = {
 METHOD_ORDER = [
     "rl4crn",
     "genai_net_llm",
+    "llm_seeded_evolution",
     "reaction_network_evolution_jl",
     "reaction_network_evolution_jl_constrained",
     "reaction_network_evolution_jl_constrained_bounded",

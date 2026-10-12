@@ -2,15 +2,57 @@ import unittest
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock
+
+from RL4CRN.utils.results_database import ResultsDatabase
 
 from RL4CRN.utils.results_viewer import (
     CampaignProgressReader,
+    ResultsDatabaseReader,
+    _handler,
     _parse_crn_presentation,
     _reasoning_sections,
 )
 
 
 class ResultsViewerPresentationTests(unittest.TestCase):
+    def test_campaign_trial_selection_routes_to_the_selected_database(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for seed in (10, 2):
+                path = root / "runs" / f"trial-{seed}" / f"logic_full102400_seed{seed}_test" / "results.sqlite"
+                path.parent.mkdir(parents=True)
+                database = ResultsDatabase(path, run_id=f"run-{seed}")
+                database.close()
+            unrelated = root / "runs" / "unrelated" / "rpa_full102400_seed0_test" / "results.sqlite"
+            unrelated.parent.mkdir(parents=True)
+            database = ResultsDatabase(unrelated, run_id="unrelated")
+            database.close()
+            plan = root / "plan.json"
+            plan.write_text(json.dumps({"campaigns": [{
+                "id": "current", "label": "Current Logic", "tasks": ["logic"],
+                "status_path": str(root / "status.json"),
+            }]}), encoding="utf-8")
+            campaigns = CampaignProgressReader(plan)
+            entries = campaigns.databases()
+            self.assertEqual([entry["seed"] for entry in entries], [2, 10])
+            self.assertEqual(len({entry["id"] for entry in entries}), 2)
+            default = ResultsDatabaseReader(entries[0]["path"])
+            handler_type = _handler(default, access_token="test-token", campaign_reader=campaigns)
+            handler = object.__new__(handler_type)
+            handler._json = Mock()
+            handler.path = f"/api/runs?token=test-token&database={entries[1]['id']}"
+            handler.do_GET()
+            status, rows = handler._json.call_args.args
+            self.assertEqual(status, 200)
+            self.assertEqual([row["run_id"] for row in rows], ["run-10"])
+            handler.path = "/api/runs?token=test-token&database=/etc/passwd"
+            handler.do_GET()
+            self.assertEqual(handler._json.call_args.args[0], 400)
+            handler.path = "/api/databases"
+            handler.do_GET()
+            self.assertEqual(handler._json.call_args.args[0], 403)
+
     def test_campaign_progress_combines_completed_and_active_epochs(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

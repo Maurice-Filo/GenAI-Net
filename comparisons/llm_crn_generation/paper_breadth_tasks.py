@@ -128,7 +128,8 @@ def build_paper_breadth_components(config: dict[str, Any], task_name: str):
             )
             kind = "oscillator_freq"
         else:
-            params.update({"u_values": [0.0], "mean_target": 1.0})
+            params.update({"u_values": [0.0], "mean_target": 1.0,
+                           "osc_w": [0.6, 0.0, 0.1, 0.3]})
             kind = "oscillator_mean"
         task = make_task(
             template_crn=crn,

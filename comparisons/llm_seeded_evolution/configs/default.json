@@ -1,0 +1,8 @@
+{
+  "protocol_version": 1,
+  "batch_size": 32,
+  "rate_mutation_probability": 0.45,
+  "reaction_mutation_probability": 0.45,
+  "log_rate_sigma": 0.5,
+  "initial_rate_range": [0.1, 50.0]
+}

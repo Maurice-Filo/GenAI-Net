@@ -24,6 +24,10 @@ from RL4CRN.llm.schemas import LLMGenerationConfig
 
 
 DEFAULT_DSH_PACKAGE = "@deepseek-ai/dsh@0.1.0-rc.8"
+DSH_BWRAP_WRAPPER = Path(__file__).resolve().parents[2] / "tools/dsh_bwrap_resolved_tmp.sh"
+DSH_CONTINUING_RUNNER = (
+    Path(__file__).resolve().parents[2] / "tools/dsh_headless_continuing_runner.mjs"
+)
 
 HARNESS_COMMON_TASK_TEMPLATE = (
     "Work only inside the current run workspace. Do not inspect or modify parent "
@@ -135,9 +139,12 @@ class HarnessLLMClient:
         provider: str = "deepseek-official",
         model: str = "deepseek-v4-flash",
         openai_compatible_base_url: Optional[str] = None,
+        local_context_window: int = 32768,
+        local_max_output_tokens: int = 4096,
         global_concurrency: int = 8,
         candidate_validation_policy: str = "atomic-batch",
         recover_valid_candidates: Optional[bool] = None,
+        harness_protocol: str = "legacy",
     ):
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.dsh_home = Path(dsh_home).expanduser().resolve()
@@ -145,11 +152,26 @@ class HarnessLLMClient:
         self.timeout_seconds = float(timeout_seconds)
         self.extra_environment = dict(extra_environment or {})
         self.system_prompt = str(system_prompt).strip()
+        from RL4CRN.llm import workspace_loss_protocol as loss_protocol
+
+        if harness_protocol not in {"legacy", loss_protocol.PROTOCOL}:
+            raise ValueError(f"Unknown Harness protocol: {harness_protocol}")
+        self.harness_protocol = harness_protocol
+        if harness_protocol == loss_protocol.PROTOCOL:
+            if system_prompt != CRN_AGENT_SYSTEM_PROMPT:
+                raise ValueError("The versioned workspace-loss protocol owns its system prompt.")
+            self.system_prompt = loss_protocol.SYSTEM_PROMPT.strip()
         self.provider = str(provider).strip()
         self.model = str(model).strip()
         self.openai_compatible_base_url = self._validate_local_base_url(
             openai_compatible_base_url
         )
+        self.local_context_window = int(local_context_window)
+        self.local_max_output_tokens = int(local_max_output_tokens)
+        if self.local_context_window <= 0 or self.local_max_output_tokens <= 0:
+            raise ValueError("Local model context and output limits must be positive.")
+        if self.local_max_output_tokens > self.local_context_window:
+            raise ValueError("Local model output limit cannot exceed its context window.")
         self.global_concurrency = int(global_concurrency)
         if recover_valid_candidates is not None:
             candidate_validation_policy = (
@@ -162,6 +184,8 @@ class HarnessLLMClient:
                 "'independent-members'."
             )
         self.recover_valid_candidates = self.candidate_validation_policy == "independent-members"
+        if harness_protocol == loss_protocol.PROTOCOL and not self.recover_valid_candidates:
+            raise ValueError("workspace-loss-v1 requires independent-members validation.")
         if self.global_concurrency <= 0:
             raise ValueError("Harness global concurrency must be positive.")
         self.active_workspace: Optional[HarnessRunWorkspace] = None
@@ -177,12 +201,15 @@ class HarnessLLMClient:
             command=self.command,
             timeout_seconds=self.timeout_seconds,
             extra_environment=self.extra_environment,
-            system_prompt=self.system_prompt,
+            system_prompt=self.system_prompt if self.harness_protocol == "legacy" else CRN_AGENT_SYSTEM_PROMPT,
             provider=self.provider,
             model=self.model,
             openai_compatible_base_url=self.openai_compatible_base_url,
+            local_context_window=self.local_context_window,
+            local_max_output_tokens=self.local_max_output_tokens,
             global_concurrency=self.global_concurrency,
             candidate_validation_policy=self.candidate_validation_policy,
+            harness_protocol=self.harness_protocol,
         )
 
     @contextmanager
@@ -313,6 +340,10 @@ class HarnessLLMClient:
         workspace_files: Dict[str, Any],
         label: str,
     ) -> HarnessRunWorkspace:
+        if self.harness_protocol != "legacy":
+            rules = contract.get("rules", {})
+            if rules.get("allowed_parameter_range") != [0.001, 100.0] or rules.get("out_of_range_parameter_policy") != "clamp":
+                raise ValueError("workspace-loss-v1 requires the production [0.001, 100] clamping contract.")
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         safe_label = "".join(char if char.isalnum() or char in "-_" else "-" for char in label)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -328,7 +359,29 @@ class HarnessLLMClient:
         profile_patch = path / "harness.patch.yml"
         profile_patch.write_text(self._profile_patch_text(), encoding="utf-8")
         _write_json(path / "OUTPUT_CONTRACT.json", contract)
-        _write_json(path / "OUTPUT_GUIDE.json", _compact_output_guide(contract))
+        guide = _compact_output_guide(contract)
+        protocol_metadata = {}
+        if self.harness_protocol != "legacy":
+            from RL4CRN.llm import workspace_loss_protocol as loss_protocol
+
+            workspace_files = dict(workspace_files)
+            workspace_files["DESIGN_CONSTRAINTS.md"] = loss_protocol.design_constraints(
+                contract, str(workspace_files.get("CONTEXT/EXCLUDED_TOPOLOGIES.md", "No exclusions supplied."))
+            )
+            guide["reaction_library"]["lookup"] = "Read or search the workspace library at your discretion."
+            guide["unencodable_member"] = {
+                "placeholder": {"reaction_ids": [], "parameter_values": []},
+                "policy": "Keep original slot; deliberately invalid placeholder is independently rejected.",
+                "reason_file": "WRITER_ERRORS.json",
+                "reason_shape": {"errors": [{"candidate_index": 0, "reason": "Why faithful encoding failed"}]},
+                "scientific_repairs_allowed": False,
+            }
+            protocol_metadata = {
+                "harness_protocol": self.harness_protocol,
+                "workspace_tool_call_quota": None,
+                "exploratory_evaluations_enabled": False,
+            }
+        _write_json(path / "OUTPUT_GUIDE.json", guide)
         (path / "REACTION_LIBRARY.tsv").write_text(
             _reaction_library_tsv(contract), encoding="utf-8"
         )
@@ -352,6 +405,7 @@ class HarnessLLMClient:
                 "provider": self.provider,
                 "model": self.model,
                 "candidate_response_policy": self.candidate_validation_policy,
+                **protocol_metadata,
                 "system_prompt_sha256": _sha256_text(system_prompt_text),
                 "task_prompt_sha256": _sha256_text(task_text),
                 "output_contract_sha256": _sha256_file(path / "OUTPUT_CONTRACT.json"),
@@ -403,7 +457,12 @@ class HarnessLLMClient:
         request_path.write_text(request, encoding="utf-8")
 
         relative_request = request_path.relative_to(workspace.path)
-        bot_task = build_harness_bot_task(response_kind, str(relative_request))
+        if self.harness_protocol == "legacy":
+            bot_task = build_harness_bot_task(response_kind, str(relative_request))
+        else:
+            from RL4CRN.llm.workspace_loss_protocol import bot_task as loss_bot_task
+
+            bot_task = loss_bot_task(response_kind, str(relative_request))
         profile_patch = workspace.path / "harness.patch.yml"
 
         queued_at = datetime.now(timezone.utc)
@@ -520,7 +579,10 @@ class HarnessLLMClient:
                             payload, workspace.contract
                         )
                         if self.recover_valid_candidates:
-                            payload, _ = _recover_valid_crn_payload(
+                            # Validate the independently recoverable members here, but
+                            # return the original payload so the outer validation pass
+                            # retains exact per-member rejection diagnostics.
+                            _recovered, _ = _recover_valid_crn_payload(
                                 payload, workspace.contract
                             )
                         else:
@@ -650,6 +712,27 @@ class HarnessLLMClient:
 
     def _profile_patch_text(self) -> str:
         persona = "\n".join(f"      {line}" for line in self.system_prompt.splitlines())
+        sandbox_config = (
+            "- id: sandbox\n"
+            "  config:\n"
+            "    runnerCommand:\n"
+            f"      - {json.dumps(str(DSH_BWRAP_WRAPPER))}\n"
+            "    runnerFailureSignatures:\n"
+            "      - \"bwrap: \"\n"
+        )
+        continuation_config = (
+            "- id: headless-runner\n"
+            "  disabled: true\n"
+            "- insert:\n"
+            "    - id: headless-continuing-runner\n"
+            f"      name: {json.dumps(DSH_CONTINUING_RUNNER.as_uri())}\n"
+            "      inject: [headlessStartup]\n"
+            "      config:\n"
+            "        task: !!js ctx.headlessStartup.task\n"
+            f"        provider: {json.dumps(self.provider)}\n"
+            f"        model: {json.dumps(self.model)}\n"
+            "        maxContinuations: 2\n"
+        )
         local_provider = ""
         if self.openai_compatible_base_url is not None:
             local_provider = (
@@ -661,16 +744,21 @@ class HarnessLLMClient:
                 "        displayName: Local llama.cpp\n"
                 "        api: openai-completions\n"
                 f"        baseURL: {json.dumps(self.openai_compatible_base_url)}\n"
+                "        reasoning: low\n"
                 "        compat:\n"
                 "          supportsDeveloperRole: false\n"
                 "          maxTokensField: max_tokens\n"
+                "          thinkingFormat: qwen-chat-template\n"
                 "        models:\n"
                 f"          - id: {json.dumps(self.model)}\n"
                 f"            name: {json.dumps(self.model)}\n"
-                "            contextWindow: 32768\n"
-                "            maxTokens: 4096\n"
+                f"            contextWindow: {self.local_context_window}\n"
+                f"            maxTokens: {self.local_max_output_tokens}\n"
+                "            reasoningEfforts:\n"
+                "              off: null\n"
+                "              low: low\n"
             )
-        return local_provider + (
+        return sandbox_config + continuation_config + local_provider + (
             "- id: agent-default-model\n"
             "  config:\n"
             f"    provider: {json.dumps(self.provider)}\n"

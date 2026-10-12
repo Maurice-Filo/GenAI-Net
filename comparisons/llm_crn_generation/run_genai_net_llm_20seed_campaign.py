@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from comet_ml import Experiment
+from comet_ml import API, Experiment
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -91,6 +91,8 @@ def command(args: argparse.Namespace, campaign_root: Path, task: str, seed: int)
         str(args.global_llm_concurrency),
         "--max-agent-evaluations",
         str(args.max_agent_evaluations),
+        "--max-literature-searches",
+        str(args.max_literature_searches),
         "--model",
         args.model,
         "--task-prompt-variant",
@@ -99,6 +101,10 @@ def command(args: argparse.Namespace, campaign_root: Path, task: str, seed: int)
         args.generation_backend,
         "--llm-provider",
         args.llm_provider,
+        "--local-llm-context-window",
+        str(args.local_llm_context_window),
+        "--local-llm-max-output-tokens",
+        str(args.local_llm_max_output_tokens),
         "--communication-mode",
         args.communication_mode,
         "--method-name",
@@ -156,6 +162,9 @@ def configured_command(
 def comet_smoke(project: str, campaign_id: str) -> str:
     """Require one authenticated Comet event before any scientific worker starts."""
 
+    account = API(cache=False).get_account_details()
+    if not isinstance(account, dict) or not account.get("defaultWorkspaceName"):
+        raise RuntimeError("Comet authentication preflight did not return an account workspace.")
     experiment = Experiment(
         project_name=project,
         auto_param_logging=False,
@@ -168,9 +177,9 @@ def comet_smoke(project: str, campaign_id: str) -> str:
     experiment.set_name(f"{campaign_id}-preflight")
     experiment.add_tags(["genai-net-paper", "contract-v2", "preflight"])
     key = experiment.get_key()
-    if not key:
+    if not key or getattr(experiment, "alive", False) is not True:
         experiment.end()
-        raise RuntimeError("Comet preflight did not return an experiment key.")
+        raise RuntimeError("Comet preflight experiment is not authenticated and live.")
     experiment.log_other("campaign_id", campaign_id)
     experiment.log_other("status", "preflight-ok")
     experiment.log_metric("preflight/comet_authenticated", 1, step=0)
@@ -243,6 +252,7 @@ def main() -> None:
     parser.add_argument("--llm-every", type=int, default=20)
     parser.add_argument("--max-llm-in-flight", type=int, default=5)
     parser.add_argument("--max-agent-evaluations", type=int, default=0)
+    parser.add_argument("--max-literature-searches", type=int, default=0)
     parser.add_argument("--llm-timeout", type=float, default=3600.0)
     parser.add_argument("--global-llm-concurrency", type=int, default=8)
     parser.add_argument("--comet-project", default="genai-net-llm-paper")
@@ -259,7 +269,7 @@ def main() -> None:
     parser.add_argument("--model", default="deepseek-v4-flash")
     parser.add_argument(
         "--task-prompt-variant",
-        choices=("standard", "reported-2026", "logic-trajectory"),
+        choices=("standard", "reported-2026", "logic-trajectory", "parity-evidence-exploitation-v1", "parity-evidence-exploitation-12r-v1"),
         default="standard",
     )
     parser.add_argument(
@@ -269,8 +279,12 @@ def main() -> None:
     )
     parser.add_argument("--llm-provider", default="deepseek-official")
     parser.add_argument("--llm-base-url", default=None)
+    parser.add_argument("--local-llm-context-window", type=int, default=32768)
+    parser.add_argument("--local-llm-max-output-tokens", type=int, default=4096)
     parser.add_argument(
-        "--communication-mode", choices=("full", "none"), default="full"
+        "--communication-mode",
+        choices=("full", "llm-to-rl", "rl-to-llm", "none"),
+        default="full",
     )
     parser.add_argument("--withhold-initial-hof", action="store_true")
     parser.add_argument(
@@ -298,12 +312,21 @@ def main() -> None:
         default=Path.home() / "ai-workspaces/deepseek-test/crn-runs/paper-campaigns",
     )
     args = parser.parse_args()
+    from RL4CRN.llm.workspace_loss_protocol import validate_campaign_settings
+
+    try:
+        validate_campaign_settings(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     experiment_release = validate_experiment_release(
         stage=args.campaign_stage,
         prompt_approval_path=args.prompt_approval_file,
         analysis_plan_path=args.analysis_plan_file,
         sentinel_report_path=args.sentinel_report_file,
     )
+    from RL4CRN.llm.workspace_loss_protocol import validate_protocol_release
+
+    experiment_release.update(validate_protocol_release(args.task_prompt_variant))
     positive = (
         args.max_parallel,
         args.cpus_per_run,
@@ -323,7 +346,11 @@ def main() -> None:
         uuid_gpu = args.rl_gpu.startswith("GPU-") and len(args.rl_gpu) > 4
         if not (numeric_gpu or uuid_gpu):
             parser.error("rl-gpu must be a non-negative CUDA index or GPU UUID")
-    if args.max_agent_evaluations < 0 or args.forbidden_topology_m < 0:
+    if (
+        args.max_agent_evaluations < 0
+        or args.max_literature_searches < 0
+        or args.forbidden_topology_m < 0
+    ):
         parser.error("evaluation and exclusion counts must be non-negative")
     if args.recover_valid_llm_candidates:
         args.candidate_validation_policy = "independent-members"
@@ -361,6 +388,8 @@ def main() -> None:
         for task in args.tasks
     }
     comet_preflight_key = comet_smoke(args.comet_project, args.campaign_id)
+    from RL4CRN.llm.workspace_loss_protocol import protocol_metadata
+
     manifest = {
         "campaign_id": args.campaign_id,
         "tasks": list(args.tasks),
@@ -368,6 +397,7 @@ def main() -> None:
         "solver": "CVODE",
         "model": args.model,
         "task_prompt_variant": args.task_prompt_variant,
+        **protocol_metadata(args.task_prompt_variant),
         "task_prompt_sha256_by_task": prompt_hashes,
         "generation_backend": args.generation_backend,
         "thinking_mode": (
@@ -384,8 +414,12 @@ def main() -> None:
         "candidate_validation_policy": args.candidate_validation_policy,
         "proposal_space_contract_version": 2,
         "llm_rate_bounds": [0.001, 100.0],
-        "terminal_candidate_pooling": args.communication_mode == "none",
+        "terminal_candidate_pooling": args.communication_mode in {"rl-to-llm", "none"},
+        "expose_state_to_llm": args.communication_mode in {"full", "rl-to-llm"},
+        "insert_llm_into_rl": args.communication_mode in {"full", "llm-to-rl"},
         "llm_base_url": args.llm_base_url,
+        "local_llm_context_window": args.local_llm_context_window,
+        "local_llm_max_output_tokens": args.local_llm_max_output_tokens,
         "method_name": args.method_name,
         "run_suffix": args.run_suffix,
         "max_parallel": args.max_parallel,
@@ -409,6 +443,7 @@ def main() -> None:
             ((args.epochs - 1) // args.llm_every + 1) * args.llm_candidates
         ),
         "agent_simulation_probes_per_round": args.max_agent_evaluations,
+        "literature_searches_per_round": args.max_literature_searches,
         "total_evaluation_budget_cap": args.total_candidate_budget,
         "literature_rag_index": str(args.literature_rag_index) if args.literature_rag_index else None,
         "literature_rag_index_sha256": file_sha256(args.literature_rag_index),

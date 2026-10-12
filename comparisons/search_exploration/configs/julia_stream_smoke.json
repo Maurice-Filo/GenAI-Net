@@ -1,0 +1,16 @@
+{
+  "seed": 20260915,
+  "epochs": 3,
+  "batch_size": 128,
+  "evaluation_budget": 4096,
+  "fit_evaluations": 24,
+  "fit_seconds": 60.0,
+  "evaluation_seconds": 30.0,
+  "workers": 8,
+  "rate_min": 0.001,
+  "rate_max": 100.0,
+  "quality_threshold": 0.05,
+  "archive_capacity": 2000,
+  "sil_top_k": 30,
+  "plot_every": 1
+}

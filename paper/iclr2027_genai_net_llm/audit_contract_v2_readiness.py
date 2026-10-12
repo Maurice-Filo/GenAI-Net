@@ -54,6 +54,36 @@ def audit_readiness(paper: Path = PAPER) -> Dict[str, Any]:
         errors.append(
             "no audited contract-v2 primary registry exists; numerical manuscript build remains blocked"
         )
+        registry = {}
+    else:
+        try:
+            registry = json.loads(primary_registry.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            registry = {}
+            errors.append(f"primary registry is invalid JSON: {exc}")
+        if registry.get("status") != "audited-complete":
+            errors.append("primary registry is not audited-complete")
+        for relative in registry.get("audit_files", ()):
+            audit_path = ROOT / relative
+            try:
+                audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                errors.append(f"primary audit missing or invalid at {relative}: {exc}")
+                continue
+            if audit.get("status") != "pass":
+                errors.append(f"primary audit does not pass: {relative}")
+
+    submission_results = paper / "generated/submission_results.json"
+    try:
+        submission = json.loads(submission_results.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        submission = {}
+        errors.append(f"submission results missing or invalid: {exc}")
+    evidence_gate = submission.get("evidence_gate", {})
+    if evidence_gate.get("primary_registry_status") != "audited-complete":
+        errors.append("submission results were not generated from an audited primary registry")
+    if evidence_gate.get("historical_runs_used") is not False:
+        errors.append("submission results do not explicitly exclude historical runs")
 
     active_sources = [paper / "main.tex", *sorted((paper / "sections").glob("*.tex"))]
     stale_markers = (
@@ -62,6 +92,9 @@ def audit_readiness(paper: Path = PAPER) -> Dict[str, Any]:
         "779/800",
         "Within one model request",
         "lists the executed contracts",
+        "No valid contract-v2 results",
+        "No contract-v2 campaign has been launched",
+        "\\emph{Placeholder:}",
     )
     for source in active_sources:
         text = source.read_text(encoding="utf-8")
@@ -75,6 +108,7 @@ def audit_readiness(paper: Path = PAPER) -> Dict[str, Any]:
         "author_approval": approval,
         "analysis_plan": analysis_plan,
         "primary_registry": str(primary_registry),
+        "submission_results": str(submission_results),
         "errors": errors,
     }
 

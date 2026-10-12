@@ -19,6 +19,21 @@ from RL4CRN.llm.prompts import build_candidate_generation_prompt, format_hall_of
 from RL4CRN.llm.schemas import CandidateEvaluation, LLMCandidate, LLMGenerationConfig, parse_candidates_payload
 
 
+_COMET_TEXT_PREVIEW_MAX_BYTES = 96_000
+
+
+def _comet_text_preview(text: str) -> str:
+    """Bound dashboard text while preserving the complete companion asset."""
+
+    encoded = text.encode("utf-8")
+    if len(encoded) <= _COMET_TEXT_PREVIEW_MAX_BYTES:
+        return text
+    suffix = "\n\n[Preview truncated; the complete transcript is stored as a Comet asset.]\n"
+    byte_budget = _COMET_TEXT_PREVIEW_MAX_BYTES - len(suffix.encode("utf-8"))
+    prefix = encoded[:byte_budget].decode("utf-8", errors="ignore")
+    return prefix + suffix
+
+
 def _display_rate_bounds(evaluator: Any) -> tuple[float, float]:
     """Return finite prompt bounds, using contract-v2 defaults for generic evaluators."""
 
@@ -664,7 +679,7 @@ class DeciderWriterCRNGraph:
             f"{writer_prompt}\n"
         )
         if hasattr(logger, "log_text"):
-            logger.log_text(transcript)
+            logger.log_text(_comet_text_preview(transcript))
         if hasattr(logger, "log_asset_data"):
             logger.log_asset_data(
                 transcript,
@@ -692,7 +707,7 @@ class DeciderWriterCRNGraph:
 
         text = self._format_message_transcript(messages)
         if hasattr(logger, "log_text"):
-            logger.log_text(text)
+            logger.log_text(_comet_text_preview(text))
         if hasattr(logger, "log_asset_data"):
             safe_step = step if step is not None else "na"
             logger.log_asset_data(
@@ -798,7 +813,7 @@ class DeciderWriterCRNGraph:
             f"{retry_prompt}\n"
         )
         if hasattr(logger, "log_text"):
-            logger.log_text(transcript)
+            logger.log_text(_comet_text_preview(transcript))
         if hasattr(logger, "log_asset_data"):
             logger.log_asset_data(
                 transcript,

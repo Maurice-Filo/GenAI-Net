@@ -1,0 +1,25 @@
+{
+  "definition_note": "Paper-extension definitions. Structural objectives follow arXiv:2601.17582; numeric dose curves are explicitly frozen extension definitions because the manuscript does not publish their parameters.",
+  "dose_hill": {"solver": "CVODE", "rtol": 1e-10, "atol": 1e-10},
+  "dose_ultrasensitive": {"solver": "CVODE", "rtol": 1e-10, "atol": 1e-10},
+  "dose_biphasic": {"solver": "CVODE", "rtol": 1e-10, "atol": 1e-10},
+  "classifier": {"solver": "CVODE", "rtol": 1e-6, "atol": 1e-6},
+  "oscillator_mean": {"solver": "CVODE", "rtol": 1e-10, "atol": 1e-10},
+  "oscillator_frequency": {"solver": "CVODE", "rtol": 1e-10, "atol": 1e-10},
+  "stochastic_rpa": {"solver": "CVODE", "rtol": 1e-10, "atol": 1e-10},
+  "search": {
+    "seed": 0,
+    "max_added_reactions": 6,
+    "rate_constant_range": [0.1, 50.0]
+  },
+  "rl4crn": {
+    "epochs": 100,
+    "batch_size": 1024,
+    "n_cpus": 4,
+    "render_every": 0,
+    "policy_width": 256,
+    "policy_depth": 2,
+    "deep_layer_size": 512,
+    "hall_of_fame_size": 30
+  }
+}

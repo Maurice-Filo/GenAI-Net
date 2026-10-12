@@ -17,14 +17,16 @@ REGISTRY = (
 
 
 class ContractV2PreflightTests(unittest.TestCase):
-    def test_manuscript_readiness_fails_closed_before_approval_and_results(self):
+    def test_manuscript_readiness_passes_audited_contract_v2_results(self):
         readiness = audit_readiness()
 
-        self.assertEqual(readiness["status"], "blocked")
+        self.assertEqual(readiness["status"], "pass", readiness["errors"])
         self.assertEqual(readiness["static_preflight_status"], "pass")
-        self.assertTrue(any("prompt approval" in error for error in readiness["errors"]))
-        self.assertTrue(any("analysis plan" in error.lower() for error in readiness["errors"]))
-        self.assertTrue(any("primary registry" in error for error in readiness["errors"]))
+        self.assertEqual(readiness["author_approval"]["approval_status"], "approved")
+        self.assertEqual(readiness["analysis_plan"]["status"], "frozen")
+        self.assertEqual(readiness["errors"], [])
+        self.assertTrue(Path(readiness["primary_registry"]).is_file())
+        self.assertTrue(Path(readiness["submission_results"]).is_file())
 
     def test_all_deterministic_task_contracts_pass_static_mask_audit(self):
         report = json.loads(REPORT.read_text(encoding="utf-8"))

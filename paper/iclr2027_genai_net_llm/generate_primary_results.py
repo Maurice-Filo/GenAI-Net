@@ -164,7 +164,7 @@ def write_tex(summaries: list[dict], path: Path) -> None:
     lines = [
         r"\begin{tabular}{lrrrrr}",
         r"\toprule",
-        r"Task & $n$ & RL & \method{} & RL/\method{} & Wins \\",
+        r"Task & $n$ & RL & Full duplex & RL/full & Wins \\",
         r"\midrule",
     ]
     for row in summaries:

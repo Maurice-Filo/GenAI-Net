@@ -98,7 +98,7 @@ def architecture() -> None:
     box(ax, (0.35, 0.39), 0.16, 0.18, "Validation", COLORS["eval"], subtitle="schema and CRN checks")
     box(ax, (0.58, 0.39), 0.16, 0.18, "CVODE evaluator", COLORS["eval"], subtitle="canonical task loss")
     box(ax, (0.80, 0.65), 0.17, 0.17, "Shared HOF", COLORS["state"], subtitle="loss and emitter records")
-    box(ax, (0.80, 0.14), 0.17, 0.17, "SIL replay", COLORS["rl"], subtitle="Eq. 3 replay loss")
+    box(ax, (0.80, 0.14), 0.17, 0.17, "EIL replay", COLORS["rl"], subtitle="elite imitation loss")
 
     arrow(ax, (0.20, 0.72), (0.35, 0.51), COLORS["rl"])
     arrow(ax, (0.24, 0.24), (0.35, 0.43), COLORS["llm"])
@@ -124,7 +124,7 @@ def architecture() -> None:
     ax.text(0.285, 0.25, "proposal batch", color=COLORS["llm"], fontsize=6.5, ha="center")
     ax.text(0.545, 0.52, "valid CRNs", color=COLORS["eval"], fontsize=6.5, ha="center")
     ax.text(0.765, 0.61, "evaluated", color=COLORS["eval"], fontsize=6.5, ha="center")
-    ax.text(0.52, 0.82, "HOF + SIL status", color=COLORS["state"], fontsize=6.5, ha="center")
+    ax.text(0.52, 0.82, "HOF + EIL status", color=COLORS["state"], fontsize=6.5, ha="center")
     ax.text(0.54, 0.10, "policy gradient", color=COLORS["rl"], fontsize=6.5, ha="center")
     ax.text(
         0.50,

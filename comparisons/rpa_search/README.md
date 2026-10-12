@@ -78,3 +78,13 @@ uses a custom grammar over reaction IDs and calls the same evaluator. The
 RL4CRN runner uses this repository's native trainer. The Julia runner uses
 ReactionNetworkEvolution.jl evolutionary operators with the same Python/Julia
 task objective and budget semantics.
+
+## LLM-seeded evolutionary baseline
+
+The independent implementation is in `comparisons/llm_seeded_evolution/`.
+It replays proposals from the paper's **No communication** branch and uses
+reaction replacements, rate perturbations, and random restarts with the same
+canonical evaluator. It is selectable as `--method llm_seeded_evolution` in
+`scripts/run_genai_julia_20seed_batch.py`; the generic plotter recognizes the
+same method name. See `../llm_seeded_evolution/README.md` for Logic validation,
+pilot and full-budget commands, resource accounting, and paper-table export.
