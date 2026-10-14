@@ -44,7 +44,7 @@ sudo apt-get update
 sudo apt-get install build-essential python3-venv curl tar xz-utils bubblewrap
 ```
 
-Ensure that the `venv` package matches your Python version. Julia is needed for AdaGrad parameter fitting; its environment is included in the compact release and configured below. Local LLM inference requires a separately provisioned model server. Hosted LLM use does not require a local inference GPU.
+Ensure that the `venv` package matches your Python version. Julia is needed for AdaGrad parameter fitting; its environment is included in the compact release. The [Julia setup helper](tools/setup_julia.py), used below, installs the required version and checks rate fitting. Local LLM inference requires a separately provisioned model server. Hosted LLM use does not require a local inference GPU.
 
 ### Configure the LLM harness
 
@@ -131,7 +131,10 @@ python reproduce/search.py prepare \
   --model deepseek-official/deepseek-v4-flash \
   --output "$HOME/fullduplex-logic"
 
-# After Julia setup described in the search guide:
+# Install/check the exact Julia version and test AdaGrad (no model requests):
+python tools/setup_julia.py --install-julia \
+  --project "$HOME/fullduplex-logic/jobs/seed-01/source/numerical_runtime/SynthEvo"
+source "$HOME/.local/share/fullduplex-julia/env.sh"
 python reproduce/search.py check "$HOME/fullduplex-logic"
 python reproduce/search.py run "$HOME/fullduplex-logic"
 python reproduce/search.py status "$HOME/fullduplex-logic"
@@ -191,12 +194,10 @@ For custom experiments, start with the [stream runner](comparisons/search_explor
 | `comparisons/search_exploration/` | Campaign runners, configurations, ablations, and analysis programs |
 | `comparisons/rpa_search/` | RPA task and numerical comparison utilities |
 | `comparisons/llm_crn_generation/` | LLM candidate-generation utilities and harness documentation |
-| `tools/` | Harness installer, setup checks, and runtime helpers |
+| `tools/` | Harness and Julia setup, checks, and runtime helpers |
 | `reproduce/` | Current-paper analysis, figure reproduction, and diagnostic helpers |
 | `tests/` | Implementation tests |
 | `docs/assets/` | README architecture figure |
-
-This release branch excludes manuscript sources, previous-paper pipelines, exploratory examples, and generated campaign outputs. Shared implementation modules and baseline experiments needed by the current paper are retained. The compact data release supplies the frozen evidence and figure inputs needed for the reproduction commands.
 
 ## License
 

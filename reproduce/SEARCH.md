@@ -49,15 +49,18 @@ python reproduce/search.py prepare \
 
 `DSH_HOME` comes from the Harness installer environment. Alternatively supply `--dsh-home /path/to/harness-home`. Preparation creates files only; it makes no model calls.
 
-With the reference Julia version (1.12.6) on `PATH`, instantiate the prepared numerical environment. One instantiation normally supplies the cached packages needed by the other seeds' identical environments:
+Set up Julia with the helper below. It reads the required version (1.12.6) from the supplied manifest, downloads a matching local installation if needed, verifies the official archive checksum, installs the locked dependencies, and tests dynamics, an analytic gradient and a short AdaGrad fit. It works on a copy of the Julia project and leaves the original lockfiles unchanged:
 
 ```bash
-julia --project="$HOME/fullduplex-runs/logic-full/jobs/seed-01/source/numerical_runtime/SynthEvo" \
-  -e 'using Pkg; Pkg.instantiate()'
+python tools/setup_julia.py --install-julia \
+  --project "$HOME/fullduplex-runs/logic-full/jobs/seed-01/source/numerical_runtime/SynthEvo"
+source "$HOME/.local/share/fullduplex-julia/env.sh"
 
 python reproduce/search.py check "$HOME/fullduplex-runs/logic-full"
 python reproduce/search.py run "$HOME/fullduplex-runs/logic-full"
 ```
+
+The first setup needs internet access, several GB of disk space, and time for package downloads and precompilation. Subsequent runs reuse the cache, including other seeds with the same manifest. No model requests are made. Automatic installation supports Linux x86_64/aarch64 and does not require administrator privileges. Run the helper from the repository root in your installed Python environment. Use `--prefix /path/to/install` to choose the installation location and `--depot /path/to/cache` for an isolated package cache; source the printed `env.sh` afterward. `--julia /path/to/julia` selects an existing executable, and omitting `--install-julia` makes a version mismatch an error. A successful setup writes `setup_report.json` alongside `env.sh`.
 
 `check` verifies source/configuration hashes, Python imports, actual Julia worker startup and the Harness installation. It makes no API requests and does not test credentials, server availability or whether a configured model is serving. `check --files-only` works without numerical dependencies. If using another Python environment, pass `--python /path/to/venv/bin/python` to `check` and `run`.
 
@@ -117,6 +120,23 @@ python reproduce/search.py analyze "$HOME/fullduplex-runs/smoke"
 
 These are deliberately shortened test settings, not a replication of the reported search budget. No qualifying design is expected from such a small test. Standalone GA progress is measured in batches, not RL epochs.
 
+For a brief **live RPA Flash test**, after configuring the Harness and Julia as above:
+
+```bash
+python reproduce/search.py prepare \
+  --experiment rpa-full --seed 1 \
+  --data-root "$FULLDUPLEX_DATA_ROOT" \
+  --model deepseek-official/deepseek-v4-flash \
+  --epochs 2 --batch-size 32 --evaluation-budget 256 \
+  --search-workers 1 --optimization-workers 1 \
+  --llm-every 100 --llm-candidates 1 --llm-timeout 600 \
+  --output "$HOME/fullduplex-runs/rpa-flash-smoke"
+python reproduce/search.py run "$HOME/fullduplex-runs/rpa-flash-smoke"
+python reproduce/search.py analyze "$HOME/fullduplex-runs/rpa-flash-smoke" --rpa-screen
+```
+
+This schedules one proposal batch at epoch zero and waits for pending work after the two numerical epochs. It makes billable model requests; the role deadline is ten minutes. Inspect `jobs/seed-01/output/llm_history.json` as well as completion status: numerical completion alone does not establish that the LLM request succeeded. The transport adapter passes polling settings directly to the Harness child process to avoid exhausting file watchers. This short test checks execution, not scientific performance or repeated feedback rounds.
+
 Other explicit overrides are `--epochs`, `--batch-size`, `--evaluation-budget`, `--search-workers`, `--optimization-workers`, `--llm-every`, `--llm-candidates` and `--llm-timeout`. Unsupported overrides are rejected. The reference and effective values are recorded. Task objectives, prompts and imitation weights come from the selected preset. To change them, add a separate experiment definition rather than silently modifying a matched run.
 
 ## Storage policy
@@ -157,4 +177,13 @@ The same seeds and scientific settings do not guarantee identical discoveries un
 
 ## Validation
 
-All 19 presets were prepared from seed 1 and passed source/input checks and the archived baseline verifier. Brief executions covered an eight-evaluation GA search, a one-epoch numerical hybrid search, Julia worker startup and a three-evaluation AdaGrad fit. Completion-time compaction and fresh-result plotting were exercised. CLI tests cover model routing/forking, metadata identities, input tampering, failed-seed continuation and topology deduplication. The numerical smoke tests do not validate scientific performance, and no live model request or full campaign was launched as part of this check.
+All 19 presets were prepared from seed 1 and passed source/input checks and the archived baseline verifier. Brief executions covered an eight-evaluation GA search, a one-epoch numerical hybrid search, Julia worker startup and a three-evaluation AdaGrad fit. Completion-time compaction and fresh-result plotting were exercised. CLI tests cover model routing/forking, metadata identities, input tampering, failed-seed continuation and topology deduplication. The numerical smoke tests do not validate scientific performance.
+
+On 2026-10-14, a fresh public clone of `llm-release` at `3809071` was installed into a new Python 3.10 virtual environment with a separate pinned Harness installation. The live RPA test exposed a missing forwarding of file-watcher polling settings; the transport adapter now fixes this without modifying archived scientific code. With that fix, two epochs completed with Flash v4/high reasoning: one valid LLM proposal was evaluated and inserted, AdaGrad refinement completed, and fresh-result analysis plus the RPA screen succeeded. The run used 114 charged evaluations and finished in approximately 3.2 minutes. All 23 recorded tool calls completed without errors.
+
+This was a short installation test, not a full campaign. It used the existing compact data release, an existing API credential, and the machine's Julia 1.12.1 installation/package cache. The fresh Python resolution included PyTorch 2.14.1, NumPy 2.2.6, SciPy 1.15.3 and scikit-sundae 1.1.3; these are observed test versions, not a reproduction lockfile. For the recorded scientific environment, retain the reference Julia version specified above.
+
+
+The Julia setup helper was also tested from an empty package cache with a newly downloaded Julia 1.12.6. Installation and precompilation succeeded, the analytic trajectory/gradient checks passed, and three AdaGrad steps reduced the test loss from 0.0644 to 0.0365. Both supplied lockfiles remained byte-for-byte unchanged. Precompilation alone took about seven minutes on the test workstation.
+
+The archived project currently emits a Julia warning that its dependency metadata has changed since the manifest was resolved. The supplied versions passed the clean-install worker test; do not run `Pkg.resolve()` or `Pkg.update()` on a frozen reproduction project to silence that warning.

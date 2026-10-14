@@ -56,7 +56,9 @@ def test_model_ambiguity_is_not_silently_resolved(tmp_path):
         cli.model_route('alias', tmp_path)
 
 
-def test_transport_overrides_only_routing():
+def test_transport_overrides_routing_and_forwards_polling(monkeypatch):
+    monkeypatch.setenv('CHOKIDAR_USEPOLLING', '1')
+    monkeypatch.setenv('CHOKIDAR_INTERVAL', '1000')
     class Client:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -64,7 +66,8 @@ def test_transport_overrides_only_routing():
     client = Client(provider='hardcoded', model='old', openai_compatible_base_url='http://old:8000/v1',
                     timeout_seconds=3600, system_prompt='preserve scientific instructions')
     assert client.kwargs == dict(provider='configured', model='chosen-model', openai_compatible_base_url=None,
-                                timeout_seconds=3600, system_prompt='preserve scientific instructions')
+                                timeout_seconds=3600, system_prompt='preserve scientific instructions',
+                                extra_environment={'CHOKIDAR_USEPOLLING':'1', 'CHOKIDAR_INTERVAL':'1000'})
 
 
 def test_real_client_fork_keeps_routing_without_reconfiguring_provider(tmp_path, monkeypatch):
@@ -78,6 +81,8 @@ def test_real_client_fork_keeps_routing_without_reconfiguring_provider(tmp_path,
     patch=fork._profile_patch_text()
     assert 'user-model' in patch and 'user-provider' in patch
     assert 'baseURL:' not in patch and 'apiKeyEnv:' not in patch
+    assert fork._child_environment()['CHOKIDAR_USEPOLLING'] == '1'
+    assert fork._child_environment()['CHOKIDAR_INTERVAL'] == '1000'
 
 
 def test_manifest_identity_uses_effective_model_but_candidate_keys_do_not_change():
