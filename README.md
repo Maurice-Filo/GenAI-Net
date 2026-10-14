@@ -4,9 +4,9 @@ Full-duplex communication between language models and hybrid numerical search fo
 
 This repository accompanies *Full-Duplex Communication between Language Models and Hybrid Search for Scientific Discovery: A Biomolecular Network Design Application*. It contains the search implementation, task definitions, LLM integration, and tools for reproducing the analyses.
 
-![Figure 1: numerical search and an agentic LLM exchange evaluated reaction-network designs and feedback through an archive.](docs/assets/full_duplex_architecture.svg)
+![Figure 1: numerical search and an agentic LLM exchange evaluated reaction-network designs and feedback through an archive.](docs/assets/full_duplex_architecture_white.png)
 
-*Figure 1 from the paper. [Download the vector PDF](docs/assets/full_duplex_architecture.pdf).*
+*Figure 1 from the paper. [Vector PDF](docs/assets/full_duplex_architecture.pdf) · [Vector SVG](docs/assets/full_duplex_architecture.svg).*
 
 The system combines:
 
