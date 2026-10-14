@@ -41,6 +41,14 @@ The separate data release supplies `data/`, frozen analysis inputs, manifests, r
 
 ## Prepare a new matched search
 
+For named presets, single seeds, queued campaigns, model selection through the Harness, progress monitoring and analysis of new outputs, use the **[search experiment guide](SEARCH.md)**:
+
+```bash
+python reproduce/search.py list
+```
+
+The lower-level `prepare-run` interface below remains available for individual archived Flash runs.
+
 After setting up the analysis environment above, prepare full-duplex Logic seed 1 from its saved scientific configuration:
 
 ```bash

@@ -1,0 +1,4 @@
+# Additional dependencies for campaign configuration and diagnostic compaction.
+# Install the full numerical package first: python -m pip install -e .
+PyYAML>=6.0
+orjson>=3.10

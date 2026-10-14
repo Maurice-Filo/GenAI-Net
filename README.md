@@ -115,6 +115,33 @@ These commands reproduce the analysis of recorded experiments. They do not rerun
 
 ## Run a new search
 
+The **[search experiment CLI](reproduce/SEARCH.md)** provides 19 named presets covering all seven application tasks, communication/imitation/prompt/model variants, and numerical baselines. It prepares exact reference sources and settings, runs one or twenty seeds with progress reporting, compacts completed diagnostics, and analyses the new results.
+
+Configure your model in the Harness, then pass its `provider/model` identifier:
+
+```bash
+source .venv/bin/activate
+python -m pip install -r reproduce/requirements-search.txt
+source "$HOME/.local/share/fullduplex-crn/env.sh"
+python reproduce/search.py list
+
+python reproduce/search.py prepare \
+  --experiment logic-full --seeds 1-20 --parallel-runs 8 \
+  --data-root /path/to/release \
+  --model deepseek-official/deepseek-v4-flash \
+  --output "$HOME/fullduplex-logic"
+
+# After Julia setup described in the search guide:
+python reproduce/search.py check "$HOME/fullduplex-logic"
+python reproduce/search.py run "$HOME/fullduplex-logic"
+python reproduce/search.py status "$HOME/fullduplex-logic"
+python reproduce/search.py analyze "$HOME/fullduplex-logic"
+```
+
+Preparation makes no model calls. `run` launches searches and uses the configured model for LLM experiments. The Harness owns API keys, endpoints and model settings. See the guide for a tiny numerical smoke test, worker allocation, interrupted attempts, storage policy, and RPA/Logic diagnostics.
+
+### Low-level archived-run preparation
+
 For a matched experiment, use a saved run's source snapshot, configuration, and prompts. The release can prepare **Flash RPA and Logic** runs in a new directory, verifying the restored scientific source hashes. Other campaign configurations remain available under `data/campaigns/`.
 
 For example, from the source repository, prepare the full-duplex Logic experiment for seed 1:
