@@ -1,0 +1,42 @@
+{
+  "synthetic_biology_general": {
+    "quota": 200,
+    "query": "TITLE_ABS:\"synthetic biology\""
+  },
+  "crn_design_and_control": {
+    "quota": 50,
+    "query": "TITLE_ABS:(\"chemical reaction network\" OR \"biochemical reaction network\" OR \"biomolecular network\") AND TITLE_ABS:(design OR synthesis OR engineering OR control)"
+  },
+  "logic_circuits": {
+    "quota": 45,
+    "query": "TITLE_ABS:(\"synthetic biology\" OR \"synthetic gene circuit\" OR \"biomolecular circuit\") AND TITLE_ABS:(\"logic gate\" OR \"Boolean logic\" OR \"genetic logic\")"
+  },
+  "oscillators": {
+    "quota": 30,
+    "query": "TITLE_ABS:(synthetic OR engineered OR biomolecular) AND TITLE_ABS:(\"genetic oscillator\" OR \"biological oscillator\" OR \"synthetic oscillator\" OR \"oscillatory circuit\")"
+  },
+  "robust_perfect_adaptation": {
+    "quota": 40,
+    "query": "TITLE_ABS:(\"robust perfect adaptation\" OR \"integral feedback\" OR \"antithetic integral\" OR \"integral control\") AND TITLE_ABS:(biomolecular OR biochemical OR biological OR synthetic)"
+  },
+  "stochastic_rpa_noise_control": {
+    "quota": 45,
+    "query": "TITLE_ABS:(\"synthetic gene circuit\" OR \"genetic circuit\" OR \"biomolecular control\" OR \"biochemical reaction network\") AND TITLE_ABS:(stochastic OR noise OR variance)"
+  },
+  "dose_response": {
+    "quota": 40,
+    "query": "TITLE_ABS:(\"synthetic biology\" OR \"gene circuit\" OR \"genetic circuit\" OR \"biochemical network\" OR \"signaling network\") AND TITLE_ABS:(\"dose response\" OR ultrasensitivity OR bistability)"
+  },
+  "classification": {
+    "quota": 20,
+    "query": "TITLE_ABS:(\"synthetic biology\" OR \"gene circuit\" OR \"genetic circuit\" OR \"biomolecular circuit\" OR \"molecular circuit\") AND TITLE_ABS:(classifier OR classification OR \"pattern recognition\" OR \"cellular decision\")"
+  },
+  "tracking": {
+    "quota": 20,
+    "query": "TITLE_ABS:(\"biomolecular circuit\" OR \"biochemical network\" OR \"synthetic biology\" OR \"gene circuit\" OR \"gene regulatory network\") AND TITLE_ABS:(\"signal tracking\" OR \"reference tracking\" OR \"feedback control\" OR \"dynamic control\")"
+  },
+  "habituation": {
+    "quota": 10,
+    "query": "TITLE_ABS:(\"cellular habituation\" OR \"non-neuronal habituation\" OR \"biochemical habituation\" OR \"molecular habituation\")"
+  }
+}
