@@ -103,7 +103,7 @@ def prepare(campaign, output, workers, previous_study=None):
     with gzip.open(output / "selection.json.gz", "wt") as stream:
         json.dump({"runs": runs, "candidates": candidates, "catalog": catalog, "fixed": fixed}, stream, allow_nan=False)
     z = np.random.default_rng(20260917).uniform(-1, 1, (16, len(catalog)))
-    paths = [Path(__file__), ROOT / "paper/iclr2027_genai_net_llm/analyze_logic_correctness_pruning.py",
+    paths = [Path(__file__), ROOT / "reproduce/diagnostics/logic_pruning.py",
              ROOT / "comparisons/search_exploration/run_rpa_perturbations.py",
              ROOT / "comparisons/search_exploration/analyze_logic5_four_arm.py",
              ROOT / "comparisons/search_exploration/analyze_logic5_portfolio_diagnostics.py",
@@ -139,7 +139,7 @@ def initialize(plan):
     import torch
     torch.set_num_threads(1)
     from RL4CRN.search_exploration.evaluation import build
-    from paper.iclr2027_genai_net_llm import analyze_logic_correctness_pruning as pruning
+    from reproduce.diagnostics import logic_pruning as pruning
     pruning.EVALUATOR, _, _ = build("logic", plan["task_config"], .001, 100.)
     pruning.replay.cache_clear()
     PLAN, DIRECTIONS = plan, np.asarray(plan["directions"])
@@ -150,7 +150,7 @@ def action_key(ids, rates):
 
 
 def replay_with_orders(actions, saved_orders, accept=None):
-    from paper.iclr2027_genai_net_llm import analyze_logic_correctness_pruning as pruning
+    from reproduce.diagnostics import logic_pruning as pruning
     rates = dict(actions)
     canonical = tuple(sorted(rates))
     orders = [canonical] + sorted({tuple(i for i in order if i in rates)
@@ -170,7 +170,7 @@ def replay_with_orders(actions, saved_orders, accept=None):
 
 
 def evaluate_candidate(candidate):
-    from paper.iclr2027_genai_net_llm import analyze_logic_correctness_pruning as pruning
+    from reproduce.diagnostics import logic_pruning as pruning
     started = time.monotonic()
     key = action_key(candidate["reaction_ids"], candidate["rates"])
     before = pruning.replay.cache_info()

@@ -22,7 +22,6 @@ from comparisons.search_exploration.analyze_rpa_communication_families import an
 from comparisons.search_exploration.analyze_rpa_mechanisms import integral_balance, reactions_for, dump_json, write_csv
 
 REPO = Path(__file__).resolve().parents[2]
-PAPER = REPO / 'paper/biomolecular_full_duplex_rewrite'
 COLORS = {'reference': '#9A4C89', 'unspecified': '#26835B'}
 LABELS = {'reference': 'Original prompt', 'unspecified': 'Mechanism-unspecified prompt'}
 
@@ -140,7 +139,7 @@ def render(data, out):
     plt.close(fig)
 
 
-def analyze(root, out, final=False):
+def analyze(root, out, final=False, *, reference_analysis):
     out.mkdir(parents=True,exist_ok=True)
     if any(out.iterdir()):
         raise FileExistsError('Refusing to overwrite an existing analysis snapshot: '+str(out))
@@ -161,7 +160,7 @@ def analyze(root, out, final=False):
     cutoff=None if final else min(max(m['epoch'] for m in r['metrics'] if m['epoch']<100) for r in runs)
     task=read(root/'configs/task-01.json')
     cats,fixed=catalog(task)
-    paper_rows=list(csv.DictReader((PAPER/'results_figure_proposal/rpa_integral_screen.csv').open()))
+    paper_rows=list(csv.DictReader((reference_analysis/'results_figure_proposal/rpa_integral_screen.csv').open()))
     paper={int(r['seed']):r for r in paper_rows if r['arm']=='full'}
     per_run=[];memberships=[]
     for run in runs:
@@ -214,5 +213,8 @@ if __name__=='__main__':
     parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--final',action='store_true')
+    parser.add_argument('--reference-analysis',type=Path,required=True,
+                        help='Compact release analysis/biomolecular_full_duplex_rewrite directory')
     args=parser.parse_args()
-    analyze(args.root.resolve(),args.output.resolve(),args.final)
+    analyze(args.root.resolve(),args.output.resolve(),args.final,
+            reference_analysis=args.reference_analysis.resolve())

@@ -78,27 +78,26 @@ For a remote machine, use `--no-open`; for unattended installation, use `--no-gu
 
 The **compact reproducibility release is separate from the source repository**. The current prepared archive is `fullduplex-reproducibility-20261014.tar` (approximately 22 GB), accompanied by a SHA-256 checksum. It has been verified locally; a public download location has not yet been assigned.
 
-Use Linux x86_64 with Python 3.10 for the bundled offline wheels. Allow space for both the archive and its extracted contents, plus approximately 1 GB for the analysis environment and additional working space. From the directory containing the archive and checksum:
+Use Linux x86_64 with Python 3.10 for the bundled offline wheels. Allow space for both the archive and its extracted contents, plus approximately 1 GB for the analysis environment and additional working space. Place the archive and checksum in the source repository root, then run:
 
 ```bash
 sha256sum -c fullduplex-reproducibility-20261014.tar.sha256
 tar -xf fullduplex-reproducibility-20261014.tar
-cd fullduplex-reproducibility-20261014
-python3.10 -m venv .venv
-bash reproduce.sh all
+python3.10 -m venv reproduce/.venv
+bash reproduce/reproduce.sh all --data-root ./fullduplex-reproducibility-20261014
 ```
 
-The command installs the bundled analysis dependencies, validates the exported records, recomputes the principal analyses, and rebuilds the figures. **No API credentials, model server, GPU, Julia, or internet connection are needed.** Run it from the extracted release, not from this repository's `reproduce/` directory, which contains the release-building scripts and templates.
+The command installs the bundled analysis dependencies, validates the exported records, recomputes the principal analyses, and rebuilds the figures. **No API credentials, model server, GPU, Julia, or internet connection are needed.** The command uses the analysis code in this checkout and the frozen inputs from the extracted release. The manuscript directory is not required. See the [reproduction guide](reproduce/README.md).
 
 Individual stages are also available:
 
 ```bash
-bash reproduce.sh verify    # Check retained records, hashes, and counts
-bash reproduce.sh analyze   # Recompute scientific summaries
-bash reproduce.sh figures   # Rebuild the manuscript figures
+bash reproduce/reproduce.sh verify --data-root /path/to/release    # Check retained records, hashes, and counts
+bash reproduce/reproduce.sh analyze --data-root /path/to/release   # Recompute scientific summaries
+bash reproduce/reproduce.sh figures --data-root /path/to/release   # Rebuild the manuscript figures
 ```
 
-Results appear under `output/`:
+Results appear under `reproduce/output/` (or the directory supplied with `--output`):
 
 | Output | Contents |
 |---|---|
@@ -112,21 +111,22 @@ Installing `poppler-utils` provides `pdftoppm`, which additionally checks render
 
 The analyses cover convergence, qualifying topology counts, structural categories, RPA motif and balance screens, Logic reduction and perturbation results, parity outputs, and LLM token usage, estimated costs, and tool calls. The release retains available network/rate records, losses, and provenance, including non-qualifying designs. Large simulation caches, policy checkpoints, and full LLM conversations are omitted.
 
-These commands reproduce the analysis of recorded experiments. They do not rerun searches or every perturbation simulation. See the release's `README.txt`, `COHORTS.txt`, and `manifest/figure_inputs.json` for data coverage and the mapping from figures to inputs. For another platform, install `requirements-analysis.txt` into a suitable environment and use `python reproduce.py all`; bundled wheels and exact rendering were tested on the platform above.
+These commands reproduce the analysis of recorded experiments. They do not rerun searches or every perturbation simulation. See the release's `README.txt`, `COHORTS.txt`, and `manifest/figure_inputs.json` for data coverage and the mapping from figures to inputs. For another platform, install `reproduce/requirements-analysis.txt` into a suitable environment and use `python reproduce/reproduce.py all --data-root /path/to/release`; bundled wheels and exact rendering were tested on the platform above.
 
 ## Run a new search
 
 For a matched experiment, use a saved run's source snapshot, configuration, and prompts. The release can prepare **Flash RPA and Logic** runs in a new directory, verifying the restored scientific source hashes. Other campaign configurations remain available under `data/campaigns/`.
 
-For example, from the extracted release, prepare the full-duplex Logic experiment for seed 1:
+For example, from the source repository, prepare the full-duplex Logic experiment for seed 1:
 
 ```bash
-.venv/bin/python reproduce.py prepare-run \
+reproduce/.venv/bin/python reproduce/reproduce.py prepare-run \
+  --data-root /path/to/release \
   --run 79f9fb37019a38f9 \
   --output "$HOME/fullduplex-logic-seed1"
 ```
 
-This only prepares files. Select other run IDs using `manifest/runs.json` and `manifest/cohorts.csv`. The generated `replay_config/` contains the task, search hyperparameters, fitting recipe, and reference manifest; `run.sh` uses the saved seed, prompts, worker allocation, and communication settings.
+This only prepares files. Select other run IDs using the data release's `manifest/runs.json` and `manifest/cohorts.csv`. The generated `replay_config/` contains the task, search hyperparameters, fitting recipe, and reference manifest; `run.sh` uses the saved seed, prompts, worker allocation, and communication settings.
 
 Install the full numerical environment in the prepared directory. With **Julia 1.12.6** on your `PATH`, instantiate the supplied Julia project:
 
@@ -165,12 +165,11 @@ For custom experiments, start with the [stream runner](comparisons/search_explor
 | `comparisons/rpa_search/` | RPA task and numerical comparison utilities |
 | `comparisons/llm_crn_generation/` | LLM candidate-generation utilities and harness documentation |
 | `tools/` | Harness installer, setup checks, and runtime helpers |
-| `reproduce/` | Compact-release construction, verification, and reproduction scripts |
+| `reproduce/` | Current-paper analysis, figure reproduction, and diagnostic helpers |
 | `tests/` | Implementation tests |
-| `apps/` | Standalone task examples |
-| `docs/` | API documentation and README figure assets |
+| `docs/assets/` | README architecture figure |
 
-The source repository excludes campaign outputs, large data files, manuscript sources, and drafts. The compact data release supplies the frozen evidence and figure inputs needed for the reproduction commands.
+This release branch excludes manuscript sources, previous-paper pipelines, exploratory examples, and generated campaign outputs. Shared implementation modules and baseline experiments needed by the current paper are retained. The compact data release supplies the frozen evidence and figure inputs needed for the reproduction commands.
 
 ## License
 

@@ -8,7 +8,16 @@ from comparisons.search_exploration import rpa_directional_stream_campaign as ca
 from comparisons.search_exploration import analyze_rpa_directional_streams as analysis
 
 
-def test_plan_preserves_science_and_balances_arms(tmp_path):
+def test_plan_preserves_science_and_balances_arms(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    (reference / "manifest.json").write_text(json.dumps({
+        "config": {"epochs": 100, "batch_size": 1023, "evaluation_budget": 214793},
+        "task_config": {}, "julia_recipe": {}, "julia_project": "/test/julia"}))
+    (reference / "completed.json").write_text('{"status": "complete"}')
+    monkeypatch.setattr(campaign, "REFERENCE", reference)
+    monkeypatch.setattr(campaign.shutil, "disk_usage", lambda _: SimpleNamespace(free=200 * 2**30))
     plan = campaign.prepare(tmp_path / "campaign", concurrency=10, comet_project="test")
     assert len(plan["jobs"]) == 40
     assert plan["communication"] == ["llm-to-rl", "rl-to-llm"]

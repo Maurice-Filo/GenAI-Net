@@ -18,7 +18,7 @@ def test_numerical_job_canonicalizes_order_preserving_aligned_rates():
 
 
 def test_pruning_is_exhaustive_and_perturbations_are_not_clipped(monkeypatch):
-    from paper.iclr2027_genai_net_llm import analyze_logic_correctness_pruning as pruning
+    from reproduce.diagnostics import logic_pruning as pruning
     targets = (np.arange(16) % 2).reshape(16, 1).astype(float)
 
     @lru_cache(maxsize=256)
@@ -52,7 +52,7 @@ def test_pruning_is_exhaustive_and_perturbations_are_not_clipped(monkeypatch):
 
 
 def test_order_fallback_aligns_rates_and_projects_subsets(monkeypatch):
-    from paper.iclr2027_genai_net_llm import analyze_logic_correctness_pruning as pruning
+    from reproduce.diagnostics import logic_pruning as pruning
     calls = []
     def replay(actions):
         calls.append(actions)
@@ -65,7 +65,7 @@ def test_order_fallback_aligns_rates_and_projects_subsets(monkeypatch):
 
 
 def test_unfavorable_successful_draw_is_not_retried(monkeypatch):
-    from paper.iclr2027_genai_net_llm import analyze_logic_correctness_pruning as pruning
+    from reproduce.diagnostics import logic_pruning as pruning
     calls = []
     def replay(actions):
         calls.append(actions)
@@ -76,7 +76,7 @@ def test_unfavorable_successful_draw_is_not_retried(monkeypatch):
 
 
 def test_unresolved_baseline_is_persistable_not_blocking(monkeypatch):
-    from paper.iclr2027_genai_net_llm import analyze_logic_correctness_pruning as pruning
+    from reproduce.diagnostics import logic_pruning as pruning
     @lru_cache(maxsize=256)
     def replay(actions):
         return {"status": "solver_failure", "loss": 656.}
@@ -93,7 +93,7 @@ def test_unresolved_baseline_is_persistable_not_blocking(monkeypatch):
 
 
 def test_baseline_recovery_requires_reference_agreement(monkeypatch):
-    from paper.iclr2027_genai_net_llm import analyze_logic_correctness_pruning as pruning
+    from reproduce.diagnostics import logic_pruning as pruning
     def replay(actions):
         return {"status": "ok", "loss": 9. if actions[0][0] == 1 else .01}
     monkeypatch.setattr(pruning, "replay", replay)

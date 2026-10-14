@@ -9,10 +9,11 @@ import sys
 import numpy as np
 
 
-def main(root, output):
+def main(root, output, *, analysis_root=None, source_root=None):
     from reproduce import read, write, rows, resolve, module, csv_numbers, guard_source_access
-    p = root/'analysis/biomolecular_full_duplex_rewrite'
-    sys.path.insert(0, str(root))
+    analysis_root = analysis_root or root/'analysis'
+    p = analysis_root/'biomolecular_full_duplex_rewrite'
+    sys.path.insert(0, str(source_root or root))
     sys.path.insert(0, str(p))
     guard_source_access()
     report = {}

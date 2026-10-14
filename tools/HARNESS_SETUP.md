@@ -382,8 +382,9 @@ That runner is configured for hosted Flash; changing the smoke test's backend
 does **not** change it to Qwen. For a local deployment, configure
 `HarnessJuliaStreamTrainer.attach_harness()` with the selected provider, model,
 `openai_compatible_base_url`, context/output limits and reasoning override.
-The paper's `local_qwen_matched_campaign.py` records how this was done, but its
-campaign paths are machine-specific and it is not a portable one-command launcher.
+The compact data release records the local deployment settings and frozen
+campaign sources. See the [reproduction guide](../reproduce/README.md) for the
+supported matched-run preparation workflow.
 Julia/SynthEvo and numerical campaign setup are separate from this Harness guide.
 
 ## Troubleshooting
@@ -418,7 +419,7 @@ The examples do not constitute a complete frozen reproduction environment.
 
 - [DeepSeek Harness upstream](https://github.com/deepseek-ai/deepseek-harness)
 - [Node downloads](https://nodejs.org/en/download)
-- [Existing integration overview](../comparisons/llm_crn_generation/HARNESS.md)
-- [Recorded Flash readiness check](../comparisons/search_exploration/RPA_FLASH_HARNESS_READINESS.md)
+- [Current-paper reproduction](../reproduce/README.md)
+- [Offline and live setup checker](check_harness_setup.py)
 - [Python Harness client](../RL4CRN/llm/harness_client.py)
 - [Decider/Writer integration](../RL4CRN/llm/harness_runner.py)

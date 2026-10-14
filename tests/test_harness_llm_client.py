@@ -322,9 +322,15 @@ class HarnessLLMClientTests(unittest.TestCase):
             self.assertEqual(json.loads((root / "tool_evaluation_summary.json").read_text())["used"], 1)
 
     def test_literature_queue_searches_fixed_read_only_corpus(self):
-        database = Path(__file__).parents[1] / "literature_rag/index/literature.sqlite3"
+        from literature_rag.fetch_papers import connect_index
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            database = root / "literature.sqlite3"
+            connection = connect_index(database)
+            connection.execute("INSERT INTO papers (pmcid, title, source_url, license_status, xml_path, text_path, sha256) VALUES ('PMC1', 'Test feedback', 'https://example.test', 'test', 'a', 'b', 'c')")
+            connection.execute("INSERT INTO paper_text (pmcid, title, body) VALUES ('PMC1', 'Test feedback', 'robust perfect adaptation')")
+            connection.commit()
+            connection.close()
             with WorkspaceLiteratureService(root, database, max_searches=1):
                 queue = root / "literature-requests"
                 request = queue / "search-01.request.json"

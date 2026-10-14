@@ -17,7 +17,10 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parent
+CODE_ROOT = Path(__file__).resolve().parent
+SOURCE_ROOT = CODE_ROOT.parent if (CODE_ROOT.parent/'RL4CRN').is_dir() else CODE_ROOT
 PAPER = Path('analysis/biomolecular_full_duplex_rewrite')
+WORK_ROOT = None
 
 
 def read(p):
@@ -41,7 +44,7 @@ def sha(p):
 def resolve(path):
     """Translate recorded source locations; never fall back to the source disk."""
     p = Path(path)
-    if p.is_relative_to(ROOT):
+    if p.is_relative_to(ROOT) or (WORK_ROOT is not None and p.is_relative_to(WORK_ROOT)):
         return p
     aliases = read(ROOT/'manifest/path_map.json')
     for prefix in sorted(aliases, key=len, reverse=True):
@@ -166,19 +169,38 @@ def guard_source_access():
         p = os.fsdecode(args[0])
         if p.startswith(environment):
             return
+        if Path(p).is_absolute() and Path(p).is_relative_to(SOURCE_ROOT):
+            if Path(p).is_relative_to(SOURCE_ROOT/'paper'):
+                raise PermissionError('Manuscript directory is not a reproduction dependency: '+p)
+            return
         if p.startswith(forbidden):
             raise PermissionError('Original source access forbidden during reproduction: '+p)
     sys.addaudithook(audit)
 
 
-def figures(output):
+def prepare_analysis(output):
+    """Combine frozen inputs with the analysis code in this checkout."""
+    global WORK_ROOT
     work = output/'work'
     if work.exists():
         shutil.rmtree(work)
-    shutil.copytree(ROOT/'analysis', work/'analysis')
+    local = CODE_ROOT/'analysis'
+    shutil.copytree(ROOT/'analysis', work/'analysis',
+                    ignore=shutil.ignore_patterns('*.py', '__pycache__') if local.is_dir() else None)
+    if local.is_dir():
+        for src in local.rglob('*.py'):
+            dst = work/'analysis'/src.relative_to(local)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+    WORK_ROOT = work
+    return work
+
+
+def figures(output):
+    work = prepare_analysis(output)
     p = work/PAPER
     (p/'figures').mkdir(exist_ok=True)
-    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(SOURCE_ROOT))
     sys.path.insert(0, str(p))
     os.environ['MPLBACKEND'] = 'Agg'
     guard_source_access()
@@ -329,12 +351,22 @@ def prepare_run(run, destination):
 
 
 def main():
+    global ROOT
+    # Scientific checks import these helpers; share the configured data root.
+    sys.modules['reproduce'] = sys.modules[__name__]
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('command', choices=['verify', 'verify-files', 'analyze', 'figures', 'all', 'materialize', 'prepare-run'])
-    ap.add_argument('--output', type=Path, default=ROOT/'output')
+    ap.add_argument('--data-root', type=Path, default=ROOT,
+                    help='Extracted compact release containing data/, analysis/ and manifest/.')
+    ap.add_argument('--output', type=Path, default=CODE_ROOT/'output')
     ap.add_argument('--run')
     args = ap.parse_args()
+    ROOT = args.data_root.resolve()
+    if not (ROOT/'manifest/runs.json').is_file():
+        ap.error('Provide --data-root pointing to the extracted compact data release.')
     args.output = args.output.resolve()
+    if args.output == ROOT or ROOT.is_relative_to(args.output):
+        ap.error('--output must not contain the input release.')
     if args.command in ['materialize', 'prepare-run']:
         if not args.run:
             ap.error('--run is required')
@@ -347,7 +379,8 @@ def main():
         verify(args.output)
     if args.command in ['analyze', 'all']:
         from scientific_checks import main as scientific_checks
-        scientific_checks(ROOT, args.output)
+        analysis = prepare_analysis(args.output)
+        scientific_checks(ROOT, args.output, analysis_root=analysis/'analysis', source_root=SOURCE_ROOT)
     if args.command in ['figures', 'all']:
         figures(args.output)
 

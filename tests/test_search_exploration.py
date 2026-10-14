@@ -139,9 +139,17 @@ def test_no_random_share_rejected():
         ExplorationConfig(rl_fraction=.75, mutation_fraction=.25)
 
 
-def test_legacy_sources_unchanged():
-    from comparisons.search_exploration.freeze_legacy import verify
-    assert verify() > 100
+def test_frozen_reference_sources_match_manifest():
+    import hashlib
+    import tarfile
+    from comparisons.search_exploration.freeze_legacy import DEFAULT
+    manifest = json.loads((DEFAULT / "manifest.json").read_text())
+    archive = DEFAULT / "scientific_source.tar.gz"
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == manifest["archive_sha256"]
+    with tarfile.open(archive) as stream:
+        for name, expected in manifest["files"].items():
+            assert hashlib.sha256(stream.extractfile(name).read()).hexdigest() == expected
+    assert len(manifest["files"]) > 100
 
 
 def test_lower_loss_but_incorrect_does_not_remove_success_credit(tmp_path):

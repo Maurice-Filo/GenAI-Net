@@ -11,7 +11,7 @@ PROTOCOL = "workspace-loss-v1"
 TASK_VARIANT = "parity-evidence-exploitation-v1"
 TWELVE_VARIANT = "parity-evidence-exploitation-12r-v1"
 TASK_VARIANTS = (TASK_VARIANT, TWELVE_VARIANT)
-GENERATED = Path(__file__).resolve().parents[2] / "paper/iclr2027_genai_net_llm/generated"
+GENERATED = Path(__file__).resolve().parents[2] / "outputs/prompt_reviews"
 REVIEW_PATH = GENERATED / "parity4_workspace_loss_v1_prompt_review.json"
 APPROVAL_PATH = GENERATED / "parity4_workspace_loss_v1_prompt_approval.json"
 

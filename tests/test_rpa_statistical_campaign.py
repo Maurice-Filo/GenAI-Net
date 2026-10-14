@@ -153,6 +153,8 @@ def test_controller_preserves_failure_and_holds_remaining_queue(tmp_path, monkey
         pid = 12345
         def poll(self):
             return self.returncode
+    from types import SimpleNamespace
+    monkeypatch.setattr(controller.shutil, "disk_usage", lambda _: SimpleNamespace(free=100 * 2**30))
     monkeypatch.setattr(controller, "check_frozen", lambda *a: None)
     monkeypatch.setattr(analysis, "analyze", lambda root: None)
     monkeypatch.setattr(controller.time, "sleep", lambda seconds: None)
