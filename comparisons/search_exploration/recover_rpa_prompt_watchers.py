@@ -57,7 +57,7 @@ def prepare(previous, root):
         for p in root.rglob('*') if p.is_file() and p.name != 'progress.json'})
 
 
-def preflight(root):
+def preflight(root, task='rpa', timeout_seconds=900):
     os.chdir(root / 'source')
     sys.path.insert(0, str(root / 'source'))
     for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'JULIA_NUM_THREADS'):
@@ -67,10 +67,10 @@ def preflight(root):
     from RL4CRN.search_exploration.harness import ExplorationHarnessClient
     from RL4CRN.llm.harness_runner import HarnessDeciderWriterCRNGraph
     from RL4CRN.llm.workspace_loss_protocol import PROTOCOL
-    evaluator, _, _ = build('rpa', read(root / 'configs/task-01.json'), .001, 100.)
+    evaluator, _, _ = build(task, read(root / 'configs/task-01.json'), .001, 100.)
     client = ExplorationHarnessClient(workspace_root=root / 'preflight/workspaces',
         dsh_home=Path('/local0/home/rossin/ai-workspaces/deepseek-test/.dsh-home'),
-        model='deepseek-v4-flash', provider='deepseek-official', timeout_seconds=900,
+        model='deepseek-v4-flash', provider='deepseek-official', timeout_seconds=timeout_seconds,
         candidate_validation_policy='independent-members', harness_protocol=PROTOCOL,
         extra_environment={'CHOKIDAR_USEPOLLING': '1', 'CHOKIDAR_INTERVAL': '1000'})
     graph = HarnessDeciderWriterCRNGraph(client=client, evaluator=evaluator, writer_retry_limit=0,
@@ -85,6 +85,7 @@ def preflight(root):
     assert client.last_workspace.call_count == 2
     assert not read(client.last_workspace.path / 'CONTEXT/HALL_OF_FAME.json')['entries']
     write(root / 'live_preflight.json', dict(status='passed', valid=valid, roles=2,
+        role_timeout_seconds=timeout_seconds,
         elapsed_seconds=time.time()-started, initial_hof_empty=True,
         prompt_sha256=hashlib.sha256((root / 'TASK.md').read_bytes()).hexdigest(),
         note='Preflight candidates are not inserted into any scientific run.'))

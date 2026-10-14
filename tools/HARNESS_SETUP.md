@@ -29,13 +29,20 @@ your distribution's package manager if missing. Bubblewrap is needed for agent
 tools, as described below.
 
 The GUI opens at **http://127.0.0.1:3080** and stays in the foreground; **Ctrl-C**
-stops it. Reopen it later and load the environment for the Python integration with:
+stops it. Reopen it later with:
 
 ```bash
 "$HOME/.local/share/genainet/bin/harness-gui"
-# In the terminal where you will run GenAI-Net:
+```
+
+In a separate terminal, load the environment for the Python integration:
+
+```bash
 source "$HOME/.local/share/genainet/env.sh"
 ```
+
+With a custom `--prefix`, use that directory's `bin/harness-gui` and `env.sh`
+instead; the installer prints the exact commands when it finishes.
 
 For a remote machine, start with `bash tools/install_harness.sh --no-open`, then
 forward the GUI port from your laptop:
