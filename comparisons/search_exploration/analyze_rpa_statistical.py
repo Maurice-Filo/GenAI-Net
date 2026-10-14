@@ -10,7 +10,6 @@ import numpy as np
 from scipy.stats import PermutationMethod, wilcoxon
 
 from comparisons.search_exploration.nn_size_quality import read_status
-from RL4CRN.search_exploration.engine import atomic_json
 
 LABELS = {"julia": "Julia-fit hybrid", "evolution": "Evolution-fit hybrid", "ga": "Standalone GA"}
 COLORS = {"julia": "#168577", "evolution": "#376ab3", "ga": "#bd5b71"}
@@ -160,6 +159,8 @@ def plot(output, rows, plan):
 
 
 def analyze(root):
+    # Saved-data readers import the statistics without loading the RL runtime.
+    from RL4CRN.search_exploration.engine import atomic_json
     root = Path(root)
     plan = json.loads((root / ("active_plan.json" if (root / "active_plan.json").exists() else "plan.json")).read_text())
     progress = read_status(root / plan.get("progress_file", "progress.json")) or {}

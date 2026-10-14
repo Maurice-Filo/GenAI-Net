@@ -15,7 +15,6 @@ import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import pdist, squareform
 
-from comparisons.search_exploration.analyze_rpa_directional_streams import direct_records
 from comparisons.search_exploration.analyze_rpa_flash_adagrad import FULL, CONTROL
 from comparisons.search_exploration.analyze_rpa_llm_provenance import RECOVERY, connect, read
 from comparisons.search_exploration.analyze_rpa_mechanisms import (
@@ -66,6 +65,8 @@ def search_records(folder):
 
 
 def extract(output):
+    # Motif/balance screens also run offline without importing the RL trainer.
+    from comparisons.search_exploration.analyze_rpa_directional_streams import direct_records
     recovered = read(RECOVERY/'analysis/summary.json')
     baseline = read(FULL/'analysis-vs-adagrad-20260917/summary.json')
     if recovered['audit_errors'] or recovered['matched_seeds'] != list(range(1, 21)):
